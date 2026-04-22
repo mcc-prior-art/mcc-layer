@@ -239,6 +239,34 @@ MCC strictly defines the **control boundary** between intent and execution.
 
 ---
 
+## Conformance
+
+A system is considered MCC-compliant if it satisfies all normative requirements defined in this document.
+
+### Minimum Validation
+
+1. **Deny-by-default test**  
+   - Unknown intent MUST result in `DENY`
+
+2. **Policy enforcement test**  
+   - Policy violation MUST result in `DENY`
+
+3. **Fail-closed test**  
+   - Internal error MUST result in `DENY`
+
+4. **Execution gating test**  
+   - No action MUST execute without explicit `ALLOW`
+
+5. **Audit integrity test**  
+   - Each decision MUST produce a hash-linked audit record
+
+6. **Audit completeness test**  
+   - Every evaluated intent MUST produce an audit entry
+
+Implementations that fail any of these tests MUST NOT be considered MCC-compliant.
+
+---
+
 ## License
 
 MIT. No patent rights are granted.
