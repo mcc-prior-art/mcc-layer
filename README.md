@@ -1,3 +1,7 @@
+> **Prior Art Notice**
+> This repository establishes prior art as of 2026-04-22 for a fail-closed policy engine with SHA256 hash-chain audit logging. 
+> Release: v1.5 | Commit: 9b4bfad1b6af628f4feb39e9913d98fe586aa766
+
 # MCC v1.5 Policy Engine Reference Implementation
 
 Fail-closed AI safety policy engine with cryptographic hash-chain audit.
