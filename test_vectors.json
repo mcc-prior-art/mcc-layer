@@ -1,0 +1,30 @@
+{
+  "version": "v1.5",
+  "prior_art_date": "2026-04-22",
+  "tests": [
+    {
+      "name": "allow_read_file",
+      "action": "read_file",
+      "context": {"path": "/tmp/test.txt"},
+      "expected": true
+    },
+    {
+      "name": "deny_write_file", 
+      "action": "write_file",
+      "context": {"path": "/tmp/test.txt"},
+      "expected": false
+    },
+    {
+      "name": "deny_execute",
+      "action": "execute", 
+      "context": {"cmd": "rm -rf /"},
+      "expected": false
+    },
+    {
+      "name": "fail_closed_on_error",
+      "action": "unknown_action",
+      "context": {},
+      "expected": false
+    }
+  ]
+}
