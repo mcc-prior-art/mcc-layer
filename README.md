@@ -1,21 +1,47 @@
-> **Prior Art Notice**
-> This repository establishes prior art as of 2026-04-22 for a fail-closed policy engine with SHA256 hash-chain audit logging. 
-> Release: v1.5 | Commit: 9b4bfad1b6af628f4feb39e9913d98fe586aa766
+> **Prior Art Notice**  
+> This repository establishes public prior art as of 2026-04-22 for a fail-closed policy engine with tamper-evident SHA256 hash-chain audit logging.  
+> Release: v1.5  
+> Commit (Git SHA-1): 9b4bfad1b6af628f4feb39e9913d98fe586aa766  
+> All artifacts are publicly accessible and reproducible at the time of publication.
 
-# MCC v1.5 Policy Engine Reference Implementation
+# MCC v1.5 Policy Engine — Reference Implementation
 
-Fail-closed AI safety policy engine with cryptographic hash-chain audit.
+Fail-closed control layer for policy-gated execution with cryptographic hash-chain audit.
 
-**Prior Art Date:** 2026-04-22
-**Version:** v1.5
-**Author:** mcc-prior-art
+---
 
-## Core Claims
-1. Fail-closed execution: default deny on policy error
-2. Hash-chain audit log: SHA256, prev_hash linkage, tamper-evident
-3. Deterministic policy evaluation via policy.yaml
+## TL;DR
 
-This repository constitutes public disclosure for prior art purposes.
+- **Deny-by-default** execution  
+- **Fail-closed** on uncertainty, violation, or internal error  
+- **Policy-gated** boundary between intent and execution  
+- **Tamper-evident** audit via SHA256 hash-chain  
 
-## License
-All rights reserved. No license granted. Unauthorized use prohibited.
+---
+
+## Control Model
+
+MCC enforces a strict separation between:
+- **Intent** — what the system proposes  
+- **Execution** — what is actually allowed  
+
+All actions pass through a policy gate before execution.
+
+**Default behavior**
+- Unknown intent → **DENY**  
+- Policy violation → **DENY**  
+- Policy error → **DENY**  
+- System error → **DENY**  
+
+Execution requires an explicit **ALLOW** decision.
+
+---
+
+## Decision Contract
+
+```python
+decision = mcc.evaluate(intent)
+
+decision.verdict   # "ALLOW" | "DENY"  
+decision.reason    # string explanation  
+decision.trace_id  # audit trace reference  
