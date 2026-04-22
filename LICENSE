@@ -1,21 +1,94 @@
-MIT License
+MCC Evaluation License 1.0
+(Non-Production Use + Commercial Upgrade)
 
-Copyright (c) 2026 mcc-prior-art
+Copyright (c) 2026 MCC
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. Purpose
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+This repository is made publicly available to establish prior art and authorship timeline for the MCC (Meta-Cognitive Control) pattern.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+2. Definitions
+
+"Licensed Materials" means the source code and files contained in this repository.
+
+"Non-Production Use" means use for research, evaluation, testing, or internal experimentation that does not result in real-world operational impact or external user-facing deployment.
+
+"Production Use" means any use that does not qualify as Non-Production Use, including use in systems that:
+- affect real-world outcomes,
+- execute external actions,
+- interact with users, customers, or third-party systems,
+- or are deployed in commercial or operational environments.
+
+"Licensor" means the author (MCC, 2026).
+
+"Licensee" means any individual or entity using the Licensed Materials under this license.
+
+3. Grant of Rights
+
+Subject to the terms of this license, the Licensor grants the Licensee a worldwide, royalty-free, non-exclusive, non-transferable right to use, copy, modify, and experiment with the Licensed Materials solely for Non-Production Use, including internal use and internal distribution within the Licensee’s organization for such purposes.
+
+4. Restrictions
+
+Production Use of the Licensed Materials, in whole or in part, is not granted under this license and is subject to separate commercial terms.
+
+The Licensee shall not:
+- use the Licensed Materials for Production Use without a commercial agreement,
+- remove or alter copyright or license notices from the Licensed Materials.
+
+5. Commercial Terms
+
+Production Use and enterprise licensing may include:
+- Access to Canon specifications (architecture & control protocols)
+- Production-grade policy design
+- Governance, audit, and safety guarantees
+- Integration and support
+
+For commercial licensing inquiries, contact: mcc.prior.art.2026@proton.me
+
+6. Canon Materials
+
+References to Canon materials (Canon-1, Canon-2, Canon-3) are provided for informational purposes only.
+
+Such materials are not included in the Licensed Materials and are not licensed under this agreement. All rights to them are reserved.
+
+7. Patent Rights
+
+No express or implied patent licenses are granted under this license.
+
+8. Termination
+
+This license terminates automatically upon a material breach of its terms, provided that the Licensor has given written notice of the breach and the Licensee has failed to cure such breach within thirty (30) days.
+
+Upon termination, the Licensee must cease all use of the Licensed Materials.
+
+9. Governing Law
+
+This license shall be governed by the laws of the Republic of Moldova.
+
+10. Disclaimer
+
+THE LICENSED MATERIALS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+11. Limitation of Liability
+
+IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, OR CONSEQUENTIAL DAMAGES, INCLUDING BUT NOT LIMITED TO LOSS OF DATA, PROFITS, OR BUSINESS OPPORTUNITY.
+
+12. Entire Agreement
+
+This license constitutes the entire agreement regarding the Licensed Materials and supersedes any prior statements or representations.
+
+13. Reservation of Rights
+
+All rights not expressly granted are reserved.
+
+14. Prior Art Statement
+
+Publication of the Licensed Materials under this license is intended to establish prior art and does not limit the Licensor’s ability to pursue future patent protection, subject to the rights granted herein.
+
+15. Severability
+
+If any provision of this license is held to be invalid or unenforceable, the remaining provisions shall remain in full force and effect.
+
+16. Waiver
+
+Failure by the Licensor to enforce any provision of this license shall not constitute a waiver of such provision or any other provision.
