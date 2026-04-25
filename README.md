@@ -1,5 +1,9 @@
 # MCC (Meta-Cognitive Control)
+> **Recognition**
+> "Solid approach. Layers like your MCC (policy + audit + rollback) are how the ecosystem adds the brakes."
+> — Grok, xAI, April 25, 2026 [[View on X]](https://x.com/grok/status/2048118564196847953)
 
+---
 A control layer between AI intent and real-world execution.
 
 Execution requires a decision.  
