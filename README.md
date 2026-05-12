@@ -103,8 +103,13 @@ Current status:
 - [x] Authority artifact / decision token model
 - [x] Policy examples
 - [x] Operational model
+- [x] Policy bundle model
+- [x] Nonce registry model
 - [x] Prior-art reference
+- [ ] Working reference runtime
 - [ ] Production-hardened runtime
+- [ ] Signed policy bundle supply chain
+- [ ] Production distributed nonce registry
 - [ ] Public benchmark report
 - [ ] Docker image
 - [ ] PyPI package
@@ -440,6 +445,109 @@ MCC-Core normalizes these inputs into a final execution decision:
 ```text
 ALLOW / DENY / ESCALATE / CONSTRAIN
 ```
+
+---
+
+### Policy Bundle Model
+
+MCC-Core assumes that execution authority must be derived from signed, versioned, and auditable policy inputs.
+
+A **Signed Policy Bundle** is the packaged policy artifact used by MCC during decision evaluation.
+
+A typical policy bundle may contain:
+
+- policy rules
+- policy version
+- policy issuer
+- scope of applicability
+- approval requirements
+- risk thresholds
+- constraint templates
+- expiry or validity window
+- signature
+- policy hash
+- audit metadata
+
+Policy bundles may be produced from:
+
+- OPA / Rego policies
+- Cedar policies
+- YAML policy definitions
+- internal governance rules
+- compliance requirements
+- business approval matrices
+- domain-specific rule engines
+
+MCC-Core does not require policy to originate inside MCC.
+
+Policy may remain authored and governed externally.
+
+MCC consumes signed, versioned policy inputs and converts them into execution decisions.
+
+```text
+Policy source may be external.
+Execution authority must be verified by MCC.
+```
+
+A production-grade policy bundle supply chain should include:
+
+- policy authoring workflow
+- review and approval process
+- policy signing
+- policy versioning
+- policy distribution
+- policy revocation
+- policy hash binding
+- audit trail
+- rollback strategy
+
+The reference architecture defines the required behavior.
+
+The production implementation must choose the appropriate policy authoring, signing, distribution, and revocation workflow.
+
+---
+
+### Distributed Nonce Registry Model
+
+A **Distributed Nonce Registry** is used to prevent replay of authority artifacts.
+
+Its purpose is to ensure that a valid authority token cannot be reused outside its intended execution window.
+
+A production nonce registry should support:
+
+- single-use nonce consumption
+- short TTL
+- atomic check-and-set
+- distributed consistency
+- tenant or domain separation
+- audit logging
+- failure-mode handling
+- replay detection
+
+Possible implementation backends include:
+
+- Redis with atomic operations
+- etcd
+- Consul
+- DynamoDB conditional writes
+- PostgreSQL unique constraints
+- cloud-native strongly consistent key-value stores
+
+For local development, nonce validation may be simplified.
+
+For production deployments, nonce consumption must be atomic and auditable.
+
+```text
+Used nonce = DENY.
+Expired nonce = DENY.
+Missing nonce = DENY.
+```
+
+MCC-Core treats policy bundles and nonce registries as infrastructure dependencies in production deployments, not as optional decorations.
+
+The reference architecture defines the required behavior.
+
+The production implementation must choose the appropriate backend based on latency, consistency, availability, and audit requirements.
 
 ---
 
@@ -887,145 +995,4 @@ MCC-Core is not currently certified under IEC 61508, ISO 13849, ISO 10218, SOC 2
 
 Any production deployment in safety-critical, regulated, financial, legal, healthcare, industrial, or physical environments would require independent assessment, certification review, and validation by qualified bodies.
 
-MCC-Core should be treated as an execution-governance architecture and reference implementation, not as a certified product.
-
----
-
-## Benchmarking Status
-
-Public performance benchmarks are not yet included in this README.
-
-Until benchmark results are published, MCC-Core should not be described as low-latency, high-throughput, or production-performance verified.
-
-Planned benchmark targets:
-
-- decision latency
-- policy evaluation latency
-- token signing latency
-- token verification latency
-- concurrent request throughput
-- p50 / p95 / p99 latency
-- audit logging overhead
-- fail-closed behavior under load
-
----
-
-## Roadmap
-
-Planned areas of development:
-
-- formal protocol specification
-- working reference runtime
-- `/evaluate` endpoint
-- improved policy priority resolver
-- authority token verification library
-- Ed25519 / ECDSA token signing
-- replay-protected nonce registry
-- audit hash-chain hardening
-- Docker-based local deployment
-- Kubernetes deployment manifests
-- Helm chart
-- metrics and observability
-- SIEM export
-- simulation examples
-- enterprise integration examples
-- cloud execution adapters
-- finance workflow adapters
-- robotics runtime adapters
-- legal / regulated workflow adapters
-- public benchmarking
-- protocol documentation
-- independent security review
-
----
-
-## Installation
-
-Runtime installation instructions will be added when the working MCC-Core reference runtime is published.
-
-Current repository status:
-
-- reference architecture
-- open protocol draft
-- execution-governance canon
-- policy examples
-- authority artifact model
-- target API contract
-- operational model
-
-The intended local development flow will be:
-
-```bash
-git clone https://github.com/axlogiq/mcc-layer.git
-cd mcc-layer
-```
-
-The intended Python runtime flow will be:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn server.app:app --host 0.0.0.0 --port 8080
-```
-
-The intended Docker runtime flow will be:
-
-```bash
-docker compose up
-```
-
-> Runtime commands above describe the target reference implementation flow.  
-> They should be treated as pending until the working `/evaluate` reference server, dependency files, and Docker configuration are present in the repository.
-
----
-
-## Licensing
-
-MCC-Core is released under the MIT License for research, prototyping, and evaluation use.
-
-Commercial, enterprise, production, closed-source integration, or managed deployment use may require a separate commercial license from AXLOGIQ.
-
-For licensing and enterprise inquiries:
-
-```text
-founder@axlogiq.com
-```
-
----
-
-## Author
-
-**Alexandr Ponomariov**  
-Founder & CEO, **AXLOGIQ Inc.**  
-Delaware C-Corp
-
-Business & inquiries:  
-https://axlogiq.com
-
-Documentation & demo:  
-https://axlogiq.ai
-
-Open-source work:  
-https://github.com/axlogiq
-
-Contact:  
-founder@axlogiq.com
-
----
-
-## Final Principle
-
-MCC Layer is not a safety checkbox.
-
-It is an architectural maturity layer for autonomous systems.
-
-Because autonomy without verifiable control is not intelligence.
-
-It is risk waiting for scale.
-
-```text
-Intent is not authority.
-Execution requires a decision.
-No verified decision — no execution.
-```
+MCC-Core should be treated as an execution-governance architecture
