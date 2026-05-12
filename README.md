@@ -1,64 +1,48 @@
 <div align="center">
 
-<img src="https://github.com/axlogiq/mcc-r/raw/main/assets/mcc-r-banner.jpg"
-     width="100%"
-     alt="MCC-R — Meta-Cognitive Control for Robotics">
+<h1>AXLOGIQ MCC Layer</h1>
+<h3>Meta-Cognitive Control Layer</h3>
 
-<h1>MCC-R</h1>
-<h3>Meta-Cognitive Control for Robotics</h3>
-
-<p><strong>Execution Governance Layer for Robotic and Physical AI Systems</strong></p>
+<p><strong>The control boundary between AI intent and execution.</strong></p>
 
 <blockquote>
-  <strong>No verified decision — no execution.</strong>
+  <strong>Intent is not authority. Execution requires a decision.</strong>
 </blockquote>
 
 <p>
-  MCC-R defines a verifiable decision boundary between autonomous intent and physical action.
-  <br>
-  Based on the <strong>MCC-CORE Execution Governance Framework v2.0</strong>.
+  MCC-Core is a meta-control layer above the AI / execution stack:
+  models, agents, workflows, control planes, policy engines, IAM,
+  observability and execution surfaces.
 </p>
 
 <p>
-  The model may propose. MCC-R decides. Only verified decisions execute.
+  No verified decision — no execution.
 </p>
 
 <br>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 ![Status](https://img.shields.io/badge/status-reference%20implementation-blue.svg)
 ![Protocol](https://img.shields.io/badge/protocol-open%20draft-cyan.svg)
+![Boundary](https://img.shields.io/badge/boundary-above%20AI%20execution-purple.svg)
 ![Safety](https://img.shields.io/badge/safety%20certification-not%20certified-red.svg)
 
 </div>
 
 ---
 
-# MCC-R — Meta-Cognitive Control for Robotics
+## Overview
 
-**MCC-R** is an open execution-governance protocol draft and reference implementation for robotic and physical AI systems, extending the public MCC Layer prior-art foundation into robotics and physical AI.
+**MCC Layer** is a meta-control layer for autonomous AI systems.
 
-It is designed to sit between autonomous AI intent and real-world execution.
+It governs the transition from AI intent to real-world execution.
 
-A robot, agent, workflow, or physical system does not execute an action merely because an AI model proposed it.
+Autonomous AI can propose actions, call tools, coordinate workflows, and interact with execution surfaces. But it must not self-authorize execution.
 
-Execution requires a verified decision.
+MCC-Core separates the proposer from the authority layer.
 
-MCC-R evaluates identity, policy, risk, context, constraints, and audit requirements before any action is allowed to pass into the execution layer.
-
----
-
-## Foundation / Prior Art
-
-MCC-R extends the public MCC Layer prior-art work into robotics and physical AI execution governance.
-
-The foundational MCC Layer repository is available here:
-
-```text
-https://github.com/mcc-prior-art/mcc-layer
-```
-
-The MCC Layer establishes the core execution-governance principle:
+The model proposes.  
+MCC evaluates.  
+Execution only follows a verified authority artifact.
 
 ```text
 Intent is not authority.
@@ -66,123 +50,62 @@ Execution requires a decision.
 No verified decision — no execution.
 ```
 
-MCC-R applies that principle to robotic and physical AI systems by introducing robotics-specific execution controls:
+MCC does not govern the chatbot.
 
-- Robot identity
-- Physical execution gates
-- Decision Tokens
-- Action hashing
-- Policy binding
-- Short-lived authorization
-- Replay protection
-- Risk and context evaluation
-- Audit references
-- Fail-closed execution behavior
-
-The relationship is simple:
-
-```text
-MCC Layer = general execution governance boundary
-MCC-R     = robotics-focused execution governance extension
-```
-
-MCC-R should be read as a robotics-specific reference implementation and architectural extension of the MCC Layer prior-art foundation.
+MCC governs the transition from autonomous intent to authorized execution.
 
 ---
 
-## Architecture Overview
+## Core Category
 
-MCC-R is built on the **MCC-CORE Execution Governance Layer v2.0**, a universal decision-boundary framework for autonomous systems.
+MCC Layer defines an **execution authority boundary** above autonomous AI systems.
 
-This repository provides a robotics-focused reference implementation of that architecture.
+It is not a model.
 
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                     LAYER 4                                 │
-│               CONTROLLED EXECUTION                          │
-│  Only verified and enforced decisions reach physical action │
-└─────────────────────────────────────────────────────────────┘
-                            ▲
-                            │
-┌─────────────────────────────────────────────────────────────┐
-│                     LAYER 3                                 │
-│                 ENFORCEMENT LAYER                           │
-│  Execution Gate enforces verified decisions in real time.   │
-│  All actions are controlled, monitored, and logged.          │
-└─────────────────────────────────────────────────────────────┘
-                            ▲
-                            │
-┌─────────────────────────────────────────────────────────────┐
-│                     LAYER 2                                 │
-│            MCC-CORE DECISION BOUNDARY                       │
-│  Evaluates every request against identity, policy, risk,    │
-│  context, constraints, and audit requirements.              │
-│                                                             │
-│  OUTCOMES: ALLOW · DENY · ESCALATE · CONSTRAIN              │
-│  FAIL-CLOSED BY DEFAULT                                     │
-└─────────────────────────────────────────────────────────────┘
-                            ▲
-                            │
-┌─────────────────────────────────────────────────────────────┐
-│                     LAYER 1                                 │
-│                   INTENT SOURCES                            │
-│  AI Models · Users · Agents · Workflows · Applications      │
-│  Every intent is untrusted until verified.                  │
-└─────────────────────────────────────────────────────────────┘
-                            ▲
-                            │
-┌─────────────────────────────────────────────────────────────┐
-│                     LAYER 0                                 │
-│               IDENTITY & TRUST FABRIC                       │
-│  Hardware root of trust · mTLS / SPIFFE · OIDC / OAuth 2.1  │
-│  Device attestation · Cryptographic identity chain          │
-└─────────────────────────────────────────────────────────────┘
-```
+It is not a prompt wrapper.
+
+It is not a chatbot safety layer.
+
+It is not an IAM replacement.
+
+It is not a policy engine.
+
+It is not an agent control plane.
+
+It is the meta-control boundary above them.
+
+MCC evaluates whether autonomous intent may become authorized execution.
 
 ---
 
-## Core Principle
+## What MCC Layer Controls
+
+Autonomous systems increasingly operate across real execution surfaces:
+
+- Cloud infrastructure
+- APIs
+- Databases
+- Payments
+- Emails
+- Legal operations
+- Healthcare operations
+- Enterprise workflows
+- Robotics
+- Production systems
+
+The critical question is not only:
 
 ```text
-Intent is not authority.
-Execution requires a decision.
-No verified decision — no execution.
+What did the AI intend?
 ```
 
-Autonomous systems are moving from reasoning into action.
+The critical question is:
 
-They will operate tools, call APIs, control robots, move assets, trigger workflows, and interact with physical environments.
+```text
+May this intent become authorized execution?
+```
 
-That transition creates a new architectural requirement:
-
-**A decision boundary between intelligence and execution.**
-
-MCC-R is that boundary for robotics and physical AI.
-
----
-
-## What MCC-R Does
-
-MCC-R provides a structured control layer for evaluating whether an autonomous system should be allowed to execute a proposed action.
-
-It introduces:
-
-- Identity-aware execution control
-- Policy-gated authorization
-- Risk and context evaluation
-- Decision outcomes
-- Signed Decision Tokens
-- Replay protection
-- Constraint enforcement
-- Audit references
-- Fail-closed behavior
-- Integration with existing physical safety systems
-
-MCC-R is not a robot controller.
-
-MCC-R is not a replacement for certified safety systems.
-
-MCC-R is an execution governance layer.
+MCC Layer exists to answer that question.
 
 ---
 
@@ -194,48 +117,142 @@ Every proposed action is evaluated into one of four outcomes:
 |---|---|
 | `ALLOW` | The action is authorized and may proceed. |
 | `DENY` | The action is blocked. |
-| `ESCALATE` | Human, supervisory, or higher-level approval is required. |
+| `ESCALATE` | Human, supervisory, legal, security, financial, or domain approval is required. |
 | `CONSTRAIN` | The action may proceed only under reduced or modified limits. |
 
 This makes execution explicit, reviewable, enforceable, and auditable.
 
 ---
 
-## Canonical Execution Flow
+## Authority Artifact
+
+The output of MCC is not a suggestion.
+
+The output is an authority artifact.
+
+A verified authority artifact may be represented as a signed, scoped, TTL-bound decision token.
+
+Without a valid authority artifact, the enforcement gate remains closed.
 
 ```text
-AI Model / Agent / Robot Planner
+No verified decision — no execution.
+No valid authority artifact — no execution.
+```
+
+A hardened authority artifact should bind:
+
+- Subject identity
+- Source identity
+- Requested action
+- Action hash
+- Policy version
+- Risk score
+- Decision outcome
+- Constraints
+- Approval state
+- Expiry timestamp
+- Replay-protected nonce
+- Audit reference
+- Signature
+
+---
+
+## Canonical Flow
+
+```text
+AI Model / Agent / Workflow / Control Plane
         |
         v
-Proposed Action
+Autonomous Intent
         |
         v
-MCC-R Decision Boundary
+MCC Layer / MCC-Core
+Meta-Control Decision Boundary
         |
-        +--> Identity Check
+        +--> Identity Verification
         +--> Policy Evaluation
         +--> Risk & Context Evaluation
-        +--> Constraint Resolution
+        +--> Approval / Escalation State
+        +--> Reversibility / Constraint Check
         +--> Audit Binding
         |
         v
-Decision: ALLOW / DENY / ESCALATE / CONSTRAIN
+ALLOW / DENY / ESCALATE / CONSTRAIN
         |
         v
-Decision Token
+Authority Artifact
         |
         v
-Enforcement Layer
+Enforcement Gate
         |
         v
-Controlled Execution
+Execution Surface
 ```
 
 The model proposes.
 
-MCC-R evaluates.
+MCC evaluates.
 
-The execution layer enforces.
+The enforcement layer executes only after verified authority.
+
+---
+
+## Architecture Position
+
+MCC Layer sits above the AI / execution stack and below business, legal, and corporate authority.
+
+```text
+Business / Legal / Board Authority
+              |
+              v
+        MCC Layer / MCC-Core
+   Meta-Control Decision Boundary
+              |
+              v
+AI Models · Agents · Workflows · Control Planes
+Policy Engines · IAM · Observability · Runtime Systems
+              |
+              v
+Execution Surfaces
+Cloud · APIs · Databases · Payments · Emails
+Legal Ops · Healthcare Ops · Robotics · Production Systems
+```
+
+MCC does not replace lower-stack controls.
+
+It uses them as inputs.
+
+Policy engines evaluate rules.
+
+IAM verifies access.
+
+Control planes orchestrate agents.
+
+Observability records system state.
+
+MCC decides whether autonomous intent may become authorized execution.
+
+---
+
+## Architecture Diagram
+
+If this repository includes the architecture diagram, place it at:
+
+```text
+assets/mcc-core-execution-governance-layer-v2.png
+```
+
+Then use:
+
+```html
+<p align="center">
+  <img src="./assets/mcc-core-execution-governance-layer-v2.png"
+       width="100%"
+       alt="MCC-Core Execution Governance Layer v2.0 Architecture">
+</p>
+```
+
+The diagram represents MCC-Core as a meta-control boundary above the AI / execution stack, not as a robotics-only architecture.
 
 ---
 
@@ -245,76 +262,196 @@ The execution layer enforces.
 No identity — no execution.
 No policy — no execution.
 No verified decision — no execution.
-No valid token — no physical action.
+No valid authority artifact — no execution.
 No audit — no trust.
 ```
 
-These are the core invariants of MCC-R.
-
-They are intended to make execution governance explicit, deterministic, and observable.
+These are the core invariants of MCC Layer.
 
 ---
 
-## Decision Token
+## Core Invariants
 
-Every executable decision may be represented as a signed **Decision Token**.
+MCC-Core is designed around strict execution invariants:
 
-A Decision Token binds the decision to the action, subject, policy, risk context, constraints, expiry, and audit trail.
+- **Intent is not authority**
+- **The proposer is not the authority**
+- **No identity — no execution**
+- **No policy — no execution**
+- **No verified decision — no execution**
+- **No valid authority artifact — no execution**
+- **No audit — no trust**
+- **Used nonce — deny**
+- **Expired token — deny**
+- **Unresolved approval — escalate**
+- **Unresolved risk — deny or escalate**
+- **Fail-closed by default**
 
-A typical Decision Token includes:
+---
+
+## Fail-Closed by Default
+
+MCC-Core is designed around fail-closed behavior.
+
+If identity cannot be verified, execution is denied.
+
+If no policy matches, execution is denied.
+
+If risk cannot be resolved, execution is denied or escalated.
+
+If approval is required and missing, execution is escalated.
+
+If the authority artifact is missing, expired, malformed, replayed, or invalid, execution is denied.
+
+If audit binding fails, execution is denied.
+
+```text
+Unknown state = DENY
+Missing proof = DENY
+Invalid authority artifact = DENY
+Expired artifact = DENY
+Used nonce = DENY
+No audit = DENY
+```
+
+The safest default is no execution.
+
+---
+
+## What MCC Layer Is
+
+MCC Layer is:
+
+- A decision boundary
+- A meta-control layer
+- An execution authority layer
+- A policy-gated execution control model
+- An open protocol draft
+- A reference implementation
+- A framework for verifiable execution authorization
+- A way to separate AI intent from execution authority
+
+The core idea is simple:
+
+```text
+The agent may intend.
+The system must decide.
+Only verified decisions execute.
+```
+
+---
+
+## What MCC Layer Is Not
+
+MCC Layer is not:
+
+- A prompt filter
+- A model-safety feature
+- A chatbot wrapper
+- An IAM replacement
+- A policy engine replacement
+- An observability replacement
+- An agent framework
+- An agent control plane
+- A robot controller
+- A certified functional safety system
+- A guarantee of safe behavior
+- A substitute for independent review
+
+MCC Layer is an execution governance boundary.
+
+Its purpose is to make execution authority explicit, enforceable, and auditable.
+
+---
+
+## MCC Layer vs Lower-Stack Controls
+
+| Layer | What It Does | Why MCC Is Different |
+|---|---|---|
+| Model | Generates reasoning, plans, tool calls, and proposed actions. | Model output is not authority. |
+| Agent framework | Orchestrates agent behavior and tool usage. | Orchestration is not final execution authority. |
+| Control plane | Manages agents, workflows, runtime, and infrastructure. | Control does not equal authorization. |
+| IAM | Verifies access and permissions. | Access alone does not answer risk, context, reversibility, or audit authority. |
+| Policy engine | Evaluates rules. | Rules are inputs; MCC resolves the final execution boundary. |
+| Observability | Records telemetry and logs. | Logging is not pre-execution authority. |
+| Safety filter | Attempts to reduce harmful behavior. | MCC governs whether intent may become execution. |
+
+---
+
+## Example API
+
+### `POST /evaluate`
+
+Example request:
+
+```bash
+curl -X POST http://localhost:8080/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "subject_id": "agent-7b",
+    "source": "autonomous_workflow",
+    "action": "upload_to_external",
+    "resource": "model_weights.bin",
+    "context": {
+      "environment": "production",
+      "data_classification": "restricted",
+      "customer_data": false,
+      "approval_state": "missing"
+    }
+  }'
+```
+
+Example response:
 
 ```json
 {
   "decision_id": "dec_01HX...",
-  "robot_id": "robot-001",
+  "outcome": "DENY",
+  "rule": "R-EXFIL-001",
+  "reason": "restricted model artifact cannot be uploaded to an external destination",
+  "risk_score": 0.99,
+  "authority_artifact": null,
+  "execution_gate": "CLOSED",
+  "audit_ref": "audit_01HX..."
+}
+```
+
+---
+
+## Example Decision Token
+
+When execution is authorized, MCC may issue a signed authority artifact.
+
+```json
+{
+  "decision_id": "dec_01HX...",
   "subject_id": "agent-001",
-  "action": "move",
+  "source": "workflow-17",
+  "action": "send_email",
   "action_hash": "sha256:...",
-  "policy_version": "robot-safety-v1",
+  "resource": "customer-notification",
+  "policy_version": "enterprise-policy-v1",
   "outcome": "ALLOW",
-  "risk_score": 0.12,
+  "risk_score": 0.18,
   "constraints": {
-    "max_speed_mps": 0.5,
-    "heartbeat_ms": 2000
+    "recipient_domain": "approved",
+    "max_recipients": 5,
+    "requires_logging": true
   },
   "issued_at": "2026-05-12T12:00:00Z",
-  "expires_at": "2026-05-12T12:00:05Z",
+  "expires_at": "2026-05-12T12:00:10Z",
   "audit_ref": "audit_01HX...",
   "signature": "..."
 }
 ```
 
-The execution layer should reject actions without a valid Decision Token.
-
-```text
-No valid token — no physical action.
-```
+The enforcement layer should reject execution without a valid authority artifact.
 
 ---
 
-## Decision Token Contains
+## Signing Model
 
-A hardened Decision Token should bind:
-
-- Signature
-- Decision payload
-- Outcome
-- Constraints
-- Short TTL
-- Replay-protected nonce
-- Subject identity
-- Robot identity
-- Policy hash
-- Action hash
-- Audit reference
-- Issued-at timestamp
-- Expiry timestamp
-
----
-
-## Token Signing Model
-
-The current reference implementation may use HMAC-signed tokens for local development and demonstration.
+The current reference implementation may use HMAC-signed artifacts for local development and demonstration.
 
 Production deployments should use asymmetric signing and hardware-backed key management.
 
@@ -335,99 +472,14 @@ It should not be treated as the final production trust model for independently v
 
 ---
 
-## Core Invariants
+## Example Policy Logic
 
-MCC-R is designed around strict execution invariants:
-
-- **No identity — no execution**
-- **No policy — no execution**
-- **No verified decision — no execution**
-- **No valid token — no physical action**
-- **No audit — no trust**
-- **Used nonce — deny**
-- **Expired token — deny**
-- **Fail-closed by default**
-
----
-
-## Fail-Closed by Default
-
-MCC-R is designed around fail-closed behavior.
-
-If identity cannot be verified, execution is denied.
-
-If no policy matches, execution is denied.
-
-If the decision token is missing, expired, malformed, replayed, or invalid, execution is denied.
-
-If audit binding fails, execution is denied.
-
-```text
-Unknown state = DENY
-Missing proof = DENY
-Invalid token = DENY
-Expired token = DENY
-Used nonce = DENY
-No audit = DENY
-```
-
-The safest default is no execution.
-
----
-
-## Example API
-
-### `POST /decide`
-
-Example request:
-
-```bash
-curl -X POST http://localhost:8080/decide \
-  -H "Content-Type: application/json" \
-  -d '{
-    "robot_id": "robot-001",
-    "subject_id": "agent-001",
-    "action": "move",
-    "params": {
-      "direction": "forward",
-      "speed_mps": 0.5
-    },
-    "robot_state": {
-      "balance_score": 0.92,
-      "velocity_mps": 0.2,
-      "human_distance_m": 3.5,
-      "payload_kg": 4.0
-    }
-  }'
-```
-
-Example response:
-
-```json
-{
-  "decision_id": "dec_01HX...",
-  "outcome": "ALLOW",
-  "reason": "movement_safe",
-  "risk_score": 0.1,
-  "constraints": {
-    "max_speed_mps": 0.5,
-    "heartbeat_ms": 2000
-  },
-  "decision_token": "signed-token-value",
-  "audit_ref": "audit_01HX..."
-}
-```
-
----
-
-## Example Safety Policy
-
-The following Rego policy is simplified for documentation.
+The following policy is simplified for documentation.
 
 Production policy bundles should use explicit priority resolution to avoid conflicting decisions.
 
 ```rego
-package mcc_r.safety
+package mcc.core
 
 default decision := {
   "outcome": "DENY",
@@ -436,59 +488,51 @@ default decision := {
   "constraints": {}
 }
 
-# Safe movement
-decision := {
-  "outcome": "ALLOW",
-  "reason": "movement_safe",
-  "risk_score": 0.10,
-  "constraints": {
-    "max_speed_mps": "0.5",
-    "heartbeat_ms": "2000"
-  }
-} {
-  input.action == "move"
-  input.robot_state.balance_score >= 0.75
-  input.robot_state.velocity_mps <= 0.5
-  input.robot_state.human_distance_m >= 2.0
-}
-
-# Human nearby — constrain speed
-decision := {
-  "outcome": "CONSTRAIN",
-  "reason": "human_nearby_reduce_speed",
-  "risk_score": 0.45,
-  "constraints": {
-    "max_speed_mps": "0.2",
-    "heartbeat_ms": "500"
-  }
-} {
-  input.action == "move"
-  input.robot_state.human_distance_m < 2.0
-  input.robot_state.human_distance_m >= 1.0
-}
-
-# Human too close — escalate
-decision := {
-  "outcome": "ESCALATE",
-  "reason": "human_too_close_requires_supervision",
-  "risk_score": 0.85,
-  "constraints": {
-    "requires_human_approval": "true"
-  }
-} {
-  input.action == "move"
-  input.robot_state.human_distance_m < 1.0
-}
-
-# Payload limit exceeded
 decision := {
   "outcome": "DENY",
-  "reason": "payload_limit_exceeded",
-  "risk_score": 1.0,
+  "reason": "restricted_artifact_external_upload_blocked",
+  "risk_score": 0.99,
   "constraints": {}
 } {
-  input.action == "carry_payload"
-  input.robot_state.payload_kg > 20
+  input.action == "upload_to_external"
+  input.resource == "model_weights.bin"
+  input.context.environment == "production"
+}
+
+decision := {
+  "outcome": "ESCALATE",
+  "reason": "high_value_payment_requires_dual_approval",
+  "risk_score": 0.88,
+  "constraints": {
+    "requires_dual_approval": true
+  }
+} {
+  input.action == "initiate_payment"
+  input.context.amount_usd > 100000
+  input.context.approval_state != "dual_approved"
+}
+
+decision := {
+  "outcome": "CONSTRAIN",
+  "reason": "email_send_allowed_with_scope_limits",
+  "risk_score": 0.32,
+  "constraints": {
+    "max_recipients": 5,
+    "approved_domains_only": true
+  }
+} {
+  input.action == "send_email"
+  input.context.environment == "production"
+}
+
+decision := {
+  "outcome": "ALLOW",
+  "reason": "low_risk_action_authorized",
+  "risk_score": 0.12,
+  "constraints": {}
+} {
+  input.action == "read_status"
+  input.context.environment != "restricted"
 }
 ```
 
@@ -496,20 +540,22 @@ decision := {
 
 ## Audit & Assurance
 
-MCC-R decisions should be logged with tamper-evident audit records.
+MCC decisions should be logged with tamper-evident audit records.
 
 Each audit record should include:
 
 - Decision ID
 - Subject identity
-- Robot identity
+- Source identity
 - Requested action
 - Action hash
+- Resource
 - Policy version
 - Outcome
 - Risk score
 - Constraints
-- Token reference
+- Approval state
+- Authority artifact reference
 - Timestamp
 - Previous audit hash
 - Current audit hash
@@ -522,37 +568,73 @@ No audit — no trust.
 
 ---
 
-## Integration Model
+## Strategic Adoption Surface
 
-MCC-R is designed to integrate with existing runtime and safety infrastructure.
+MCC Layer is relevant anywhere autonomous intent touches real execution.
 
-Possible integration points:
+Potential adoption surfaces include:
 
-- Robot controllers
-- Runtime buses
-- Agent frameworks
-- Industrial automation systems
-- PLC / SCADA environments
-- Cobots
-- AMRs / AGVs
-- Humanoid robotics stacks
-- Physical AI systems
-- Cloud robotics platforms
-- Simulation environments
-- ROS 2 adapters
-- Custom domain controllers
-
-MCC-R should sit before execution.
-
-It should evaluate proposed actions before they reach physical actuation.
+- AI labs
+- Enterprise agents
+- Cloud platforms
+- DevOps and production systems
+- Financial operations
+- Payments and treasury workflows
+- Healthcare operations
+- Legal operations
+- Regulated enterprise workflows
+- Robotics and physical AI
+- Critical infrastructure operations
 
 ---
 
-## Relationship to Certified Safety Systems
+## Platform Modules
 
-MCC-R is not a replacement for certified functional safety systems.
+MCC-Core is the universal meta-control layer.
 
-It does not replace:
+Vertical implementations package the same canon for specific execution surfaces.
+
+| Module | Domain | Execution Surface |
+|---|---|---|
+| `MCC-Core` | Universal layer | Meta-control boundary above AI / execution stack |
+| `MCC-R` | Robotics / Physical AI | Robots, cobots, AMRs, humanoids, industrial controllers |
+| `MCC-F` | Finance | Payments, treasury actions, approvals, audit evidence |
+| `MCC-Cloud` | Cloud / DevOps | APIs, infrastructure, databases, production systems |
+| `MCC-LegalOps` | Legal / Compliance | Contracts, filings, regulated legal workflows |
+| `MCC-HealthcareOps` | Healthcare operations | Patient workflows, admin workflows, regulated healthcare operations |
+| `MCC-Enterprise` | Enterprise agents | Email, workflows, SaaS actions, internal tools |
+
+Same canon.
+
+Different enforcement surfaces.
+
+---
+
+## Foundation / Prior Art
+
+MCC Layer prior-art work is published here:
+
+```text
+https://github.com/mcc-prior-art/mcc-layer
+```
+
+The public prior-art foundation establishes the core execution-governance principle:
+
+```text
+Intent is not authority.
+Execution requires a decision.
+No verified decision — no execution.
+```
+
+This repository should be read as an extension and refinement of that foundation toward a broader MCC-Core / MCC Layer architecture.
+
+---
+
+## Relationship to Safety Systems
+
+MCC Layer is not a replacement for certified safety systems.
+
+In physical domains such as robotics or industrial automation, MCC does not replace:
 
 - Emergency stop circuits
 - Safety PLCs
@@ -565,94 +647,29 @@ It does not replace:
 - Formal verification
 - Independent validation
 
-MCC-R is designed to complement these systems by adding a verifiable execution governance layer above runtime execution.
+MCC adds a verifiable execution governance layer above runtime execution.
 
 It helps answer a different question:
 
 ```text
-Was this action authorized, policy-compliant, risk-evaluated, constrained, and auditable before execution?
+Was this action authorized, policy-compliant, risk-evaluated, constrained, approved, and auditable before execution?
 ```
 
 ---
 
 ## Certification Status
 
-MCC-R is not currently certified under IEC 61508, ISO 13849, ISO 10218, or any equivalent functional safety certification regime.
+MCC-Core is not currently certified under IEC 61508, ISO 13849, ISO 10218, SOC 2, ISO 27001, or any equivalent safety, security, or compliance certification regime.
 
-Any production deployment in safety-critical or physical environments would require independent safety assessment, certification review, and validation by qualified bodies.
+Any production deployment in safety-critical, regulated, financial, healthcare, industrial, or physical environments would require independent engineering, security, legal, compliance, and safety validation.
 
-MCC-R should be treated as an execution governance architecture and reference implementation, not as a certified safety product.
-
----
-
-## What MCC-R Is Not
-
-MCC-R is not:
-
-- A certified safety system
-- A replacement for E-stop
-- A replacement for safety PLCs
-- A robot operating system
-- A robotics control stack
-- A motion planner
-- A perception system
-- A formal verification engine
-- A guarantee of safe behavior
-- A substitute for independent safety review
-
-MCC-R is an execution governance layer.
-
-Its purpose is to make execution decisions explicit, enforceable, and auditable.
-
----
-
-## What MCC-R Is
-
-MCC-R is:
-
-- A decision boundary
-- A governance layer
-- A policy-gated execution control model
-- A reference implementation
-- An open protocol draft
-- A framework for verifiable execution authorization
-- A way to separate AI intent from execution authority
-
-The core idea is simple:
-
-```text
-The agent may intend.
-The system must decide.
-Only verified decisions execute.
-```
-
----
-
-## Security Model
-
-MCC-R assumes that autonomous intent is not trusted by default.
-
-Every proposed action should be evaluated before execution.
-
-Security assumptions:
-
-- AI model output is not authority
-- Agent intent is not authority
-- Workflow intent is not authority
-- Runtime request is not authority
-- Identity must be verified
-- Policy must be matched
-- Risk must be evaluated
-- Tokens must be valid
-- Audit must be preserved
-
-Execution is treated as a governed event, not a side effect of model output.
+MCC-Core should be treated as an execution governance architecture, open protocol draft, and reference implementation — not as a certified safety or compliance product.
 
 ---
 
 ## Reference Implementation Status
 
-MCC-R is currently provided as a reference implementation and open protocol draft.
+MCC-Core is currently provided as a reference implementation and open protocol draft.
 
 It is intended for:
 
@@ -661,28 +678,31 @@ It is intended for:
 - Architecture review
 - Integration experiments
 - Execution-governance evaluation
-- Robotics safety architecture discussion
+- Enterprise AI control architecture discussion
+- Robotics and physical AI governance discussion
+- Board-level autonomy maturity review
 
-It should not be treated as a certified functional safety system.
+It should not be treated as a certified production control system.
 
-It should not be used as the sole safety mechanism for real-world robots.
+It should not be used as the sole safety, security, legal, or compliance mechanism for real-world deployments.
 
 ---
 
 ## Production Deployment Requirements
 
-Production deployments should include independent engineering, security, and safety validation.
+Production deployments should include independent engineering, security, legal, compliance, and safety validation.
 
 Recommended production controls:
 
 - mTLS
 - SPIFFE / SPIRE identity
 - Signed policy bundles
-- Hardware attestation
-- Vault, KMS, or HSM-backed signing keys
-- Asymmetric Decision Token signatures
+- Strong subject identity
+- Source attribution
+- Hardware-backed or cloud KMS-backed signing keys
+- Asymmetric authority artifact signatures
 - Replay-protected nonce registry
-- Short-lived tokens
+- Short-lived authority artifacts
 - Immutable audit logging
 - Tamper-evident hash chains
 - WORM audit storage
@@ -692,31 +712,8 @@ Recommended production controls:
 - Alerting
 - SIEM export
 - Independent security review
-- Independent functional safety review
-
----
-
-## Roadmap
-
-Planned areas of development:
-
-- Formal protocol specification
-- Improved policy priority resolver
-- Decision Token verification library
-- Ed25519 / ECDSA token signing
-- Replay-protected nonce registry
-- Audit hash-chain hardening
-- Docker-based local deployment
-- Kubernetes deployment manifests
-- Helm chart
-- Metrics and observability
-- Simulation examples
-- Robotics runtime adapters
-- ROS 2 integration examples
-- Enterprise policy templates
-- Independent security review
-- Benchmarking
-- Public protocol documentation
+- Independent compliance review
+- Domain-specific safety review where applicable
 
 ---
 
@@ -724,7 +721,7 @@ Planned areas of development:
 
 Public performance benchmarks are not yet included in this README.
 
-Until benchmark results are published, MCC-R should not be described as low-latency, high-throughput, or production-performance verified.
+Until benchmark results are published, MCC-Core should not be described as low-latency, high-throughput, or production-performance verified.
 
 Planned benchmark targets:
 
@@ -738,6 +735,34 @@ Planned benchmark targets:
 
 ---
 
+## Roadmap
+
+Planned areas of development:
+
+- Formal protocol specification
+- MCC-Core reference server
+- Authority artifact verification library
+- Improved policy priority resolver
+- Ed25519 / ECDSA token signing
+- Replay-protected nonce registry
+- Audit hash-chain hardening
+- Docker-based local deployment
+- Kubernetes deployment manifests
+- Metrics and observability
+- Simulation scenarios
+- Enterprise policy templates
+- Robotics module: MCC-R
+- Finance module: MCC-F
+- Cloud / DevOps module
+- LegalOps module
+- HealthcareOps module
+- Board-ready evidence export
+- Public benchmarking
+- Independent security review
+- Public protocol documentation
+
+---
+
 ## Installation
 
 Installation instructions depend on the current repository structure.
@@ -745,8 +770,8 @@ Installation instructions depend on the current repository structure.
 Recommended local development flow:
 
 ```bash
-git clone https://github.com/axlogiq/mcc-r.git
-cd mcc-r
+git clone https://github.com/axlogiq/mcc-layer.git
+cd mcc-layer
 ```
 
 If using Python:
@@ -775,7 +800,7 @@ uvicorn server.app:app --host 0.0.0.0 --port 8080
 
 ## Licensing
 
-MCC-R is released under the MIT License for research, prototyping, and evaluation use.
+MCC-Core / MCC Layer is released under the MIT License for research, prototyping, and evaluation use unless otherwise stated in this repository.
 
 Commercial, enterprise, production, closed-source integration, or managed deployment use may require a separate commercial license from AXLOGIQ.
 
@@ -809,11 +834,11 @@ founder@axlogiq.com
 
 ## Final Principle
 
-MCC-R is not just a safety feature.
+MCC Layer is not just safety.
 
-It is an architectural maturity layer for autonomous systems.
+It is architectural maturity for autonomous systems.
 
-Because autonomy without verifiable control is not intelligence.
+Because autonomy without verifiable execution authority is not intelligence.
 
 It is risk waiting for scale.
 
