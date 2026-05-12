@@ -36,7 +36,7 @@
 
 # MCC-R — Meta-Cognitive Control for Robotics
 
-**MCC-R** is an open execution-governance protocol draft and reference implementation for robotic and physical AI systems.
+**MCC-R** is an open execution-governance protocol draft and reference implementation for robotic and physical AI systems, extending the public MCC Layer prior-art foundation into robotics and physical AI.
 
 It is designed to sit between autonomous AI intent and real-world execution.
 
@@ -45,6 +45,48 @@ A robot, agent, workflow, or physical system does not execute an action merely b
 Execution requires a verified decision.
 
 MCC-R evaluates identity, policy, risk, context, constraints, and audit requirements before any action is allowed to pass into the execution layer.
+
+---
+
+## Foundation / Prior Art
+
+MCC-R extends the public MCC Layer prior-art work into robotics and physical AI execution governance.
+
+The foundational MCC Layer repository is available here:
+
+```text
+https://github.com/mcc-prior-art/mcc-layer
+```
+
+The MCC Layer establishes the core execution-governance principle:
+
+```text
+Intent is not authority.
+Execution requires a decision.
+No verified decision — no execution.
+```
+
+MCC-R applies that principle to robotic and physical AI systems by introducing robotics-specific execution controls:
+
+- Robot identity
+- Physical execution gates
+- Decision Tokens
+- Action hashing
+- Policy binding
+- Short-lived authorization
+- Replay protection
+- Risk and context evaluation
+- Audit references
+- Fail-closed execution behavior
+
+The relationship is simple:
+
+```text
+MCC Layer = general execution governance boundary
+MCC-R     = robotics-focused execution governance extension
+```
+
+MCC-R should be read as a robotics-specific reference implementation and architectural extension of the MCC Layer prior-art foundation.
 
 ---
 
