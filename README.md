@@ -21,10 +21,11 @@
 
 <br>
 
-![Status](https://img.shields.io/badge/status-reference%20implementation-blue.svg)
+![Status](https://img.shields.io/badge/status-reference%20architecture-blue.svg)
 ![Protocol](https://img.shields.io/badge/protocol-open%20draft-cyan.svg)
 ![Boundary](https://img.shields.io/badge/boundary-above%20AI%20execution-purple.svg)
-![Certification](https://img.shields.io/badge/safety%20certification-not%20certified-red.svg)
+![Runtime](https://img.shields.io/badge/runtime-in%20progress-orange.svg)
+![Certification](https://img.shields.io/badge/certification-not%20certified-red.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 </div>
@@ -87,6 +88,34 @@ MCC-F     = finance-grade implementation
 The goal is not to create another agent framework.
 
 The goal is to define the missing control boundary between autonomous AI systems and execution authority.
+
+---
+
+## Current State
+
+This repository currently contains the public MCC Layer reference architecture and open protocol draft.
+
+Current status:
+
+- [x] Reference architecture
+- [x] Core execution-governance canon
+- [x] Decision outcomes: `ALLOW / DENY / ESCALATE / CONSTRAIN`
+- [x] Authority artifact / decision token model
+- [x] Policy examples
+- [x] Operational model
+- [x] Prior-art reference
+- [ ] Production-hardened runtime
+- [ ] Public benchmark report
+- [ ] Docker image
+- [ ] PyPI package
+- [ ] Independent security audit
+- [ ] Certification
+
+The current release should be treated as an architectural reference and open protocol draft.
+
+It should not be treated as a production-certified platform.
+
+A working `/evaluate` endpoint is part of the intended MCC-Core reference runtime. If the endpoint is not present in the current repository version, the API examples below should be read as the target interface for the reference implementation.
 
 ---
 
@@ -318,7 +347,7 @@ These invariants define the MCC execution boundary.
 
 ## MCC-Core Decision Boundary
 
-MCC-Core evaluates every execution request against five core dimensions:
+MCC-Core evaluates execution requests across five core dimensions:
 
 | Layer | Function | Purpose |
 |---|---|---|
@@ -416,52 +445,36 @@ ALLOW / DENY / ESCALATE / CONSTRAIN
 
 ### Escalation Model
 
-`ESCALATE` means that autonomous execution is not authorized yet.
+`ESCALATE` means autonomous execution is not authorized yet.
 
-The proposed action is routed to a human, supervisory, legal, financial, clinical, security, or domain authority depending on policy.
+The proposed action must be routed to a human, supervisory, legal, financial, clinical, security, or domain authority depending on policy.
 
 A typical escalation flow:
 
 ```text
-Proposed intent
+Intent proposed
     |
     v
 MCC decision: ESCALATE
     |
     v
-Approval request created
+Human / domain approval required
     |
     v
-Queue / notification / ticket / chat / dashboard
-    |
-    v
-Authorized reviewer approves, denies, or modifies constraints
+Approve, deny, or modify constraints
     |
     v
 MCC issues updated decision
     |
     v
 Authority token issued or execution remains blocked
-    |
-    v
-Audit record finalized
 ```
 
-Escalation systems may include:
-
-- approval queues
-- Slack / Teams notifications
-- email approval flows
-- ticketing systems
-- SOC / compliance dashboards
-- CFO / legal / clinical / engineering approval paths
-- SLA timers
-- quorum or two-key approval
-- break-glass workflows with mandatory audit
+Escalation may be implemented through approval queues, Slack / Teams, ticketing systems, SOC dashboards, SLA timers, quorum approvals, or break-glass workflows.
 
 Human approval does not bypass MCC.
 
-Human approval becomes an input to a new MCC decision.
+Approval becomes an input to a new MCC decision.
 
 ```text
 Approval is not execution.
@@ -613,7 +626,11 @@ The safest default is no execution.
 
 ---
 
-## Example API
+## Target API Interface
+
+The following interface represents the intended MCC-Core reference runtime API.
+
+If the current repository version does not yet expose this endpoint, treat this section as the target runtime contract for the reference implementation.
 
 ### `POST /evaluate`
 
@@ -818,7 +835,7 @@ MCC decides.
 
 ## Reference Implementation Status
 
-MCC-Core is currently provided as a reference implementation and open protocol draft.
+MCC-Core is currently provided as a reference architecture and open protocol draft.
 
 It is intended for:
 
@@ -898,6 +915,8 @@ Planned benchmark targets:
 Planned areas of development:
 
 - formal protocol specification
+- working reference runtime
+- `/evaluate` endpoint
 - improved policy priority resolver
 - authority token verification library
 - Ed25519 / ECDSA token signing
@@ -922,36 +941,42 @@ Planned areas of development:
 
 ## Installation
 
-Installation instructions depend on the current repository structure.
+Runtime installation instructions will be added when the working MCC-Core reference runtime is published.
 
-Recommended local development flow:
+Current repository status:
+
+- reference architecture
+- open protocol draft
+- execution-governance canon
+- policy examples
+- authority artifact model
+- target API contract
+- operational model
+
+The intended local development flow will be:
 
 ```bash
 git clone https://github.com/axlogiq/mcc-layer.git
 cd mcc-layer
 ```
 
-If using Python:
+The intended Python runtime flow will be:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+uvicorn server.app:app --host 0.0.0.0 --port 8080
 ```
 
-If using Docker:
+The intended Docker runtime flow will be:
 
 ```bash
 docker compose up
 ```
 
-If using a local API server:
-
-```bash
-uvicorn server.app:app --host 0.0.0.0 --port 8080
-```
-
-> Replace these commands with the exact commands supported by the current repository implementation.
+> Runtime commands above describe the target reference implementation flow.  
+> They should be treated as pending until the working `/evaluate` reference server, dependency files, and Docker configuration are present in the repository.
 
 ---
 
