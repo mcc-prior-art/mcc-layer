@@ -184,6 +184,7 @@ See:
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md)
 - [`docs/DECISION_TOKEN.md`](docs/DECISION_TOKEN.md)
+- [`docs/OPA_INTEGRATION.md`](docs/OPA_INTEGRATION.md)
 - [`docs/RELATIONSHIP_TO_EXISTING_SYSTEMS.md`](docs/RELATIONSHIP_TO_EXISTING_SYSTEMS.md)
 - [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md)
 
@@ -193,7 +194,11 @@ See:
 
 The current reference implementation demonstrates the MCC-Core execution authority model.
 
-Implemented or demonstrated capabilities may include signed decision tokens, Ed25519 signature verification, canonical JSON / optional CBOR serialization, payload hash binding, action hash binding, policy hash binding, policy trust set validation, local policy hash consistency checks, nonce / replay protection, optional Redis-backed distributed nonce registry, append-only audit log, hash-chained audit entries, audit-before-actuation flow, fail-closed execution gate, key rotation, key revocation, token revocation, recovery tokens, safe-state behavior, constrained execution, attestation placeholder, OPA integration placeholder that fails closed, and a self-test suite.
+Implemented or demonstrated capabilities may include signed decision tokens, Ed25519 signature verification, canonical JSON / optional CBOR serialization, payload hash binding, action hash binding, policy hash binding, policy trust set validation, local policy hash consistency checks, nonce / replay protection, optional Redis-backed distributed nonce registry, append-only audit log, hash-chained audit entries, audit-before-actuation flow, fail-closed execution gate, key rotation, key revocation, token revocation, recovery tokens, safe-state behavior, constrained execution, attestation placeholder, OPA/Rego policy adapter with fail-closed evaluation, and a self-test suite.
+
+The current runtime includes a real OPA/Rego adapter. When `MCC_USE_OPA=true`, MCC-Core calls OPA at `/v1/data/mcc/decision` and converts the policy result into `ALLOW / DENY / ESCALATE / CONSTRAIN`.
+
+OPA unavailability, timeout, invalid output, missing result, or invalid decision fails closed to `DENY`.
 
 The reference implementation is designed for simulation, review, PoC work, and integration planning.
 
@@ -225,7 +230,7 @@ Append-only audit enabled.
 Distributed nonce registry ready for Redis.
 PolicyTrustSet strict key_id verification.
 Local policy hash consistency check enabled.
-OPA placeholder fails closed.
+OPA/Rego adapter enabled with fail-closed evaluation.
 ```
 
 If this file or exact output is not present in the current repository state, treat this section as the intended reference runtime interface and operating target.
