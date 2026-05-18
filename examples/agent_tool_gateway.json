@@ -1,0 +1,13 @@
+{
+  "subject": "agent/support-worker",
+  "action": "send_email",
+  "payload": {
+    "recipient": "customer@example.com",
+    "template_id": "support_followup",
+    "case_id": "CASE-2026-001"
+  },
+  "context": {
+    "environment": "production",
+    "risk_level": "low"
+  }
+}
