@@ -2,16 +2,17 @@
 
 ## Meta-Cognitive Control Layer for Autonomous Execution
 
-**MCC-Core** is an execution governance layer for autonomous AI systems.
+**MCC-Core** is a verifiable execution governance layer for autonomous AI systems.
 
-It defines a verifiable decision boundary between autonomous intent and real-world execution.
+It defines the control boundary between autonomous intent and real-world execution.
 
 > Intent is not authority.  
 > Execution requires a verified decision.  
 > No verified decision — no execution.
 
-MCC-Core is not another agent framework.  
-It is the control boundary that determines whether an AI-generated intent may become authorized execution.
+MCC-Core is not another agent framework.
+
+It is the authority layer that determines whether an AI-generated intent, agent action, workflow request, or autonomous system command may become authorized execution.
 
 ---
 
@@ -27,6 +28,7 @@ This repository is intended for:
 - enterprise PoC design
 - agent execution governance research
 - robotics / physical AI control-boundary exploration
+- public technical record of the MCC-Core execution-governance model
 
 This repository should **not** be treated as:
 
@@ -63,6 +65,141 @@ MCC-Core separates proposal from authority.
 The model proposes.
 MCC evaluates.
 Only verified decisions execute.
+```
+
+---
+
+## Foundation / Prior Art
+
+The public MCC Layer prior-art repository is available here:
+
+```text
+https://github.com/mcc-prior-art/mcc-layer
+```
+
+The foundational principle is:
+
+```text
+Intent is not authority.
+Execution requires a verified decision.
+No verified decision — no execution.
+```
+
+This repository develops that principle into the broader MCC-Core / MCC Layer architecture:
+
+```text
+MCC Layer = universal execution governance boundary
+MCC-Core  = reference meta-control implementation
+MCC-R     = robotics / physical AI implementation profile
+MCC-F     = finance / payment execution profile
+MCC-I     = infrastructure / cloud execution profile
+```
+
+The goal is not to create another agent framework.
+
+The goal is to define the missing control boundary between autonomous AI systems and execution authority.
+
+---
+
+## Current State
+
+This repository currently contains the public MCC Layer reference architecture and open protocol draft.
+
+Current status:
+
+- reference architecture
+- core execution-governance canon
+- decision outcomes: `ALLOW / DENY / ESCALATE / CONSTRAIN`
+- authority artifact / decision token model
+- policy examples
+- operational model
+- policy bundle model
+- nonce registry model
+- prior-art reference
+- working reference runtime
+
+Planned / future work:
+
+- production-hardened runtime
+- signed policy bundle supply chain
+- production distributed nonce registry
+- public benchmark report
+- Docker image
+- PyPI package
+- independent security audit
+- certification review, where applicable
+
+The current release should be treated as an architectural reference, open protocol draft, and reference implementation.
+
+It should not be treated as a production-certified platform.
+
+A working `/evaluate` endpoint is part of the intended MCC-Core reference runtime. If the endpoint is not present in the current repository version, the API examples below should be read as the target interface for the reference implementation.
+
+---
+
+## Executive Summary
+
+Autonomous AI systems are increasingly able to act.
+
+They can generate plans, call tools, modify systems, send messages, write code, update databases, coordinate agents, and interact with physical infrastructure.
+
+Existing stacks often focus on reasoning, orchestration, monitoring, or policy evaluation.
+
+MCC-Core focuses on the missing boundary:
+
+```text
+May this intent become execution?
+```
+
+The answer must be explicit, verifiable, scoped, auditable, and enforceable.
+
+MCC-Core introduces that boundary.
+
+---
+
+## The Problem
+
+AI systems are crossing from advisory behavior into operational authority.
+
+The risk is not only that a model may produce a wrong answer.
+
+The deeper risk is that a model-generated intent may be executed without a separate authority decision.
+
+Examples:
+
+- an agent sends an external email
+- a workflow updates production data
+- a tool-using model runs shell commands
+- a payment agent initiates a transfer
+- a software agent deletes files
+- a robot performs a physical movement
+- a multi-agent system coordinates a high-impact action
+- an automation modifies enterprise infrastructure
+
+In these cases, the final risk point is no longer the model response.
+
+The final risk point is execution.
+
+---
+
+## The MCC-Core Answer
+
+MCC-Core introduces an execution governance boundary.
+
+It evaluates proposed actions before they reach execution surfaces.
+
+The system returns one of four outcomes:
+
+```text
+ALLOW / DENY / ESCALATE / CONSTRAIN
+```
+
+If execution is allowed, MCC-Core issues or validates a scoped, signed, TTL-bound authority artifact.
+
+If verification fails, execution remains closed.
+
+```text
+No verified decision — no execution.
 ```
 
 ---
@@ -141,10 +278,10 @@ MCC-R is a robotics and physical AI profile built on top of MCC-Core principles.
 Other future profiles may include:
 
 ```text
-MCC-F   = finance / payment execution profile
-MCC-I   = infrastructure / cloud execution profile
-MCC-H   = healthcare operations profile
-MCC-L   = legal operations profile
+MCC-F = finance / payment execution profile
+MCC-I = infrastructure / cloud execution profile
+MCC-H = healthcare operations profile
+MCC-L = legal operations profile
 ```
 
 The common principle remains the same:
@@ -296,6 +433,37 @@ Fail-closed by default.
 ```
 
 These invariants define the MCC execution boundary.
+
+---
+
+## Authority Model
+
+MCC-Core treats authority as a verifiable object, not an assumption.
+
+Execution authority must be:
+
+- scoped to a specific subject
+- scoped to a specific audience
+- bound to a specific action
+- bound to a specific payload hash
+- bound to a specific policy hash
+- constrained by explicit limits
+- time-limited
+- nonce-protected
+- signed by a trusted authority key
+- auditable before actuation
+
+Authority is not inherited merely because a system is internal.
+
+```text
+Internal does not mean authorized.
+```
+
+Authority is not implied merely because a model generated an action.
+
+```text
+Intent does not grant permission.
+```
 
 ---
 
@@ -550,6 +718,26 @@ Production environments must choose the appropriate policy authoring, signing, d
 
 ---
 
+## Policy Trust Set
+
+A policy trust set defines which policy hashes are currently accepted.
+
+MCC-Core may reject execution when:
+
+- the policy trust set is missing
+- the trust set is expired
+- the policy hash is not accepted
+- the policy hash is revoked
+- the local policy hash does not match the token policy hash
+
+This creates an explicit relationship between policy state and execution authority.
+
+```text
+Policy mismatch — deny.
+```
+
+---
+
 ## Nonce / Replay Protection
 
 MCC-Core uses nonces to prevent replay.
@@ -644,6 +832,31 @@ EXECUTION_EXCEPTION
 The audit log is append-only.
 
 No existing entry is modified after creation.
+
+---
+
+## Emergency and Recovery Principle
+
+MCC-Core treats emergency recovery as a controlled process.
+
+Recovery should not become a hidden bypass.
+
+A recovery path should be:
+
+- explicitly authorized
+- signed
+- time-limited
+- nonce-protected
+- operator-bound where applicable
+- auditable
+- reviewable after the fact
+
+```text
+Override is not bypass.
+Recovery is not invisibility.
+```
+
+The reference implementation includes signed recovery tokens for controlled restoration after safe-state or audit-compromise scenarios.
 
 ---
 
@@ -831,7 +1044,9 @@ Agent frameworks can plan actions.
 MCC-Core decides whether those actions are authorized to execute.
 
 ```text
-Agent proposes. MCC evaluates. Only verified decisions execute.
+Agent proposes.
+MCC evaluates.
+Only verified decisions execute.
 ```
 
 ---
@@ -853,6 +1068,38 @@ MCC-Core is designed to work with existing infrastructure.
 MCC-Core is not the whole stack.
 
 It is the decision boundary inside the stack.
+
+---
+
+## Integration Pattern
+
+MCC-Core can be integrated as a gate before high-impact execution.
+
+Typical integration points:
+
+- before tool calls
+- before API calls
+- before database writes
+- before file deletion
+- before payment creation
+- before infrastructure mutation
+- before robot actuation
+- before cross-agent orchestration
+- before external communication
+- before regulated workflow transitions
+
+A simple integration pattern:
+
+```text
+1. Agent proposes action.
+2. Application sends action request to MCC-Core.
+3. MCC-Core evaluates identity, policy, risk, context, constraints, and replay state.
+4. MCC-Core returns ALLOW / DENY / ESCALATE / CONSTRAIN.
+5. Execution gate enforces the result.
+6. Audit record is preserved.
+```
+
+This keeps the agent framework focused on planning and the MCC layer focused on authority.
 
 ---
 
@@ -885,6 +1132,18 @@ Every decision should be explainable, inspectable, and traceable after the fact.
 ### 7. Separate proposal from authority
 
 The system that proposes an action should not automatically possess execution authority.
+
+### 8. Treat internal systems as untrusted until verified
+
+An internal agent, service, workflow, or controller may still be compromised, misconfigured, unauthorized, or operating outside scope.
+
+### 9. Make authority portable but bounded
+
+Decision tokens should be usable across execution gates only when audience, scope, TTL, nonce, policy, and signature requirements are satisfied.
+
+### 10. Make uncertainty non-permissive
+
+When the system cannot verify the authority state, it should not allow execution by default.
 
 ---
 
@@ -949,6 +1208,7 @@ Roadmap items are not claims of current production readiness.
 │   ├── DECISION_TOKEN.md
 │   ├── POLICY_TRUST_SET.md
 │   ├── AUDIT_MODEL.md
+│   ├── USE_CASES.md
 │   └── LIMITATIONS.md
 ├── examples/
 │   ├── agent_tool_gateway.json
@@ -960,25 +1220,9 @@ Roadmap items are not claims of current production readiness.
 
 ---
 
-## Public Positioning
+## Public Technical Record
 
-MCC-Core belongs to the emerging category of execution governance for autonomous systems.
-
-The core problem is not only whether AI can reason.
-
-The core problem is whether AI-generated intent should be allowed to become execution.
-
-```text
-Reasoning creates intent.
-MCC governs authority.
-Execution requires verification.
-```
-
----
-
-## Immigration / Evidence Note
-
-This repository may be used as a public technical artifact demonstrating original work in AI governance, autonomous systems control, and execution authority architecture.
+This repository may serve as a public technical record of the MCC-Core architecture, reference implementation, terminology, and execution-governance model.
 
 It should be described accurately as:
 
@@ -999,12 +1243,31 @@ Accurate positioning preserves credibility.
 
 ---
 
+## Public Positioning
+
+MCC-Core belongs to the emerging category of execution governance for autonomous systems.
+
+The core problem is not only whether AI can reason.
+
+The core problem is whether AI-generated intent should be allowed to become execution.
+
+```text
+Reasoning creates intent.
+MCC governs authority.
+Execution requires verification.
+```
+
+---
+
 ## Citation / Attribution
 
-Project: **AXLOGIQ MCC-Core**  
-Profile: **MCC-R — Robotics / Physical AI Reference Profile**  
-Founder / Architect: **Alexandr Ponomariov**  
-Organization: **AXLOGIQ**
+Project: **AXLOGIQ MCC-Core**
+
+Profile: **MCC-R — Robotics / Physical AI Reference Profile**
+
+Founder / Architect: **Alexandr Ponomariov**
+
+Organization / Project: **AXLOGIQ**
 
 Web presence:
 
@@ -1018,6 +1281,10 @@ Web presence:
 ## License
 
 License to be defined.
+
+This repository is published for public technical review and prior-art documentation.
+
+No open-source license has been granted yet.
 
 Until a license is selected, all rights are reserved by the author.
 
