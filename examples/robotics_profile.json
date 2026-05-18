@@ -1,0 +1,14 @@
+{
+  "subject": "robot/arm-01",
+  "action": "move",
+  "payload": {
+    "zone": "A3",
+    "speed_mps": 0.3,
+    "force_n": 5
+  },
+  "constraints": {
+    "allowed_zone": "A3",
+    "max_speed_mps": 0.4,
+    "max_force_n": 10
+  }
+}
