@@ -290,13 +290,17 @@ Public technical record: **AXLOGIQ / MCC-Core / May 2026**
 
 ## License
 
-License to be defined.
+This repository is licensed under the **MCC Evaluation License 1.0**.
 
-This repository is published for public technical review and prior-art documentation.
+The materials are publicly available for **Non-Production Use**, including research, evaluation, testing, internal experimentation, architectural review, protocol discussion, and prior-art documentation.
 
-No open-source license has been granted unless explicitly stated in the repository.
+**Production Use is not granted under this license** and requires separate commercial terms.
 
-Until a license is selected, all rights are reserved by the author.
+No express or implied patent license is granted.
+
+All rights not expressly granted are reserved.
+
+See [`LICENSE`](LICENSE) for the full license text.
 
 ---
 
