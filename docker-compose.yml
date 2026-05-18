@@ -1,1 +1,34 @@
+services:
+  opa:
+    image: openpolicyagent/opa:latest-rootless
+    command:
+      - "run"
+      - "--server"
+      - "--addr=0.0.0.0:8181"
+      - "--set=decision_logs.console=true"
+      - "/policies"
+    volumes:
+      - ./policies:/policies:ro
+    ports:
+      - "8181:8181"
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  mcc:
+    build: .
+    environment:
+      MCC_USE_OPA: "true"
+      MCC_OPA_URL: "http://opa:8181"
+      MCC_OPA_DATA_PATH: "mcc/decision"
+      MCC_OPA_TIMEOUT_SECONDS: "1.5"
+      MCC_REDIS_URL: "redis://redis:6379"
+      MCC_API_KEY: "demo-key"
+      MCC_HMAC_SECRET: "change-me"
+    depends_on:
+      - opa
+      - redis
+    ports:
+      - "8000:8000"
