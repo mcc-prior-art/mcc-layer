@@ -1,0 +1,61 @@
+{
+  "description": "MCC-Core OPA/Rego policy adapter smoke vectors",
+  "vectors": [
+    {
+      "name": "payment_allow",
+      "request": {
+        "session_id": "s1",
+        "intent": "send_payment",
+        "args": {
+          "amount": 750
+        }
+      },
+      "expected_decision": "ALLOW"
+    },
+    {
+      "name": "payment_escalate",
+      "request": {
+        "session_id": "s2",
+        "intent": "send_payment",
+        "args": {
+          "amount": 7500
+        }
+      },
+      "expected_decision": "ESCALATE"
+    },
+    {
+      "name": "payment_deny",
+      "request": {
+        "session_id": "s3",
+        "intent": "send_payment",
+        "args": {
+          "amount": 25000
+        }
+      },
+      "expected_decision": "DENY"
+    },
+    {
+      "name": "delete_database_deny",
+      "request": {
+        "session_id": "s4",
+        "intent": "delete_database",
+        "args": {
+          "database": "production-main"
+        }
+      },
+      "expected_decision": "DENY"
+    },
+    {
+      "name": "sandbox_bash_constrain",
+      "request": {
+        "session_id": "s5",
+        "intent": "execute_bash",
+        "args": {
+          "environment": "sandbox",
+          "command": "python --version"
+        }
+      },
+      "expected_decision": "CONSTRAIN"
+    }
+  ]
+}
