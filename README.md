@@ -132,6 +132,8 @@ MCC-Core does **not** replace:
 - the execution system;
 - certified functional safety systems.
 
+MCC-Core governs the verified boundary between AI intent and authorized execution.
+
 MCC-Core governs the boundary between **intent** and **execution**.
 
 ---
