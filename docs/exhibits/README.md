@@ -45,3 +45,14 @@ MCC-Core is the underlying technical decision engine that powers the verified ex
 ```text
 G3 = principle
 G4 = operational validation
+```
+
+Together, G3 and G4 show that remembered context is not execution authority. Infrastructure execution requires a current verified decision.
+
+---
+
+## Claim Hygiene
+
+These exhibits are public reference architecture / technical review materials.
+
+They should not be described as certified production safety materials, government-approved materials, third-party-endorsed materials, or production-certified infrastructure controls.
