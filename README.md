@@ -22,6 +22,10 @@
 </p>
 
 <p align="center">
+  <img src="docs/exhibits/AXLOGIQ_Governance_v2.png" alt="AXLOGIQ Execution Governance Infrastructure" width="100%">
+</p>
+
+<p align="center">
   <a href="docs/exhibits/README.md"><strong>View MCC-I Exhibits G3-G4.1 →</strong></a>
   ·
   <a href="docs/exhibits/AXLOGIQ_Governance_v2.png"><strong>View Governance Exhibit →</strong></a>
