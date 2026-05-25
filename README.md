@@ -3,7 +3,8 @@
 **Public technical record established:** May 2026  
 **Author:** Alexandr Ponomariov / AXLOGIQ Inc.  
 **Repository:** https://github.com/mcc-prior-art/mcc-layer  
-**Version:** `v1.5.0` | **Date:** `2026-05-25`
+**Version:** `v1.5.0` | **Date:** `2026-05-25`  
+**Commit:** `45b5ff4`
 
 ---
 
