@@ -66,11 +66,40 @@ When execution is authorized, MCC-Core issues a signed, scoped, time-limited, re
 
 The execution gate does not infer permission. It verifies authority.
 
-Current status:
+Current repository status:
 
 **Public reference architecture + prototype runtime for local testing, technical review, simulation, and enterprise PoC design.**
 
 This repository is not a certified production system, formally audited security product, government-approved system, or regulated compliance product.
+
+---
+
+## The Problem
+
+Modern AI systems are rapidly moving from **generating answers** to **executing real-world actions**.
+
+Current agent architectures often lack a verifiable, enforceable boundary between intent and authorized execution.
+
+Without such a boundary, model output, conversation history, remembered context, previous approvals, tool plans, or high-confidence reasoning may be treated as implicit authority.
+
+That creates execution risk in:
+
+- infrastructure and cloud operations
+- finance and payments
+- procurement and vendor workflows
+- enterprise systems
+- software deployment pipelines
+- controlled autonomous systems
+
+MCC-Core introduces a pre-execution authority layer that verifies whether an action is authorized before it can execute.
+
+The model may propose.
+
+MCC-Core evaluates.
+
+The gate enforces.
+
+The audit proves.
 
 ---
 
@@ -120,6 +149,35 @@ Then open:
 http://localhost:8000
 ```
 
+Example API request:
+
+```bash
+curl -X POST http://localhost:8000/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actor": "infra_agent",
+    "action": "terraform_apply",
+    "target": "production_cluster",
+    "environment": "production",
+    "memory_policy": "infra-policy-v3",
+    "current_policy": "infra-policy-v4",
+    "memory_ctx": "ctx_91f3a8",
+    "current_ctx": "ctx_b72c19"
+  }'
+```
+
+Representative response:
+
+```json
+{
+  "outcome": "ESCALATE",
+  "reason_code": "STALE_MEMORY_CONTEXT_MISMATCH",
+  "token_issued": false,
+  "execution_allowed": false,
+  "audit_recorded": true
+}
+```
+
 Notes:
 
 - The current root contains `main.py`, `Dockerfile`, `docker-compose.yml`, `requirements.txt`, `mcc.yaml`, `policies.yaml`, and `test_vectors.json`.
@@ -159,6 +217,192 @@ Recommended first review path:
 
 ---
 
+## Core Principles
+
+| Principle | Meaning |
+|---|---|
+| **Intent is not authority** | A proposed action is never permission to execute |
+| **Memory is not authority** | Past approvals and remembered patterns do not authorize present actions |
+| **Proposal is not permission** | Agent suggestions require explicit verification |
+| **Model output is not authorization** | Neural output alone does not grant execution rights |
+| **Execution requires a verified decision token** | Only a signed, scoped, time-limited, replay-protected token authorizes execution |
+
+### The Distinction
+
+> **Traditional AI Safety** asks: "Can the model be trusted?"  
+> **MCC-Core** asks: "Who authorized this specific action, under which current policy, with what proof, and with what audit trail?"
+
+---
+
+## Core Thesis & Flow
+
+The model proposes.  
+MCC-Core evaluates.  
+The gate enforces.  
+The audit proves.
+
+```mermaid
+flowchart LR
+    A[AI Agent / Workflow proposes action] --> B[MCC-Core evaluates authority]
+    B --> C{Decision}
+    C -->|ALLOW| D[Signed decision token]
+    C -->|DENY| E[Execution blocked]
+    C -->|ESCALATE| F[Human or higher authority review]
+    C -->|CONSTRAIN| G[Limited execution scope]
+    D --> H[Execution Gate verifies token]
+    H --> I[Authorized execution]
+    E --> J[Audit record]
+    F --> J
+    G --> J
+    I --> J
+```
+
+MCC-Core is not an agent framework. It is the execution governance boundary between intent and action.
+
+---
+
+## How MCC-Core Works
+
+1. **Intent is proposed**  
+   An AI agent, workflow, service, user, automation, or external system proposes an action.
+
+2. **MCC-Core evaluates authority**  
+   MCC-Core evaluates the proposed action against identity, policy, context, risk, memory freshness, approval state, token state, and auditability.
+
+3. **A decision is produced**  
+   MCC-Core returns `ALLOW`, `DENY`, `ESCALATE`, or `CONSTRAIN`.
+
+4. **A decision token may be issued**  
+   If the action is authorized, MCC-Core issues a signed, scoped, time-limited, replay-protected decision token.
+
+5. **The execution gate enforces**  
+   The execution gate verifies the token before any action is allowed.
+
+6. **Audit is recorded**  
+   Every decision and execution attempt is recorded for traceability.
+
+---
+
+## Execution Outcomes
+
+| Outcome | Description | Typical Trigger |
+|---|---|---|
+| **ALLOW** | Action is fully authorized and may proceed | All policy, context, identity, risk, and token checks pass |
+| **DENY** | Execution is blocked | Missing, invalid, expired, replayed, or unverifiable authority |
+| **ESCALATE** | Action requires human or privileged review | High risk, ambiguity, policy exception, or stale context |
+| **CONSTRAIN** | Action may proceed only within explicit limits | Scope, amount, duration, destination, velocity, or environment restriction |
+
+---
+
+## Runtime Law
+
+MCC-Core never infers permission. Execution is denied unless required authority checks pass.
+
+Execution invariants:
+
+- No identity → no execution
+- No policy → no execution
+- No verified decision token → no execution
+- No valid decision token → no execution
+- Memory without a valid token → deny
+- Stale context → deny or escalate
+- Used nonce → deny
+- Expired token → deny
+- Invalid signature → deny
+- Missing audit path → deny
+- Fail closed by default
+
+MCC-Core does not treat model confidence as authorization.
+
+MCC-Core does not treat memory as authorization.
+
+MCC-Core does not treat prior successful execution as current permission.
+
+Every action must be evaluated under current policy, current context, and current authority.
+
+---
+
+## Memory Is Not Authority
+
+Agent memory creates a new execution risk.
+
+An autonomous agent may remember previous actions, prior approvals, historical tickets, deployment patterns, user preferences, successful workflows, or past operational decisions.
+
+But memory is context.
+
+Memory may inform evaluation.
+
+It cannot authorize execution.
+
+A valid action requires current verification of:
+
+- identity
+- policy
+- environment
+- risk
+- approval state
+- execution scope
+- auditability
+- token validity
+- nonce / replay state
+- memory freshness
+
+For infrastructure and cloud operations, this principle becomes MCC-I:
+
+> An agent may remember the past.  
+> MCC-I authorizes the present.
+
+Example from MCC-I:
+
+```text
+action: terraform_apply
+target: production_cluster
+environment: production
+actor: infra_agent
+memory_policy: infra-policy-v3
+current_policy: infra-policy-v4
+memory_ctx: ctx_91f3a8
+current_ctx: ctx_b72c19
+```
+
+Detected mismatch:
+
+```text
+policy_version_mismatch
+context_hash_mismatch
+```
+
+Decision:
+
+```text
+OUTCOME: ESCALATE
+token_issued: false
+execution_allowed: false
+```
+
+Full technical exhibits are available in [docs/exhibits](docs/exhibits/README.md).
+
+---
+
+## Integration Patterns
+
+MCC-Core can be used as a pre-execution authority layer in several deployment patterns:
+
+| Pattern | Description |
+|---|---|
+| **Sidecar** | Runs next to an agent, service, workflow runner, or automation tool and evaluates actions before execution. |
+| **API Gateway / Tool Gateway** | Sits between an AI system and external tools, APIs, cloud operations, or enterprise systems. |
+| **CI/CD Gate** | Evaluates deployments, infrastructure changes, Terraform applies, Kubernetes operations, and privileged pipeline actions. |
+| **Policy Engine Bridge** | Connects runtime requests to policy systems such as OPA/Rego while preserving MCC-Core decision semantics. |
+| **Audit Boundary** | Records decisions, denied attempts, escalations, and constrained actions before actuation. |
+| **Embedded Agent Runtime** | Runs inside productized agents such as InfraGuard AI, ProcureGuard AI, or PayGuard AI. |
+
+The common rule across all patterns:
+
+> Execution is allowed only after verified authority is produced and accepted by the gate.
+
+---
+
 ## Roadmap
 
 | Area | Status |
@@ -193,8 +437,6 @@ Roadmap items are planning signals, not claims of current production readiness.
 
 AXLOGIQ Inc. builds execution governance infrastructure for autonomous systems.
 
-MCC-Core is not a generic AI safety layer.
-
 MCC-Core is a verified execution authority layer.
 
 It governs whether autonomous systems are authorized to act before execution occurs.
@@ -214,16 +456,6 @@ Not the category:
 - Agent framework
 - Monitoring dashboard only
 - Logging system only
-
-The core distinction:
-
-> AI Safety asks: Can the model be trusted?  
-> MCC-Core asks: Who authorized this action?
-
-The model may propose.  
-MCC-Core evaluates.  
-The execution gate enforces.  
-The audit trail proves.
 
 ---
 
@@ -251,23 +483,6 @@ Strategic principle:
 
 ---
 
-## Relationship to Exhibits
-
-The principle **Memory Is Not Authority** is documented in:
-
-- [MCC-I Exhibits G3-G4.1](docs/exhibits/README.md)
-
-The exhibit package includes:
-
-- **Corporate Governance Exhibit** — AXLOGIQ category and authorship positioning
-- **G3 — Memory-Authority Boundary** — the core principle
-- **G4 — Stale Memory Production Deploy** — practical production deployment risk
-- **G4.1 — Technical Prevention Layer** — technical validation and execution-blocking model
-
-These exhibits serve as public reference architecture demonstrating why verified execution authority is required for infrastructure and cloud operations.
-
----
-
 ## MCC-I — Infrastructure & Cloud
 
 **MCC-I** is the infrastructure and cloud execution governance vertical powered by MCC-Core.
@@ -292,237 +507,9 @@ But if an agent can deploy, delete, escalate privileges, rotate keys, alter poli
 
 MCC-I exists to make infrastructure autonomy governable.
 
----
+Related exhibit package:
 
-## Memory Is Not Authority
-
-Agent memory creates a new execution risk.
-
-An autonomous agent may remember previous actions, prior approvals, historical tickets, deployment patterns, user preferences, successful workflows, or past operational decisions.
-
-But memory is context.
-
-Memory may inform evaluation.
-
-It cannot authorize execution.
-
-A valid action requires current verification of:
-
-- identity
-- policy
-- environment
-- risk
-- approval state
-- execution scope
-- auditability
-- token validity
-- nonce / replay state
-- memory freshness
-
-For infrastructure and cloud operations, this principle becomes MCC-I:
-
-> An agent may remember the past.  
-> MCC-I authorizes the present.
-
----
-
-## Runtime Law
-
-Execution invariants:
-
-- No identity → no execution
-- No policy → no execution
-- No verified decision token → no execution
-- No valid decision token → no execution
-- Memory without a valid token → deny
-- Stale context → deny or escalate
-- Used nonce → deny
-- Expired token → deny
-- Invalid signature → deny
-- Missing audit path → deny
-- Fail closed by default
-
-MCC-Core does not treat model confidence as authorization.
-
-MCC-Core does not treat memory as authorization.
-
-MCC-Core does not treat prior successful execution as current permission.
-
-Every action must be evaluated under current policy, current context, and current authority.
-
----
-
-## Core Thesis
-
-The model proposes.  
-MCC-Core evaluates.  
-The gate enforces.  
-The audit proves.
-
-Proposal is not permission.
-
-Model output is not authorization.
-
-Neural confidence is not a license to act.
-
-Every autonomous system requires a verifiable boundary between intent and execution.
-
----
-
-## Execution Boundary
-
-MCC-Core separates proposed intent from authorized execution.
-
-A proposed action is evaluated against:
-
-- actor identity
-- system identity
-- policy state
-- risk profile
-- execution context
-- memory freshness
-- action scope
-- approval requirements
-- token validity
-- nonce state
-- auditability
-
-The result is a governed execution decision.
-
-| Outcome | Meaning |
-|---|---|
-| **ALLOW** | The action is authorized within verified scope, policy, payload, identity, constraints, and time window. |
-| **DENY** | Execution is blocked. Missing, invalid, risky, stale, unavailable, or unverifiable authority fails closed. |
-| **ESCALATE** | Execution requires additional approval, human review, quorum, or privileged authorization. |
-| **CONSTRAIN** | Execution may proceed only under explicit limits such as amount, speed, duration, destination, or scope. |
-
-Execution occurs only after a valid decision is issued and enforced.
-
----
-
-## Reference Flow
-
-```text
-Intent
-  ↓
-MCC-Core Evaluation
-  ↓
-Verified Decision
-  ↓
-Signed Decision Token
-  ↓
-Execution Gate
-  ↓
-Authorized Execution
-  ↓
-Audit Record
-```
-
-The action does not execute because the agent proposed it.
-
-The action executes only if the execution gate receives a valid, verified decision token.
-
----
-
-## Technical Model
-
-MCC-Core is designed around a simple execution-control model:
-
-1. **Intent is proposed**  
-   An AI agent, workflow, service, user, automation, or external system proposes an action.
-
-2. **MCC-Core evaluates authority**  
-   MCC-Core evaluates the proposed action against identity, policy, context, risk, memory freshness, approval state, token state, and auditability.
-
-3. **A decision is produced**  
-   MCC-Core returns ALLOW, DENY, ESCALATE, or CONSTRAIN.
-
-4. **A decision token may be issued**  
-   If the action is authorized, MCC-Core issues a signed, scoped, time-limited, replay-protected decision token.
-
-5. **The execution gate enforces**  
-   The execution gate verifies the token before any action is allowed.
-
-6. **Audit is recorded**  
-   Every decision and execution attempt is recorded for traceability.
-
----
-
-## Example Decision Request
-
-Example action:
-
-```text
-action: terraform_apply
-target: production_cluster
-environment: production
-actor: infra_agent
-memory_policy: infra-policy-v3
-current_policy: infra-policy-v4
-memory_ctx: ctx_91f3a8
-current_ctx: ctx_b72c19
-```
-
-Detected mismatch:
-
-```text
-policy_version_mismatch
-context_hash_mismatch
-```
-
-Decision:
-
-```text
-OUTCOME: ESCALATE
-token_issued: false
-execution_allowed: false
-```
-
-Meaning:
-
-The agent may remember a previous approval, but remembered approval does not authorize a current production action.
-
-MCC-I requires current verification.
-
-No valid decision token is issued.
-
-Execution is blocked.
-
----
-
-## MCC-Core API Server Direction
-
-The MCC-Core API Server reference direction supports:
-
-- request evaluation
-- policy-aware decisioning
-- structured outcomes
-- decision token issuance
-- fail-closed behavior
-- audit-before-actuation
-- replay prevention
-- runtime testing
-- integration review
-
-Representative endpoint direction:
-
-```text
-POST /evaluate
-```
-
-Representative decision response:
-
-```json
-{
-  "outcome": "ESCALATE",
-  "reason_code": "STALE_MEMORY_CONTEXT_MISMATCH",
-  "token_issued": false,
-  "execution_allowed": false,
-  "audit_recorded": true
-}
-```
-
-This repository is intended for local testing, simulation, technical review, and enterprise PoC design.
+- [MCC-I Exhibits G3-G4.1](docs/exhibits/README.md)
 
 ---
 
@@ -540,6 +527,30 @@ This repository is intended for local testing, simulation, technical review, and
 | [Use Cases](docs/USE_CASES.md) | Example execution surfaces |
 | [Roadmap](docs/ROADMAP.md) | Current and planned work |
 | [MCC-I Exhibits](docs/exhibits/README.md) | G3-G4.1 public exhibit package |
+
+---
+
+## Public Technical Record
+
+This repository functions as a public technical record for:
+
+- MCC — Meta-Cognitive Control
+- MCC-Core
+- MCC-I
+- Memory-Authority Boundary
+- Verified Execution Authority
+- Execution Governance Infrastructure
+- AXLOGIQ Inc. architecture doctrine
+- Reference implementation direction
+- Exhibit documentation
+
+Key exhibit package:
+
+- [MCC-I Exhibits G3-G4.1](docs/exhibits/README.md)
+
+Key corporate governance exhibit:
+
+- [AXLOGIQ Governance v2](docs/exhibits/AXLOGIQ_Governance_v2.png)
 
 ---
 
@@ -607,30 +618,6 @@ MCC-Core governs whether model-proposed actions are authorized to execute.
 
 ---
 
-## Public Technical Record
-
-This repository functions as a public technical record for:
-
-- MCC — Meta-Cognitive Control
-- MCC-Core
-- MCC-I
-- Memory-Authority Boundary
-- Verified Execution Authority
-- Execution Governance Infrastructure
-- AXLOGIQ Inc. architecture doctrine
-- Reference implementation direction
-- Exhibit documentation
-
-Key exhibit package:
-
-- [MCC-I Exhibits G3-G4.1](docs/exhibits/README.md)
-
-Key corporate governance exhibit:
-
-- [AXLOGIQ Governance v2](docs/exhibits/AXLOGIQ_Governance_v2.png)
-
----
-
 ## Project Identity
 
 - Company: **AXLOGIQ Inc.**
@@ -691,6 +678,12 @@ Audit before actuation.
 
 ---
 
+## License
+
+See [LICENSE](LICENSE) for details.
+
+---
+
 ## Claim Hygiene
 
 This repository describes a public reference architecture and prototype implementation for technical review, simulation, local testing, enterprise PoC design, and integration review.
@@ -714,17 +707,6 @@ MCC-Core and MCC-I are presented as public reference architecture and prototype 
 Prepared: **May 2026**  
 Classification: **Public Reference Architecture**  
 Status: **Prototype / Technical Review**
-
----
-
-## Footer Principle
-
-Autonomy without verifiable control is not intelligence.
-
-Intent is not authority.  
-Memory is not authority.  
-Execution requires a verified decision token.  
-No verified decision token — no execution.
 
 ---
 
