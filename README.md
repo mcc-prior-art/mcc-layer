@@ -84,6 +84,69 @@ This is not a certified production system, a formally audited security product, 
 
 ---
 
+## Quick Start
+
+Clone the repository:
+
+```bash
+git clone https://github.com/mcc-prior-art/mcc-layer.git
+cd mcc-layer
+```
+
+Run the minimal runtime proof:
+
+```bash
+python examples/mcc_runtime_proof.py
+```
+
+Expected behavior:
+
+```text
+WITHOUT MCC:
+EXECUTED: user deleted
+
+WITH MCC:
+BLOCKED: Destructive action blocked
+```
+
+This demonstrates the core boundary: an action may be proposed, but execution is blocked unless MCC-Core authorizes it.
+
+Run the API server locally:
+
+```bash
+pip install -r requirements.txt
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+Run with OPA and Redis through Docker Compose:
+
+```bash
+docker compose up --build
+```
+
+Evaluate a proposed action:
+
+```bash
+curl -X POST http://localhost:8000/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actor": "infra_agent",
+    "action": "terraform_apply",
+    "target": "production_cluster",
+    "environment": "production"
+  }'
+```
+
+Expected governance behavior:
+
+```text
+ALLOW / DENY / ESCALATE / CONSTRAIN
+```
+
+If authority cannot be verified, MCC-Core fails closed.
+
+---
+
 ## Category Statement
 
 AXLOGIQ Inc. builds execution governance infrastructure for autonomous systems.
@@ -339,28 +402,22 @@ The action executes only if the execution gate receives a valid, verified decisi
 
 MCC-Core is designed around a simple execution-control model:
 
-1. **Intent is proposed**
-
+1. **Intent is proposed**  
    An AI agent, workflow, service, user, automation, or external system proposes an action.
 
-2. **MCC-Core evaluates authority**
-
+2. **MCC-Core evaluates authority**  
    MCC-Core evaluates the proposed action against identity, policy, context, risk, memory freshness, approval state, token state, and auditability.
 
-3. **A decision is produced**
-
+3. **A decision is produced**  
    MCC-Core returns ALLOW, DENY, ESCALATE, or CONSTRAIN.
 
-4. **A decision token may be issued**
-
+4. **A decision token may be issued**  
    If the action is authorized, MCC-Core issues a signed, scoped, time-limited, replay-protected decision token.
 
-5. **The execution gate enforces**
-
+5. **The execution gate enforces**  
    The execution gate verifies the token before any action is allowed.
 
-6. **Audit is recorded**
-
+6. **Audit is recorded**  
    Every decision and execution attempt is recorded for traceability.
 
 The architecture is intentionally simple:
