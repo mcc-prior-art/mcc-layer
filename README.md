@@ -1,6 +1,10 @@
 # MCC-Core
 
 <p align="center">
+  <img src="./assets/AXLOGIQ_MCC-Core_G0_Public_Reference_Banner_May_2026.png" alt="MCC-Core Public Reference Architecture Banner" width="100%">
+</p>
+
+<p align="center">
   <strong>Execution Governance Infrastructure for Autonomous AI Systems</strong>
 </p>
 
