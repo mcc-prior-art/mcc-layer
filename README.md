@@ -14,14 +14,8 @@
 
 <p align="center">
   <a href="https://axlogiq.com"><img alt="AXLOGIQ Corporate" src="https://img.shields.io/badge/AXLOGIQ-Corporate-00B8DB?style=for-the-badge"></a>
-  <a href="https://axlogiq.ai"><img alt="MCC-Core Technical Product" src="https://img.shields.io/badge/MCC--Core-Technical_Runtime-15388A?style=for-the-badge"></a>
+  <a href="https://axlogiq.ai"><img alt="MCC-Core Technical Runtime" src="https://img.shields.io/badge/MCC--Core-Technical_Runtime-15388A?style=for-the-badge"></a>
   <a href="https://axlogiq.org"><img alt="Public Architecture Record" src="https://img.shields.io/badge/Public_Architecture-Record-0B1020?style=for-the-badge"></a>
-</p>
-
-<p align="center">
-  <a href="docs/exhibits/README.md"><img alt="MCC-I Exhibits" src="https://img.shields.io/badge/MCC--I-Exhibits_G3--G4.1-00B8DB?style=for-the-badge"></a>
-  <img alt="Status" src="https://img.shields.io/badge/Status-Prototype_/_Technical_Review-111827?style=for-the-badge">
-  <img alt="Runtime Law" src="https://img.shields.io/badge/Runtime_Law-No_Verified_Decision_--_No_Execution-15388A?style=for-the-badge">
 </p>
 
 <p align="center">
@@ -39,6 +33,14 @@
 
 <p align="center">
   <a href="docs/exhibits/README.md"><strong>View MCC-I Exhibits G3–G4.1 →</strong></a>
+  ·
+  <a href="docs/exhibits/AXLOGIQ_Governance_v2.png"><strong>View Governance Exhibit →</strong></a>
+</p>
+
+<p align="center">
+  <img alt="Status" src="https://img.shields.io/badge/Status-Prototype_/_Technical_Review-111827?style=flat-square">
+  <img alt="Runtime Law" src="https://img.shields.io/badge/Runtime_Law-No_Verified_Decision_Token_--_No_Execution-15388A?style=flat-square">
+  <img alt="MCC-I Exhibits" src="https://img.shields.io/badge/MCC--I-Exhibits_G3--G4.1-00B8DB?style=flat-square">
 </p>
 
 ---
