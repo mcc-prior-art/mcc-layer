@@ -1,58 +1,70 @@
 # MCC-I Exhibits G3–G4
 
-This folder contains the MCC-I verified execution authority exhibit series for **AXLOGIQ Inc.**
-
-These exhibits document the principle that agent memory may inform evaluation, but it does not authorize present execution.
+**Verified Execution Authority**  
+Public reference architecture for AXLOGIQ Inc.
 
 ---
 
 ## Exhibit G3 — Memory Is Not Authority
 
-![Exhibit G3 — Memory Is Not Authority](./AXLOGIQ_MCC-I_G3_Memory_its_not_Authority_May_2026.PNG)
+![Exhibit G3 — Memory Is Not Authority](AXLOGIQ_MCC-I_G3_Memory_its_not_Authority_May_2026.PNG)
 
-**Core principle:**
-
+> **Core principle**  
 > An agent may remember the past. MCC-I authorizes the present.
 
-**Supporting doctrine:**
-
+> **Supporting doctrine**  
 > Memory without a token is not permission.
 
-**Purpose:**  
-Exhibit G3 defines the memory-authority boundary. Agent memory, historical context, prior approvals, and remembered workflows may inform decision-making, but they do not authorize present execution.
+**Purpose**  
+Exhibit G3 defines the memory-authority boundary. Agent memory, historical context, prior approvals, and remembered workflows may inform decision-making, but they do **not** authorize present execution.
 
 ---
 
-## Exhibit G4 — Concrete Example: Stale Memory in Production Deploy
+## Exhibit G4 — Stale Memory in Production Deploy
 
-![Exhibit G4 — Concrete Example: Stale Memory in Production Deploy](./AXLOGIQ_MCC-G4_Stale_Memory_Production_Deploy_May_2026.png.PNG)
+![Exhibit G4 — Stale Memory in Production Deploy](AXLOGIQ_MCC-G4_Stale_Memory_Production_Deploy_May_2026.png.PNG)
 
-**Purpose:**  
-Exhibit G4 validates the principle through a concrete infrastructure scenario.
+> **Purpose**  
+> Exhibit G4 demonstrates the risk of stale memory through a concrete infrastructure scenario.
 
-Without MCC-I, an agent may reuse stale deployment memory and proceed toward a high-risk production action.
+**Without MCC-I**  
+An agent may reuse outdated deployment memory and proceed with a high-risk production action.
 
-With MCC-I, execution requires current verification and a valid decision token before the action can proceed.
+**With MCC-I**  
+Execution requires current verification and a valid decision token before the action can proceed.
 
 ---
 
 ## Relationship to MCC-Core
 
-MCC-I is the infrastructure and cloud execution governance vertical.
+| Layer       | Role                                      |
+|-------------|-------------------------------------------|
+| **MCC-I**       | Infrastructure & Cloud Execution Governance vertical |
+| **MCC-Core**    | The underlying technical decision engine             |
 
-MCC-Core is the underlying technical decision engine that powers the verified execution authority mechanism.
+In this exhibit series:
+- **G3** = Principle
+- **G4** = Operational validation
 
-```text
-G3 = principle
-G4 = operational validation
-```
-
-Together, G3 and G4 show that remembered context is not execution authority. Infrastructure execution requires a current verified decision.
+**Together they show:** Remembered context is not execution authority. Infrastructure execution requires a **current verified decision**.
 
 ---
 
 ## Claim Hygiene
 
-These exhibits are public reference architecture / technical review materials.
+These exhibits are **public reference architecture and technical review materials**.
 
-They should not be described as certified production safety materials, government-approved materials, third-party-endorsed materials, or production-certified infrastructure controls.
+They should **not** be described as:
+- Certified production safety materials
+- Government-approved materials
+- Third-party-endorsed materials
+- Production-certified infrastructure controls
+
+They should be described as:
+
+> Public reference architecture and exhibit materials for MCC-I verified execution authority.
+
+---
+
+**← Back to MCC-Core**  
+[Main documentation](../..)
