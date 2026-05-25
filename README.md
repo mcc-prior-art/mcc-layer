@@ -3,7 +3,8 @@
 **Public technical record established:** May 2026  
 **Author:** Alexandr Ponomariov / AXLOGIQ Inc.  
 **Repository:** https://github.com/mcc-prior-art/mcc-layer  
-**Version:** `v1.5.0` | **Date:** `2026-05-25`
+**Version:** `v1.5.0` | **Date:** `2026-05-25`  
+**Commit:** `<INSERT_FINAL_COMMIT_HASH>`
 
 ---
 
@@ -292,6 +293,48 @@ The exhibit package includes:
 - **G4.1 — Technical Prevention Layer** — technical validation and execution-blocking model
 
 These exhibits serve as public reference architecture demonstrating why verified execution authority is required for infrastructure and cloud operations.
+
+---
+
+## Consistency Standard for Exhibits G1–G4.1
+
+This README, the MCC-I exhibits, architecture notes, examples, and runtime proof should use a consistent execution-governance vocabulary.
+
+Canonical terms:
+
+```text
+Verified decision token
+Execution gate
+ALLOW / DENY / ESCALATE / CONSTRAIN
+Fail closed by default
+Audit before actuation
+Memory is not authority
+Intent is not authority
+No verified decision token — no execution
+```
+
+The repository should avoid inconsistent wording where possible.
+
+Preferred phrasing:
+
+```text
+MCC-Core evaluates authority before execution.
+The execution gate verifies the decision token.
+Execution is allowed only after a valid, scoped, time-limited, replay-protected decision token is issued.
+```
+
+Avoid weaker or ambiguous phrasing:
+
+```text
+The agent is approved.
+The model has permission.
+The system trusts the model.
+The memory says it was allowed before.
+```
+
+G1–G4.1 should support the same core claim:
+
+> Autonomous execution requires current, verifiable authority before action.
 
 ---
 
