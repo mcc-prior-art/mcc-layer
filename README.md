@@ -37,12 +37,6 @@
   <a href="docs/exhibits/AXLOGIQ_Governance_v2.png"><strong>View Governance Exhibit →</strong></a>
 </p>
 
-<p align="center">
-  <img alt="Status" src="https://img.shields.io/badge/Status-Prototype_/_Technical_Review-111827?style=flat-square">
-  <img alt="Runtime Law" src="https://img.shields.io/badge/Runtime_Law-No_Verified_Decision_Token_--_No_Execution-15388A?style=flat-square">
-  <img alt="MCC-I Exhibits" src="https://img.shields.io/badge/MCC--I-Exhibits_G3--G4.1-00B8DB?style=flat-square">
-</p>
-
 ---
 
 ## Executive Summary
