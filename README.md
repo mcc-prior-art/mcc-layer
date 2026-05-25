@@ -84,6 +84,18 @@ This is not a certified production system, a formally audited security product, 
 
 ---
 
+## Boundary Note
+
+MCC-Core is not an AI model, not an agent framework, and not a certified production safety system.
+
+It is a public reference architecture and prototype runtime for evaluating whether proposed autonomous actions are authorized to execute.
+
+MCC-Core does not replace enterprise security, compliance, legal review, or operational controls.
+
+It defines the execution decision boundary before action.
+
+---
+
 ## Quick Start
 
 Clone the repository:
@@ -137,7 +149,19 @@ curl -X POST http://localhost:8000/evaluate \
   }'
 ```
 
-Expected governance behavior:
+Example response:
+
+```json
+{
+  "outcome": "ESCALATE",
+  "reason_code": "STALE_MEMORY_CONTEXT_MISMATCH",
+  "token_issued": false,
+  "execution_allowed": false,
+  "audit_recorded": true
+}
+```
+
+Possible governance outcomes:
 
 ```text
 ALLOW / DENY / ESCALATE / CONSTRAIN
@@ -501,6 +525,26 @@ Representative decision response:
 ```
 
 This repository is intended for local testing, simulation, technical review, and enterprise PoC design.
+
+---
+
+## Core Components
+
+MCC-Core is organized around a small set of execution-governance components:
+
+- **Policy Engine** — evaluates whether a proposed action is allowed under current policy.
+- **Decision Token** — represents signed, scoped, time-limited execution authority.
+- **Execution Gate** — verifies the decision token before allowing execution.
+- **Audit Log** — records decisions and execution attempts for traceability.
+- **Replay Protection** — prevents reuse of expired or previously consumed authority.
+- **Escalation Logic** — routes high-risk or ambiguous actions to human or higher-authority review.
+
+Recommended reading path:
+
+1. Start with the README for the category and execution model.
+2. Review the MCC-I exhibits for the memory-authority boundary.
+3. Run the Quick Start proof.
+4. Inspect the runtime proof and API evaluation flow.
 
 ---
 
