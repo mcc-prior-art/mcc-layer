@@ -4,7 +4,8 @@
 **Author:** Alexandr Ponomariov / AXLOGIQ Inc.  
 **Repository:** https://github.com/mcc-prior-art/mcc-layer  
 **Version:** `v1.5.0` | **Date:** `2026-05-25`  
-**Commit:** `45b5ff4`
+**Commit:** `45b5ff4`  
+**Doctrine record:** `2026-06-02`
 
 ---
 
@@ -44,6 +45,28 @@
 
 ---
 
+## MCC-Core Doctrine Lines v1.0
+
+```text
+A proposal is not permission.
+No verified decision — no execution.
+No verified path — no trusted execution.
+No post-factum permission.
+```
+
+The model proposes.  
+MCC-Core decides.  
+The gate enforces.  
+The audit chain records.
+
+### Public Doctrine Record
+
+- [MCC-Core Decision Boundary Doctrine](MCC-Core_Decision_Boundary_Doctrine_2026-06-02.md) — defines where the decision boundary exists.
+- [MCC-Core Non-Post-Execution Principle](MCC-Core_Non-Post-Execution_Principle_2026-06-02.md) — defines that authorization must occur before execution, never after consequence.
+- [MCC-Core Doctrine Lines v1.0](MCC-Core_Doctrine_Lines_v1_0_2026-06-02.md) — canonical public doctrine block for README, pitch, banner, PoC, and evidence materials.
+
+---
+
 ## Executive Summary
 
 **MCC-Core** is a public reference architecture and minimal reference runtime for verified execution governance in autonomous AI systems.
@@ -62,13 +85,16 @@ MCC-Core defines the verified boundary between AI-generated intent and authorize
 
 Core principle:
 
+> A proposal is not permission.  
 > Intent is not authority.  
 > Memory is not authority.  
 > Prediction is not authority.  
 > AI access is not AI governance.  
 > Token usage is not productivity.  
 > Execution requires a verified decision token.  
-> No verified decision token — no execution.
+> No verified decision token — no execution.  
+> No verified path — no trusted execution.  
+> No post-factum permission.
 
 MCC-Core produces explicit execution outcomes:
 
@@ -210,10 +236,10 @@ The core distinction:
 > AI safety asks: Can the model be trusted?  
 > MCC-Core asks: Who authorized this action?
 
-The model may propose.  
-MCC-Core evaluates.  
-The execution gate enforces.  
-The audit trail proves.
+The model proposes.  
+MCC-Core decides.  
+The gate enforces.  
+The audit chain records.
 
 ---
 
@@ -310,7 +336,10 @@ Fail closed by default
 Audit before actuation
 Memory is not authority
 Intent is not authority
+A proposal is not permission
 No verified decision token — no execution
+No verified path — no trusted execution
+No post-factum permission
 ```
 
 The repository should avoid inconsistent wording where possible.
@@ -330,6 +359,7 @@ The agent is approved.
 The model has permission.
 The system trusts the model.
 The memory says it was allowed before.
+The action can be reviewed after execution.
 ```
 
 G1–G4.1 should support the same core claim:
@@ -425,6 +455,8 @@ Execution invariants:
 - No policy → no execution
 - No verified decision token → no execution
 - No valid decision token → no execution
+- No verified path → no trusted execution
+- No post-factum permission
 - Memory without a valid token → deny
 - Stale context → deny or escalate
 - Budget limit exceeded → deny or escalate
@@ -452,11 +484,11 @@ Every action must be evaluated under current policy, current context, current au
 ## Core Thesis
 
 The model proposes.  
-MCC-Core evaluates.  
+MCC-Core decides.  
 The gate enforces.  
-The audit proves.
+The audit chain records.
 
-Proposal is not permission.  
+A proposal is not permission.  
 Model output is not authorization.  
 Neural confidence is not a license to act.  
 Memory is not authority.  
@@ -539,7 +571,7 @@ Execution Gate
   ↓
 Authorized Execution
   ↓
-Audit Record
+Audit Chain Record
 ```
 
 The action does not execute because the agent proposed it.
@@ -726,9 +758,11 @@ MCC-Core is organized around a small set of execution-governance components:
 Recommended reading path:
 
 1. Start with the README for the category and execution model.
-2. Review the MCC-I exhibits for the memory-authority boundary.
-3. Run the Quick Start proof.
-4. Inspect the runtime proof and API evaluation flow.
+2. Review the MCC-Core Doctrine Lines v1.0.
+3. Review the Decision Boundary Doctrine and Non-Post-Execution Principle.
+4. Review the MCC-I exhibits for the memory-authority boundary.
+5. Run the Quick Start proof.
+6. Inspect the runtime proof and API evaluation flow.
 
 ---
 
@@ -811,9 +845,18 @@ This repository functions as a public technical record for:
 - Verified Execution Authority
 - Execution Governance Infrastructure
 - Resource-Aware Execution Governance
+- Decision Boundary Doctrine
+- Non-Post-Execution Principle
+- Doctrine Lines v1.0
 - AXLOGIQ Inc. architecture doctrine
 - Reference implementation direction
 - Exhibit documentation
+
+Key doctrine records:
+
+- [MCC-Core Decision Boundary Doctrine](MCC-Core_Decision_Boundary_Doctrine_2026-06-02.md)
+- [MCC-Core Non-Post-Execution Principle](MCC-Core_Non-Post-Execution_Principle_2026-06-02.md)
+- [MCC-Core Doctrine Lines v1.0](MCC-Core_Doctrine_Lines_v1_0_2026-06-02.md)
 
 Key exhibit package:
 
@@ -849,6 +892,9 @@ Key corporate governance exhibit:
 - Public Architecture Record: `https://axlogiq.org`
 - GitHub Reference: `https://github.com/mcc-prior-art/mcc-layer`
 - MCC-I Exhibits: `docs/exhibits/README.md`
+- MCC-Core Doctrine Lines v1.0: `MCC-Core_Doctrine_Lines_v1_0_2026-06-02.md`
+- MCC-Core Decision Boundary Doctrine: `MCC-Core_Decision_Boundary_Doctrine_2026-06-02.md`
+- MCC-Core Non-Post-Execution Principle: `MCC-Core_Non-Post-Execution_Principle_2026-06-02.md`
 
 ---
 
@@ -864,12 +910,16 @@ Creator of **MCC-Core reference runtime**
 ## Canonical Doctrine
 
 ```text
+A proposal is not permission.
+No verified decision — no execution.
+No verified path — no trusted execution.
+No post-factum permission.
+
 Intent is not authority.
 Memory is not authority.
 Prediction is not authority.
 AI access is not AI governance.
 Token usage is not productivity.
-Proposal is not permission.
 Model output is not authorization.
 Neural confidence is not a license to act.
 
@@ -877,9 +927,9 @@ Execution requires a verified decision token.
 No verified decision token — no execution.
 
 The model proposes.
-MCC-Core evaluates.
+MCC-Core decides.
 The gate enforces.
-The audit proves.
+The audit chain records.
 
 Easy to integrate.
 Hard to bypass.
@@ -910,6 +960,7 @@ MCC-Core and MCC-I are presented as public reference architecture and prototype 
 ## Status
 
 Prepared: **May 2026**  
+Doctrine record updated: **June 2026**  
 Classification: **Public Reference Architecture**  
 Status: **Prototype / Technical Review**
 
@@ -918,6 +969,8 @@ Status: **Prototype / Technical Review**
 ## Footer Principle
 
 Autonomy without verifiable control is not intelligence.
+
+A proposal is not permission.
 
 Intent is not authority.
 
@@ -930,6 +983,10 @@ Token usage is not productivity.
 Execution requires a verified decision token.
 
 No verified decision token — no execution.
+
+No verified path — no trusted execution.
+
+No post-factum permission.
 
 ---
 
