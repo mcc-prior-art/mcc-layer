@@ -47,12 +47,10 @@
 
 ## MCC-Core Doctrine Lines v1.0
 
-```text
-A proposal is not permission.
-No verified decision — no execution.
-No verified path — no trusted execution.
-No post-factum permission.
-```
+**A proposal is not permission.**  
+**No verified decision — no execution.**  
+**No verified path — no trusted execution.**  
+**No post-factum permission.**
 
 The model proposes.  
 MCC-Core decides.  
