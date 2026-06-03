@@ -111,6 +111,33 @@ Current status: **Public reference architecture + minimal runnable reference imp
 
 This is not a certified production system, a formally audited security product, or a government-approved solution.
 
+### Architecture Diagram — Verified Execution Boundary
+
+```mermaid
+flowchart LR
+    A[AI Agent / LLM] -->|Proposes action| B{MCC-Core<br/>Decision Boundary}
+
+    P[(Policy)] --> B
+    M[(Memory / Context)] --> B
+    R[(Risk / Resource Limits)] --> B
+    L[(Audit Log)] --> B
+
+    B -->|ALLOW + verified decision token| T[Signed Decision Token]
+    T --> G[Execution Gate]
+    G --> E[Authorized Execution]
+    E --> AR[(Audit Chain Record)]
+
+    B -->|DENY| D[Block Execution]
+    B -->|ESCALATE| H[Human / Higher Authority Review]
+    B -->|CONSTRAIN| C[Limited Execution Scope]
+
+    D --> AR
+    H --> AR
+    C --> G
+```
+
+The model may propose an action. MCC-Core evaluates whether authority exists. The execution gate allows action only after a valid, scoped, time-limited, replay-protected decision token is verified.
+
 ---
 
 ## Boundary Note
@@ -148,6 +175,25 @@ EXECUTED: user deleted
 
 WITH MCC:
 BLOCKED: Destructive action blocked
+```
+
+### Without MCC / With MCC
+
+```mermaid
+flowchart TB
+    subgraph Without_MCC[Without MCC]
+        W1[LLM proposes destructive action:<br/>delete user / delete file] --> W2[OS / Tool executes]
+        W2 --> W3[Damage done]
+    end
+
+    subgraph With_MCC[With MCC]
+        M1[LLM proposes destructive action:<br/>delete user / delete file] --> M2{MCC-Core:<br/>verified token?}
+        M2 -->|No valid token| M3[BLOCKED + Audit]
+        M2 -.->|Execution path never reached| M4[No execution]
+    end
+
+    style W3 fill:#f99,stroke:#333,stroke-width:1px
+    style M3 fill:#9f9,stroke:#333,stroke-width:1px
 ```
 
 This demonstrates the core boundary: an action may be proposed, but execution is blocked unless MCC-Core authorizes it.
@@ -603,6 +649,32 @@ MCC-Core is designed around a simple execution-control model:
 The architecture is intentionally simple:
 
 > No verified decision token — no execution.
+
+### Decision Token Structure
+
+```mermaid
+flowchart TD
+    subgraph Token[Verified Decision Token]
+        A[action_hash] --> S[Signature<br/>Ed25519]
+        N[nonce] --> S
+        T[timestamp / expiry] --> S
+        I[actor_id] --> S
+        P[policy_version] --> S
+        C[constraints / scope] --> S
+        O[outcome] --> S
+    end
+
+    K[Private Signing Key<br/>MCC-Core / Guard / HSM] -->|Signs| S
+    S -->|Token presented to| G[Execution Gate]
+    G -->|Verifies with public key| V{Valid?}
+
+    V -->|Yes| E[Authorized Execution]
+    V -->|No| D[DENY + Audit]
+
+    style Token fill:#eef,stroke:#333,stroke-width:1px
+```
+
+A verified decision token is not a log entry and not a model output. It is signed execution authority for a specific action, actor, context, policy version, scope, and time window.
 
 ---
 
