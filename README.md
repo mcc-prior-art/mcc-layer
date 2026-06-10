@@ -114,6 +114,21 @@ Committed April 2026 — public timestamp on GitHub.
 
 ---
 
+---
+
+## Prior Art Archive
+
+MCC prior-art materials were publicly archived in April 2026, including early execution-control architecture records covering intent → policy → allow / deny / escalate, real-time policy patching, multi-agent consensus, and hash-chain audit trails.
+
+**Archived record:** [MCC v0.5 + GPT-4.1 Features 21.04.2026](https://archive.ph/2026.04.21-195051/https://telegra.ph/MCC-v05--GPT-41-Features-21042026-04-21)  
+**Original X post:** `https://x.com/axlogiq_ai/status/2046674474452357490`  
+**First disclosure:** 20.04.2026  
+**Spec expanded:** 21.04.2026
+
+This archive supports the public technical record that MCC / MCC-Core execution-governance concepts were documented and timestamped before the later June 2026 doctrine formalization.
+
+---
+
 ## Executive Summary
 
 **MCC-Core** is a public reference architecture and minimal reference runtime for verified execution governance in autonomous AI systems.
