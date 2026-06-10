@@ -74,6 +74,51 @@ The audit chain records.
 
 ---
 
+## Architecture Note: Governing Autonomous AI
+
+The next phase of AI is long-horizon autonomous work, not just chat.
+
+Autonomous code changes.  
+Deployments.  
+Payments.  
+AML alert disposition.
+
+Model-level safety stops at the prompt. Execution needs its own boundary.
+
+**Rule:**  
+No verified decision → No execution
+
+**Outcomes:**  
+ALLOW / DENY / ESCALATE / CONSTRAIN
+
+MCC-Core acts as the verified execution boundary before irreversible action — the kind of “brake pedal” the AI industry is increasingly recognizing as necessary, built at the architecture level.
+
+The model proposes.  
+MCC-Core evaluates.  
+The gate enforces.  
+The audit chain records.
+
+This note summarizes the execution-boundary position of MCC-Core: autonomous systems may generate intent, but execution authority must be verified before action.
+
+*Doctrine timestamped on GitHub, 2026-06-02*
+
+---
+
+## External Public Signal
+
+In April 2026, a public Grok / xAI response independently acknowledged the MCC-Core execution governance concept as aligned with the need for layered controls around autonomous AI systems.
+
+Key quote (verbatim, @grok, April 25, 2026):
+
+> "Layers like your MCC (policy + audit + rollback) are how the ecosystem adds the brakes. Solid approach."
+
+This record is preserved as a third-party public signal, not as endorsement, certification, partnership, customer validation, or production approval.
+
+**Evidence:** Screenshot archived in repository at `proof/screenshot.png`,  
+committed April 2026 — public timestamp on GitHub.
+
+---
+
 ## Executive Summary
 
 **MCC-Core** is a public reference architecture and minimal reference runtime for verified execution governance in autonomous AI systems.
