@@ -127,6 +127,8 @@ MCC prior-art materials were publicly archived in April 2026, including early ex
 
 This archive supports the public technical record that MCC / MCC-Core execution-governance concepts were documented and timestamped before the later June 2026 doctrine formalization.
 
+Related exhibit: [X Platform Ban Event — April 2026](docs/exhibits/X_Ban_Event_2026-04.md)
+
 ---
 
 ## Executive Summary
@@ -1030,6 +1032,8 @@ Key corporate governance exhibit:
 - MCC-Core Doctrine Lines v1.0: `MCC-Core_Doctrine_Lines_v1_0_2026-06-02.md`
 - MCC-Core Decision Boundary Doctrine: `MCC-Core_Decision_Boundary_Doctrine_2026-06-02.md`
 - MCC-Core Non-Post-Execution Principle: `MCC-Core_Non-Post-Execution_Principle_2026-06-02.md`
+- Prior Art Archive — April 2026: `docs/exhibits/Prior_Art_Archive_2026-04.md`
+- X Platform Ban Event — April 2026: `docs/exhibits/X_Ban_Event_2026-04.md`
 
 ---
 
