@@ -93,12 +93,7 @@ ALLOW / DENY / ESCALATE / CONSTRAIN
 
 MCC-Core acts as the verified execution boundary before irreversible action — the kind of “brake pedal” the AI industry is increasingly recognizing as necessary, built at the architecture level.
 
-The model proposes.  
-MCC-Core evaluates.  
-The gate enforces.  
-The audit chain records.
-
-This note summarizes the execution-boundary position of MCC-Core: autonomous systems may generate intent, but execution authority must be verified before action.
+Autonomous systems may generate intent. Execution authority must be verified before action.
 
 *Doctrine timestamped on GitHub, 2026-06-02*
 
@@ -114,8 +109,8 @@ Key quote (verbatim, @grok, April 25, 2026):
 
 This record is preserved as a third-party public signal, not as endorsement, certification, partnership, customer validation, or production approval.
 
-**Evidence:** Screenshot archived in repository at `proof/screenshot.png`,  
-committed April 2026 — public timestamp on GitHub.
+**Evidence:** Screenshot archived in repository: [`proof/screenshot.png`](https://github.com/mcc-prior-art/mcc-layer/blob/main/proof/screenshot.png)  
+Committed April 2026 — public timestamp on GitHub.
 
 ---
 
@@ -1095,24 +1090,6 @@ Status: **Prototype / Technical Review**
 
 Autonomy without verifiable control is not intelligence.
 
-A proposal is not permission.
-
-Intent is not authority.
-
-Memory is not authority.
-
-AI access is not AI governance.
-
-Token usage is not productivity.
-
-Execution requires a verified decision token.
-
-No verified decision token — no execution.
-
-No verified path — no trusted execution.
-
-No post-factum permission.
-
----
-
-**VERIFY THE DECISION. CONTROL THE EXECUTION. AUDIT THE OUTCOME.**
+Verify the decision.  
+Control the execution.  
+Audit the outcome.
