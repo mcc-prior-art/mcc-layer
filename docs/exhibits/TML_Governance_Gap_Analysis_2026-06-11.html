@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AXLOGIQ × TML — Governance Gap Unit File 2026-06-11</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@300;400;500;600;700&display=swap');
+  *, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+  :root {
+    --bg: #07090d;
+    --surface: #10131a;
+    --surface-soft: #151925;
+    --surface-deep: #080a0f;
+    --border: #242a3a;
+    --border-soft: #1a1f2e;
+    --indigo: #5b6cff;
+    --cyan: #00e5ff;
+    --cyan-soft: #00e5ff14;
+    --gold: #d8b45a;
+    --red: #ff3d57;
+    --green: #00e676;
+    --orange: #ff9f1c;
+    --text: #eef1f7;
+    --muted: #8a92a6;
+    --muted2: #5f687a;
+    --mono: 'JetBrains Mono', monospace;
+    --sans: 'Inter', sans-serif;
+  }
+  body {
+    background:
+      radial-gradient(circle at top left, #13203a 0, transparent 34%),
+      radial-gradient(circle at top right, #062a33 0, transparent 32%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.65;
+    padding: 38px 16px;
+    max-width: 920px;
+    margin: 0 auto;
+  }
+  .shell {
+    border: 1px solid var(--border-soft);
+    background: linear-gradient(180deg, #0c0f16cc, #07090dcc);
+    border-radius: 14px;
+    padding: 24px;
+    box-shadow: 0 24px 80px #00000070;
+  }
+  .header {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 22px;
+    margin-bottom: 34px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 24px;
+  }
+  .brand-lockup {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .logo {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--cyan);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+  .title {
+    font-size: 24px;
+    line-height: 1.15;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    color: var(--text);
+  }
+  .subtitle {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .meta {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    text-align: right;
+    line-height: 1.9;
+    min-width: 230px;
+  }
+  .meta strong {
+    color: var(--text);
+    font-weight: 500;
+  }
+  .block {
+    background: linear-gradient(180deg, var(--surface), #0d1017);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 30px 34px;
+    margin-bottom: 20px;
+    position: relative;
+    overflow: hidden;
+  }
+  .block::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-top: 1px solid #ffffff08;
+    pointer-events: none;
+  }
+  .block-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--indigo);
+    margin-bottom: 18px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .block-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+  h2 {
+    font-size: 17px;
+    font-weight: 650;
+    margin-bottom: 16px;
+    color: var(--text);
+    letter-spacing: -0.01em;
+  }
+  p {
+    margin-bottom: 12px;
+    color: #cdd3e1;
+  }
+  p:last-child {
+    margin-bottom: 0;
+  }
+  strong {
+    color: var(--text);
+    font-weight: 650;
+  }
+  .diagram {
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 2.05;
+    background: linear-gradient(180deg, #090c12, #06080d);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 22px 24px;
+    margin: 18px 0;
+    overflow-x: auto;
+    white-space: pre;
+    box-shadow: inset 0 0 0 1px #ffffff03;
+  }
+  .gap-label {
+    color: var(--red);
+    font-weight: 700;
+  }
+  .fix-label {
+    color: var(--green);
+    font-weight: 700;
+  }
+  .node {
+    color: var(--cyan);
+  }
+  .rule-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 18px 0;
+  }
+  .rule {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--cyan);
+    border-left: 3px solid var(--cyan);
+    padding: 12px 16px;
+    background: var(--cyan-soft);
+    border-radius: 0 6px 6px 0;
+  }
+  .rule.gold {
+    color: var(--gold);
+    border-left-color: var(--gold);
+    background: #d8b45a12;
+  }
+  .verdicts {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 14px 0;
+  }
+  .pill {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 4px 11px;
+    border-radius: 999px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+  .pill.allow {
+    background: #00e6761c;
+    color: var(--green);
+    border: 1px solid #00e67644;
+  }
+  .pill.deny {
+    background: #ff3d571c;
+    color: var(--red);
+    border: 1px solid #ff3d5744;
+  }
+  .pill.esc {
+    background: #ff9f1c1c;
+    color: var(--orange);
+    border: 1px solid #ff9f1c44;
+  }
+  .pill.con {
+    background: #5b6cff1c;
+    color: var(--indigo);
+    border: 1px solid #5b6cff44;
+  }
+  .message-box {
+    background: var(--surface-deep);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 22px 24px;
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.85;
+    white-space: pre-wrap;
+    color: #cbd2df;
+    box-shadow: inset 0 0 0 1px #ffffff03;
+  }
+  .subject-line {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .subject-line span {
+    color: var(--cyan);
+  }
+  .copy-btn {
+    display: inline-block;
+    margin-top: 13px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--indigo);
+    background: #5b6cff18;
+    border: 1px solid #5b6cff44;
+    border-radius: 6px;
+    padding: 7px 15px;
+    cursor: pointer;
+    transition: all 0.16s ease;
+    user-select: none;
+  }
+  .copy-btn:hover {
+    background: #5b6cff2a;
+    transform: translateY(-1px);
+  }
+  .copy-btn.copied {
+    color: var(--green);
+    border-color: #00e67644;
+    background: #00e67618;
+  }
+  .prior-art {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 2.05;
+  }
+  .prior-art a {
+    color: var(--indigo);
+    text-decoration: none;
+  }
+  .prior-art a:hover {
+    color: var(--cyan);
+  }
+  .note {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    background: #ffffff04;
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-top: 16px;
+  }
+  .note span {
+    color: var(--cyan);
+  }
+  .footer {
+    border-top: 1px solid var(--border);
+    padding-top: 20px;
+    margin-top: 34px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted2);
+    display: flex;
+    justify-content: space-between;
+    gap: 20px;
+  }
+  @media (max-width: 720px) {
+    body {
+      padding: 20px 10px;
+    }
+    .shell {
+      padding: 16px;
+    }
+    .header {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+    .meta {
+      text-align: left;
+      min-width: unset;
+    }
+    .block {
+      padding: 24px 20px;
+    }
+    .rule-grid {
+      grid-template-columns: 1fr;
+    }
+    .title {
+      font-size: 21px;
+    }
+    .footer {
+      flex-direction: column;
+    }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="header">
+    <div class="brand-lockup">
+      <div class="logo">AXLOGIQ — Unit File</div>
+      <div class="title">TML Governance Gap Analysis</div>
+      <div class="subtitle">Pre-execution authority layer for interaction/background AI systems</div>
+    </div>
+    <div class="meta">
+      <strong>AXLOGIQ analysis:</strong> 2026-06-11<br>
+      <strong>TML publication:</strong> 2026-05-11<br>
+      <strong>Founder:</strong> Alexandr Ponomariov<br>
+      <strong>Record type:</strong> Public technical exhibit
+    </div>
+  </div>
+  <!-- EXHIBIT -->
+  <div class="block">
+    <div class="block-label">01 — Exhibit / Public Architecture Signal</div>
+    <h2>Interaction / Background Split Requires an Execution Authority Boundary</h2>
+    <p>
+      Thinking Machines Lab described a two-model architecture: an <strong>Interaction Model</strong>
+      for real-time multimodal interaction and an asynchronous <strong>Background Model</strong>
+      for longer-running reasoning, tool use, and agentic workflows. Both models share conversation context.
+    </p>
+    <div class="diagram"><span class="node">User</span>
+  ↓
+<span class="node">Interaction Model</span>  →  <span class="gap-label">[ NO PUBLICLY SPECIFIED EXECUTION GATE ]</span>  →  <span class="node">Background Model</span>
+                                                                   ↓
+                                                   tool_call / browsing / code_exec
+                                                   payment / deployment / regulated_action</div>
+    <p>
+      The publicly described architecture does not specify a pre-execution decision boundary between
+      delegated intent and tool or agent execution. The Interaction Model can forward intent. The Background
+      Model can act. But shared context is not execution authority.
+    </p>
+    <div class="rule-grid">
+      <div class="rule">A proposal is not permission.</div>
+      <div class="rule gold">Shared context is not execution authority.</div>
+    </div>
+    <p>
+      MCC-Core addresses this class of gap by introducing a verified decision boundary before execution:
+      intent is evaluated against identity, policy, risk, context, reversibility, scope, authority,
+      auditability, and execution constraints.
+    </p>
+    <div class="diagram"><span class="node">User</span>
+  ↓
+<span class="node">Interaction Model</span>  →  <span class="fix-label">[ MCC-Core Decision Boundary ]</span>  →  <span class="node">Background Model</span>
+                              ↓
+                    evaluate(request, policy, authority)
+                              ↓
+                    signed Verified Decision Token
+                              ↓
+                    fail-closed Execution Gate</div>
+    <div class="verdicts">
+      <span class="pill allow">ALLOW</span>
+      <span class="pill deny">DENY</span>
+      <span class="pill esc">ESCALATE</span>
+      <span class="pill con">CONSTRAIN</span>
+    </div>
+    <p style="font-size:12px; color: var(--muted);">
+      Ed25519-signed Decision Token → mandatory execution gate → append-only audit chain → fail-closed default.
+    </p>
+    <div class="prior-art" style="margin-top:18px;">
+      Prior art chain:<br>
+      Decision Boundary Doctrine — 2026-06-02<br>
+      Non-Post-Execution Principle — 2026-06-02<br>
+      Doctrine_Lines_v1_0 — 2026-06-02<br>
+      Mandatory Evaluation Path — 2026-06-02<br>
+      Repo: <a href="https://github.com/mcc-prior-art/mcc-layer" target="_blank">github.com/mcc-prior-art/mcc-layer</a>
+    </div>
+    <div class="note">
+      <span>Positioning note:</span> This exhibit does not claim knowledge of TML internal systems.
+      It analyzes the publicly described architecture and identifies where a pre-execution authority
+      layer becomes load-bearing as interaction systems delegate work to background agents.
+    </div>
+  </div>
+  <!-- EMAIL TO MURATI -->
+  <div class="block">
+    <div class="block-label">02 — Email / Mira Murati</div>
+    <h2>Cold Outreach — Thinking Machines Lab</h2>
+    <div class="subject-line">Subject: <span>The execution authority layer between interaction and background models</span></div>
+    <div class="message-box" id="email-murati">Mira,
+Your two-model split is architecturally honest.
+One question becomes critical as the background model moves toward tool use and agentic workflows: what verifies execution authority before action?
+That is the layer MCC-Core defines: a pre-execution decision boundary between intent and irreversible execution.
+A proposal is not permission.
+No verified decision — no execution.
+Public record:
+github.com/mcc-prior-art/mcc-layer
+Alexandr Ponomariov
+Founder, AXLOGIQ</div>
+    <button class="copy-btn" onclick="copyText('email-murati', this)">Copy</button>
+  </div>
+  <!-- DM TO SCHULMAN -->
+  <div class="block">
+    <div class="block-label">03 — X DM / John Schulman @johnschulman2</div>
+    <h2>Direct Message — Chief Scientist, TML</h2>
+    <div class="message-box" id="dm-schulman">John — strong architecture with TML-Interaction-Small.
+The interaction/background split raises one governance question: what verifies authority before background tool/agent execution?
+MCC-Core is built as that pre-execution decision boundary:
+signed decision tokens, fail-closed gate, ALLOW/DENY/ESCALATE/CONSTRAIN.
+Public record:
+github.com/mcc-prior-art/mcc-layer
+Alexandr, AXLOGIQ</div>
+    <button class="copy-btn" onclick="copyText('dm-schulman', this)">Copy</button>
+  </div>
+  <!-- COMMIT -->
+  <div class="block">
+    <div class="block-label">04 — Git Commit</div>
+    <h2>Commit Message</h2>
+    <div class="message-box" id="commit-msg">feat(exhibit): add TML governance gap analysis 2026-06-11
+File: docs/exhibits/TML_Governance_Gap_Analysis_2026-06-11.md
+- Analyze TML interaction/background model architecture as public market signal
+- Identify missing publicly specified pre-execution authority boundary
+- Map MCC-Core as mandatory execution gate before tool/agent action
+- Document ALLOW/DENY/ESCALATE/CONSTRAIN verdict path
+- Preserve distinction between delegated intent and verified execution authority
+- Prior art chain: Decision Boundary Doctrine, Non-Post-Execution Principle,
+  Doctrine_Lines_v1_0, Mandatory Evaluation Path — all 2026-06-02</div>
+    <button class="copy-btn" onclick="copyText('commit-msg', this)">Copy</button>
+  </div>
+  <!-- README SNIPPET -->
+  <div class="block">
+    <div class="block-label">05 — README / Exhibit Entry</div>
+    <h2>Prior Art Archive Entry</h2>
+    <div class="message-box" id="readme-snippet">### TML Governance Gap Analysis — 2026-06-11
+Independent technical analysis of Thinking Machines Lab's public interaction/background model architecture.
+The exhibit identifies a governance gap class: when an interaction model delegates work to an asynchronous background model capable of tool use or agentic workflows, execution authority must be verified before action.
+MCC-Core addresses this class through a mandatory pre-execution decision boundary:
+- A proposal is not permission.
+- No verified decision — no execution.
+- No verified path — no trusted execution.
+- No post-factum permission.
+File:
+docs/exhibits/TML_Governance_Gap_Analysis_2026-06-11.md</div>
+    <button class="copy-btn" onclick="copyText('readme-snippet', this)">Copy</button>
+  </div>
+  <!-- NIW NOTE -->
+  <div class="block">
+    <div class="block-label">06 — NIW / Strategic Dossier Note</div>
+    <div class="prior-art" style="line-height: 2.25;">
+      Exhibit type: Independent technical analysis of funded frontier AI architecture<br>
+      Public signal: Thinking Machines Lab interaction/background model architecture<br>
+      Gap class: Delegated background execution without publicly specified pre-execution authority boundary<br>
+      MCC-Core response: Pre-existing doctrine applied to new public market signal<br>
+      Prior doctrine date: 2026-06-02<br>
+      Analysis date: 2026-06-11<br>
+      Outreach targets: Mira Murati, John Schulman<br>
+      Log file: docs/exhibits/Outreach_Log_2026-06.md<br>
+      If reply, star, fork, quote, or follow occurs: screenshot → same log
+    </div>
+  </div>
+  <div class="footer">
+    <span>AXLOGIQ Inc. — Execution Governance Infrastructure</span>
+    <span>axlogiq.com · axlogiq.ai · github.com/mcc-prior-art/mcc-layer</span>
+  </div>
+</div>
+<script>
+function copyText(id, btn) {
+  const text = document.getElementById(id).innerText;
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = 'Copied ✓';
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.textContent = 'Copy';
+      btn.classList.remove('copied');
+    }, 2000);
+  });
+}
+</script>
+</body>
+</html>
