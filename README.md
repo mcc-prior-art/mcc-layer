@@ -3,7 +3,7 @@
 **Public technical record established:** May 2026  
 **Author:** Alexandr Ponomariov / AXLOGIQ Inc.  
 **Repository:** https://github.com/mcc-prior-art/mcc-layer  
-**Version:** `v1.5.2` | **Date:** `2026-06-12`  
+**Version:** `v1.5.3` | **Date:** `2026-06-12`  
 **Commit:** `see GitHub history`  
 **Doctrine record:** `2026-06-02`  
 **Latest exhibit record:** `First-Run Gate Verification — PR #2`
@@ -258,27 +258,44 @@ This is not a certified production system, a formally audited security product, 
 
 ## Architecture Diagram — Verified Execution Boundary
 
-```mermaid
-flowchart LR
-  A["AI Agent / LLM"] -->|proposes action| B{"MCC-Core<br/>Decision Boundary"}
-  P[(Policy)] --> B
-  M[(Memory / Context)] --> B
-  R[(Risk / Resource Limits)] --> B
-  L[(Audit Log)] --> B
+Mobile-safe reference diagram:
 
-  B -->|ALLOW + verified decision token| T["Signed Decision Token"]
-  T --> G["Execution Gate"]
-  G --> X["Authorized Execution"]
-  X --> C[(Audit Chain Record)]
-
-  B -->|CONSTRAIN| S["Limited Execution Scope"]
-  S --> G
-
-  B -->|DENY| D["Block Execution"]
-  D --> C
-
-  B -->|ESCALATE| H["Human / Higher Authority Review"]
-  H --> C
+```text
+AI Agent / LLM
+  proposes action
+       │
+       ▼
+MCC-Core Decision Boundary
+  verifies current authority before action:
+  - identity
+  - policy
+  - memory / context freshness
+  - risk
+  - resource limits
+  - auditability
+       │
+       ├── DENY ───────────────► Block Execution + Audit
+       │
+       ├── ESCALATE ───────────► Human / Higher Authority Review + Audit
+       │
+       ├── CONSTRAIN ──────────► Limited Execution Scope
+       │                          │
+       │                          ▼
+       └── ALLOW ──────────────► Signed Decision Token
+                                  │
+                                  ▼
+                           Execution Gate
+                           verifies token
+                                  │
+                     ┌────────────┴────────────┐
+                     ▼                         ▼
+              Valid token              Missing / invalid /
+                     │                  expired / used token
+                     ▼                         │
+          Authorized Execution                 ▼
+                     │                  DENY + Audit
+                     ▼
+             Audit Chain Record
 ```
 
 The model may propose an action. MCC-Core evaluates whether authority exists. The execution gate allows action only after a valid, scoped, time-limited, replay-protected decision token is verified.
@@ -324,21 +341,37 @@ BLOCKED: Destructive action blocked
 
 ## Without MCC / With MCC
 
-```mermaid
-flowchart LR
-  subgraph Without_MCC["Without MCC"]
-    I1["LLM proposes destructive action:<br/>delete user / delete file"] --> I2["OS / Tool executes"]
-    I2 --> I3["Damage done"]
-  end
+Mobile-safe comparison:
 
-  subgraph With_MCC["With MCC"]
-    W1["LLM proposes destructive action:<br/>delete user / delete file"] --> W2{"MCC-Core:<br/>verified token?"}
-    W2 -->|No valid token| W3["BLOCKED + Audit"]
-    W2 -.->|Execution path never reached| W4["No execution"]
-  end
+```text
+WITHOUT MCC
 
-  style I3 fill:#f99,stroke:#333
-  style W3 fill:#9f9,stroke:#333
+LLM proposes destructive action
+  example: delete user / delete file
+       │
+       ▼
+OS / Tool executes
+       │
+       ▼
+Damage done
+
+
+WITH MCC
+
+LLM proposes destructive action
+  example: delete user / delete file
+       │
+       ▼
+MCC-Core checks for valid verified decision token
+       │
+       ▼
+No valid token
+       │
+       ▼
+BLOCKED + Audit
+       │
+       ▼
+Execution path never reached
 ```
 
 This demonstrates the core boundary: an action may be proposed, but execution is blocked unless MCC-Core authorizes it.
@@ -801,23 +834,39 @@ The architecture is intentionally simple:
 
 ## Decision Token Structure
 
-```mermaid
-flowchart TD
-  subgraph Token["Verified Decision Token"]
-    A["action_hash"] --> B["Signature<br/>Ed25519"]
-    C["nonce"] --> B
-    D["timestamp / expiry"] --> B
-    E["actor_id"] --> B
-    F["policy_version"] --> B
-    S["constraints / scope"] --> B
-    O["outcome"] --> B
-  end
+Mobile-safe token model:
 
-  K["Private Signing Key<br/>MCC-Core / Guard / HSM"] -->|signs| B
-  B -->|token presented to| G["Execution Gate"]
-  G -->|verifies with public key| V{"Valid?"}
-  V -->|Yes| X["Authorized Execution"]
-  V -->|No| Y["DENY + Audit"]
+```text
+Verified Decision Token
+
+Fields included in the signed authority object:
+
+- outcome
+- actor_id
+- action_hash
+- policy_version
+- constraints / scope
+- nonce
+- timestamp / expiry
+- signature: Ed25519
+
+Signing path:
+
+MCC-Core / Guard / HSM private signing key
+       │
+       ▼
+signs the decision token
+       │
+       ▼
+Execution Gate receives token
+       │
+       ▼
+verifies signature, scope, expiry, nonce, and policy context
+       │
+       ├── Valid ─────────────► Authorized Execution
+       │
+       └── Invalid / expired /
+           reused / out of scope ─► DENY + Audit
 ```
 
 A verified decision token is not a log entry and not a model output. It is signed execution authority for a specific action, actor, context, policy version, scope, and time window.
