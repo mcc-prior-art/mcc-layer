@@ -1,0 +1,64 @@
+name: MCC Runtime CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest tests/ -v
+
+  invariants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No HMAC in authority-bearing runtime path
+        run: |
+          if grep -rin "hmac" main.py src/; then
+            echo "STOP: HMAC found in authority-bearing runtime path"
+            exit 1
+          fi
+          echo "OK: no HMAC in main.py or src/"
+
+      - name: No legacy mcc-prior-auth string in runtime path
+        run: |
+          if grep -rn "mcc-prior-auth" main.py src/ tests/ scripts/; then
+            echo "STOP: legacy repo-name typo found"
+            exit 1
+          fi
+          echo "OK: no mcc-prior-auth string"
+
+      - name: Fail-closed references present
+        run: |
+          grep -qi "fail-closed" main.py
+          grep -qi "fail-closed" src/mcc_core/gate.py
+          grep -qi "fail" src/mcc_core/nonce.py
+          echo "OK: fail-closed posture referenced in runtime and gate"
+
+      - name: Audit fsync path present
+        run: |
+          grep -q "fsync" src/mcc_core/audit.py
+          echo "OK: fsync present in audit log"
+
+      - name: No fail-open exception handlers in gate
+        run: |
+          if grep -rn "except.*ALLOW\|except.*allow" src/mcc_core/gate.py main.py; then
+            echo "STOP: fail-open pattern detected"
+            exit 1
+          fi
+          echo "OK: no fail-open handlers"
