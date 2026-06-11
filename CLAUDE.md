@@ -156,21 +156,45 @@ When editing docs or code, treat this repo as a **legal and commercial artifact*
 
 ```
 mcc-layer/
-├── CLAUDE.md                  ← this file
-├── README.md                  ← primary public prior art document (910 lines, stable)
-├── DOCTRINE.md                ← MCC-Core Doctrine Lines v1.0
+├── CLAUDE.md                                           ← this file
+├── README.md                                           ← primary public prior art document
+├── MCC-Core_Decision_Boundary_Doctrine_2026-06-02.md   ← doctrine (protected)
+├── MCC-Core_Doctrine_Lines_v1_0_2026-06-02.md          ← doctrine (protected)
+├── MCC-Core_Non-Post-Execution_Principle_2026-06-02.md ← doctrine (protected)
+├── main.py                  ← runtime: OPA adapter + Ed25519 decision tokens
+├── mcc.yaml                 ← declarative policy reference (thresholds = rego canon)
+├── policies.yaml            ← declarative policy reference (thresholds = rego canon)
+├── requirements.txt         ← runtime deps (incl. cryptography for Ed25519)
+├── requirements-dev.txt     ← dev deps (pytest)
+├── Dockerfile / docker-compose.yml
+├── audit.jsonl              ← hash-chain audit log (genesis 2026-04-22)
+├── test_vectors.json
+├── .github/
+│   └── workflows/
+│       └── mcc-runtime-ci.yml ← CI: pytest + MCC invariant checks
 ├── src/
 │   └── mcc_core/
-│       ├── core.py            ← decision engine: ALLOW/DENY/ESCALATE/CONSTRAIN
+│       ├── core.py            ← decision engine: ALLOW/DENY/ESCALATE/CONSTRAIN → signed token
 │       ├── gate.py            ← fail-closed execution gate
-│       ├── audit.py           ← append-only hash-chain log
+│       ├── audit.py           ← append-only hash-chain log (fsync on every write)
 │       ├── nonce.py           ← Redis-backed replay protection
 │       ├── policy.py          ← PolicyBundle with hash verification
 │       └── signing.py         ← Ed25519 token signing/verification
-├── tests/
-│   └── test_mcc_core.py       ← 20+ tests, all four verdict paths
-└── diagrams/
-    └── architecture.mmd       ← Mermaid architecture diagram
+├── policies/
+│   └── mcc.rego               ← canonical policy source (OPA)
+├── server/
+│   └── app.py                 ← DEPRECATED legacy runtime (no decision tokens)
+├── examples/                  ← demo scripts and execution profiles
+├── scripts/
+│   └── smoke_test.sh
+├── docs/                      ← architecture, security model, decision token spec
+│   └── exhibits/              ← NIW exhibits (protected)
+├── proof/
+└── tests/
+    ├── conftest.py
+    ├── test_mcc_core.py       ← 40 tests: four verdict paths, replay, expiry,
+    │                            fail-closed (Redis/OPA down), audit chain
+    └── opa_test_vectors.json
 ```
 
 If actual structure differs — update this map, do not guess.
