@@ -1,7 +1,24 @@
 #!/usr/bin/env python3
 """
 MCC Policy Engine — production-grade single-file reference
+
+DEPRECATED (2026-06-11): legacy standalone runtime kept for historical
+reference only. It predates Ed25519 decision tokens and does not issue
+them, which conflicts with the MCC-Core invariant
+"no verified decision token — no execution".
+
+The supported runtime is main.py + src/mcc_core/.
+Do not deploy this module. Removal requires explicit AX approval.
 """
+
+import warnings
+
+warnings.warn(
+    "server/app.py is a deprecated legacy runtime without Ed25519 decision "
+    "tokens; use main.py + src/mcc_core/ instead",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 import os
 import time

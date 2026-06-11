@@ -9,13 +9,13 @@ actions:
     description: "Control policy for payment execution"
     rules:
       allow:
-        condition: "amount < 100"
-        reason: "Low-value payment"
+        condition: "amount <= 5000"
+        reason: "Within autonomous approval threshold"
       escalate:
-        condition: "amount >= 100 and amount < 10000"
+        condition: "amount > 5000 and amount <= 10000"
         reason: "Human approval required"
       deny:
-        condition: "amount >= 10000"
+        condition: "amount > 10000"
         reason: "High-risk payment blocked"
 
 audit:
