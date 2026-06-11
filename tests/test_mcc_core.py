@@ -462,6 +462,33 @@ def test_token_binds_to_audit_chain():
     assert AuditLog.verify_chain(main.settings.audit_log_path)
 
 
+def test_idempotency_cache_hit_within_ttl():
+    import main
+
+    req = main.EvaluateRequest(
+        session_id="idem", intent="send_payment", args={"amount": 100},
+        idempotency_key="idem-ttl-1",
+    )
+    first = run(main.mcc.evaluate("tenant-test", req))
+    second = run(main.mcc.evaluate("tenant-test", req))
+    assert second.trace_id == first.trace_id  # served from cache
+
+
+def test_idempotency_cache_expires_with_token_ttl():
+    import main
+
+    req = main.EvaluateRequest(
+        session_id="idem", intent="send_payment", args={"amount": 100},
+        idempotency_key="idem-ttl-2",
+    )
+    first = run(main.mcc.evaluate("tenant-test", req))
+    key = "tenant-test:idem-ttl-2"
+    _, cached = main.mcc._idem_cache[key]
+    main.mcc._idem_cache[key] = (0.0, cached)  # force expiry
+    second = run(main.mcc.evaluate("tenant-test", req))
+    assert second.trace_id != first.trace_id  # re-evaluated, not cached
+
+
 def test_no_hmac_in_authority_bearing_runtime():
     repo_root = Path(__file__).resolve().parents[1]
     sources = [repo_root / "main.py"]

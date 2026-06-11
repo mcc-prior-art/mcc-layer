@@ -161,6 +161,7 @@ mcc-layer/
 ├── MCC-Core_Decision_Boundary_Doctrine_2026-06-02.md   ← doctrine (protected)
 ├── MCC-Core_Doctrine_Lines_v1_0_2026-06-02.md          ← doctrine (protected)
 ├── MCC-Core_Non-Post-Execution_Principle_2026-06-02.md ← doctrine (protected)
+├── RUNTIME_DEPLOYMENT.md    ← production notes: signing key, env vars, fail-closed ops
 ├── main.py                  ← runtime: OPA adapter + Ed25519 decision tokens
 ├── mcc.yaml                 ← declarative policy reference (thresholds = rego canon)
 ├── policies.yaml            ← declarative policy reference (thresholds = rego canon)
@@ -186,13 +187,14 @@ mcc-layer/
 │   └── app.py                 ← DEPRECATED legacy runtime (no decision tokens)
 ├── examples/                  ← demo scripts and execution profiles
 ├── scripts/
+│   ├── generate_signing_key.py ← Ed25519 key generator (PKCS8 PEM, mode 0600)
 │   └── smoke_test.sh
 ├── docs/                      ← architecture, security model, decision token spec
 │   └── exhibits/              ← NIW exhibits (protected)
 ├── proof/
 └── tests/
     ├── conftest.py
-    ├── test_mcc_core.py       ← 40 tests: four verdict paths, replay, expiry,
+    ├── test_mcc_core.py       ← 42 tests: four verdict paths, replay, expiry,
     │                            fail-closed (Redis/OPA down), audit chain
     └── opa_test_vectors.json
 ```

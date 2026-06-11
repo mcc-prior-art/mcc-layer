@@ -283,10 +283,14 @@ class LocalFallbackPolicy:
 
 # ---------- MCC Core ----------
 
+IDEM_CACHE_MAX_ENTRIES = 10_000
+
+
 class MCC:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
-        self._idem_cache: Dict[str, EvaluateResponse] = {}
+        # key -> (expires_at_unix, response); entries live no longer than a token
+        self._idem_cache: Dict[str, tuple] = {}
         self.opa = OPAAdapter(
             base_url=settings.opa_url,
             data_path=settings.opa_data_path,
@@ -332,13 +336,32 @@ class MCC:
     def _trace(self, session_id: str) -> str:
         return hashlib.sha256((session_id + str(uuid.uuid4())).encode()).hexdigest()[:12]
 
+    def _idem_get(self, key: str) -> Optional[EvaluateResponse]:
+        entry = self._idem_cache.get(key)
+        if entry is None:
+            return None
+        expires_at, cached = entry
+        if time.time() >= expires_at:
+            self._idem_cache.pop(key, None)
+            return None
+        return cached
+
+    def _idem_put(self, key: str, result: EvaluateResponse) -> None:
+        if len(self._idem_cache) >= IDEM_CACHE_MAX_ENTRIES:
+            now = time.time()
+            for stale in [k for k, (exp, _) in self._idem_cache.items() if exp <= now]:
+                self._idem_cache.pop(stale, None)
+            while len(self._idem_cache) >= IDEM_CACHE_MAX_ENTRIES:
+                self._idem_cache.pop(next(iter(self._idem_cache)))
+        self._idem_cache[key] = (time.time() + settings.token_ttl_seconds, result)
+
     async def evaluate(self, tenant: str, req: EvaluateRequest) -> EvaluateResponse:
         trace_id = self._trace(req.session_id)
 
         if req.idempotency_key:
-            key = f"{tenant}:{req.idempotency_key}"
-            if key in self._idem_cache:
-                return self._idem_cache[key]
+            cached = self._idem_get(f"{tenant}:{req.idempotency_key}")
+            if cached is not None:
+                return cached
 
         if settings.use_opa:
             policy_decision = await self.opa.evaluate(
@@ -426,8 +449,7 @@ class MCC:
         )
 
         if req.idempotency_key:
-            key = f"{tenant}:{req.idempotency_key}"
-            self._idem_cache[key] = result
+            self._idem_put(f"{tenant}:{req.idempotency_key}", result)
 
         DECISIONS.labels(decision=result.decision.value).inc()
 
