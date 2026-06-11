@@ -62,3 +62,22 @@ jobs:
             exit 1
           fi
           echo "OK: no fail-open handlers"
+
+      - name: YAML policy thresholds match Rego canon
+        run: |
+          rego=$(grep -oE 'amount (<=|>) [0-9]+' policies/mcc.rego | grep -oE '[0-9]+' | sort -un)
+          if [ -z "$rego" ]; then
+            echo "STOP: no thresholds found in policies/mcc.rego"
+            exit 1
+          fi
+          for f in mcc.yaml policies.yaml; do
+            yaml=$(grep -oE 'amount (<=|>) [0-9]+' "$f" | grep -oE '[0-9]+' | sort -un)
+            if [ "$rego" != "$yaml" ]; then
+              echo "STOP: $f thresholds do not match rego canon"
+              echo "rego: $rego"
+              echo "$f: $yaml"
+              exit 1
+            fi
+          done
+          echo "OK: mcc.yaml and policies.yaml match rego canon thresholds:"
+          echo "$rego"
