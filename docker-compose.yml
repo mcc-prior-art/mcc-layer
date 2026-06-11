@@ -26,7 +26,6 @@ services:
       MCC_OPA_TIMEOUT_SECONDS: "1.5"
       MCC_REDIS_URL: "redis://redis:6379"
       MCC_API_KEY: "demo-key"
-      MCC_HMAC_SECRET: "change-me"
     depends_on:
       - opa
       - redis

@@ -6,7 +6,8 @@ Reference implementation:
 - Real OPA/Rego policy evaluation via /v1/data/mcc/decision
 - Fail-closed behavior when OPA is unavailable or returns invalid output
 - Explicit outcomes: ALLOW / DENY / ESCALATE / CONSTRAIN
-- HMAC response signature
+- Ed25519-signed decision tokens for ALLOW and CONSTRAIN only
+- Append-only hash-chain audit log (fsync on every write)
 - Idempotency cache
 - Prometheus metrics
 - Optional Redis connection placeholder
@@ -20,29 +21,48 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import hmac
 import json
 import logging
+import sys
 import time
 import uuid
+from pathlib import Path
 from enum import Enum
 from typing import Any, Dict, Optional
 
 import httpx
 import redis.asyncio as redis
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, Histogram, generate_latest
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
-from starlette.middleware.base import BaseHTTPMiddleware
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+
+from mcc_core import (
+    AuditLog,
+    DecisionEngine,
+    PolicyBundle,
+    SigningKey,
+    hash_payload,
+)
 
 
 # ---------- Settings ----------
 
 class Settings(BaseSettings):
-    hmac_secret: str = "change-me"
     redis_url: str = "redis://redis:6379"
+
+    signing_key_path: str = ""
+    signing_key_id: str = "mcc-core-dev-key-1"
+    token_issuer: str = "mcc/core"
+    token_audience: str = "execution-gate-1"
+    token_ttl_seconds: int = 60
+
+    audit_log_path: str = "audit.jsonl"
+    policy_bundle_path: str = "policies/mcc.rego"
+    policy_id: str = "mcc.rego/v1"
 
     api_key: str = "demo-key"
 
@@ -106,6 +126,7 @@ class EvaluateResponse(BaseModel):
     constraints: Dict[str, Any] = Field(default_factory=dict)
     policy_engine: str = "opa"
     policy_ref: Optional[str] = None
+    decision_token: Optional[Dict[str, Any]] = None
 
 
 class PolicyDecision(BaseModel):
@@ -264,7 +285,6 @@ class LocalFallbackPolicy:
 
 class MCC:
     def __init__(self) -> None:
-        self.prev_hash = "GENESIS"
         self._lock = asyncio.Lock()
         self._idem_cache: Dict[str, EvaluateResponse] = {}
         self.opa = OPAAdapter(
@@ -273,6 +293,41 @@ class MCC:
             timeout_seconds=settings.opa_timeout_seconds,
         )
         self.local_fallback = LocalFallbackPolicy()
+
+        if settings.signing_key_path:
+            self.signing_key = SigningKey.from_pem_file(
+                settings.signing_key_path, settings.signing_key_id
+            )
+        else:
+            self.signing_key = SigningKey.generate(settings.signing_key_id)
+            logger.warning(
+                "MCC_SIGNING_KEY_PATH not set; using ephemeral Ed25519 dev key "
+                "(not a production posture)"
+            )
+
+        self.audit = AuditLog(settings.audit_log_path)
+
+        # No trusted policy bundle -> no decision engine -> no tokens (fail-closed).
+        self.engine: Optional[DecisionEngine] = None
+        try:
+            self.policy_bundle: Optional[PolicyBundle] = PolicyBundle.from_file(
+                settings.policy_bundle_path, settings.policy_id
+            )
+            self.engine = DecisionEngine(
+                signing_key=self.signing_key,
+                issuer=settings.token_issuer,
+                audience=settings.token_audience,
+                policy_id=self.policy_bundle.policy_id,
+                policy_hash=self.policy_bundle.policy_hash,
+                token_ttl_seconds=settings.token_ttl_seconds,
+            )
+        except Exception:
+            self.policy_bundle = None
+            logger.warning(
+                "policy bundle unavailable at %s; decision tokens will not be "
+                "issued (fail-closed)",
+                settings.policy_bundle_path,
+            )
 
     def _trace(self, session_id: str) -> str:
         return hashlib.sha256((session_id + str(uuid.uuid4())).encode()).hexdigest()[:12]
@@ -296,6 +351,70 @@ class MCC:
             policy_decision = await self.local_fallback.evaluate(req=req)
             policy_engine = "local-fallback"
 
+        # Audit before any authority is released: no audit record, no token.
+        try:
+            async with self._lock:
+                audit_entry = self.audit.append(
+                    {
+                        "tenant": tenant,
+                        "session_id": req.session_id,
+                        "intent": req.intent,
+                        "args_hash": hash_payload(req.args),
+                        "decision": policy_decision.decision.value,
+                        "reason": policy_decision.reason,
+                        "trace_id": trace_id,
+                        "policy_engine": policy_engine,
+                        "policy_ref": policy_decision.policy_ref,
+                    }
+                )
+        except Exception:
+            logger.error("audit write failed; fail closed | trace=%s", trace_id)
+            policy_decision = PolicyDecision(
+                decision=Decision.DENY,
+                reason="audit unavailable; fail closed",
+                constraints={},
+                policy_ref="fail-closed",
+            )
+            audit_entry = None
+
+        decision_token: Optional[Dict[str, Any]] = None
+        if policy_decision.decision in (Decision.ALLOW, Decision.CONSTRAIN):
+            try:
+                if self.engine is None:
+                    raise RuntimeError("decision engine unavailable")
+                decision_token = self.engine.issue_token(
+                    verdict=policy_decision.decision.value,
+                    subject=f"agent/{req.session_id}",
+                    action=req.intent,
+                    payload=req.args,
+                    constraints=policy_decision.constraints,
+                    audit_ref=audit_entry["hash"] if audit_entry else None,
+                )
+            except Exception:
+                logger.error(
+                    "decision token issuance failed; fail closed | trace=%s", trace_id
+                )
+                decision_token = None
+                policy_decision = PolicyDecision(
+                    decision=Decision.DENY,
+                    reason="decision token unavailable; fail closed",
+                    constraints={},
+                    policy_ref="fail-closed",
+                )
+                try:
+                    async with self._lock:
+                        self.audit.append(
+                            {
+                                "tenant": tenant,
+                                "intent": req.intent,
+                                "decision": Decision.DENY.value,
+                                "reason": "token issuance failed; downgraded to DENY",
+                                "trace_id": trace_id,
+                            }
+                        )
+                except Exception:
+                    logger.error("audit write failed on downgrade | trace=%s", trace_id)
+
         result = EvaluateResponse(
             decision=policy_decision.decision,
             trace_id=trace_id,
@@ -303,6 +422,7 @@ class MCC:
             constraints=policy_decision.constraints,
             policy_engine=policy_engine,
             policy_ref=policy_decision.policy_ref,
+            decision_token=decision_token,
         )
 
         if req.idempotency_key:
@@ -330,8 +450,11 @@ mcc = MCC()
 
 app = FastAPI(
     title="MCC-Core Execution Governance Runtime",
-    version="1.1.0-opa",
-    description="MCC-Core runtime with real OPA/Rego policy adapter and fail-closed evaluation.",
+    version="1.2.0-ed25519",
+    description=(
+        "MCC-Core runtime with real OPA/Rego policy adapter, fail-closed "
+        "evaluation, and Ed25519-signed decision tokens."
+    ),
 )
 
 app.add_middleware(
@@ -342,37 +465,11 @@ app.add_middleware(
 )
 
 
-# ---------- Signature Middleware ----------
-
-class SignMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-
-        if request.url.path == "/evaluate":
-            body = b""
-            async for chunk in response.body_iterator:
-                body += chunk
-
-            sig = hmac.new(
-                settings.hmac_secret.encode(),
-                body,
-                hashlib.sha256,
-            ).hexdigest()
-
-            return Response(
-                content=body,
-                headers={"X-MCC-Signature": sig},
-                media_type="application/json",
-                status_code=response.status_code,
-            )
-
-        return response
-
-
-app.add_middleware(SignMiddleware)
-
-
 # ---------- API ----------
+#
+# Authority is carried by the Ed25519-signed decision token inside the
+# response body (ALLOW / CONSTRAIN only). There is no transport-level
+# symmetric signature: verification happens at the execution gate.
 
 @app.post("/evaluate", response_model=EvaluateResponse)
 async def evaluate(req: EvaluateRequest, tenant_ctx: Dict[str, str] = Depends(get_tenant)):
@@ -396,6 +493,20 @@ async def health():
         "policy_engine": "opa" if settings.use_opa else "local-fallback",
         "opa_status": opa_status,
         "fail_closed": True,
+        "signing": {
+            "algorithm": "Ed25519",
+            "kid": mcc.signing_key.kid,
+            "public_key_b64": mcc.signing_key.public_key_b64(),
+            "ephemeral_key": not bool(settings.signing_key_path),
+        },
+        "policy_bundle": (
+            {
+                "policy_id": mcc.policy_bundle.policy_id,
+                "policy_hash": mcc.policy_bundle.policy_hash,
+            }
+            if mcc.policy_bundle
+            else "unavailable (tokens not issued; fail-closed)"
+        ),
     }
 
 
