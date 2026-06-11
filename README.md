@@ -3,10 +3,10 @@
 **Public technical record established:** May 2026  
 **Author:** Alexandr Ponomariov / AXLOGIQ Inc.  
 **Repository:** https://github.com/mcc-prior-art/mcc-layer  
-**Version:** `v1.5.1` | **Date:** `2026-06-11`  
+**Version:** `v1.5.2` | **Date:** `2026-06-12`  
 **Commit:** `see GitHub history`  
 **Doctrine record:** `2026-06-02`  
-**Latest exhibit record:** `TML Governance Gap Analysis — 2026-06-11`
+**Latest exhibit record:** `First-Run Gate Verification — PR #2`
 
 ---
 
@@ -44,6 +44,8 @@
   <a href="docs/exhibits/AXLOGIQ_Governance_v2.png"><strong>View Governance Exhibit →</strong></a>
   ·
   <a href="docs/exhibits/TML_Governance_Gap_Analysis_2026-06-11.html"><strong>View TML Governance Gap Analysis →</strong></a>
+  ·
+  <a href="https://github.com/mcc-prior-art/mcc-layer/pull/2"><strong>View First-Run Gate Verification →</strong></a>
 </p>
 
 <p align="center">
@@ -53,6 +55,8 @@
   <a href="#without-mcc--with-mcc">Comparison</a>
   ·
   <a href="#decision-token-structure">Token</a>
+  ·
+  <a href="#proof-of-concept--first-run-gate-verification">Verification</a>
 </p>
 
 ---
@@ -102,6 +106,49 @@ Autonomous systems may generate intent. Execution authority must be verified bef
 
 ---
 
+## Proof of Concept — First-Run Gate Verification
+
+MCC-Core is not only described as an execution governance layer. It was also validated through a public execution gate.
+
+In PR #2, the runtime gate was introduced and evaluated through GitHub Actions CI.
+
+**Public verification record:**
+
+- Pull request opened
+- Runtime gate changes submitted
+- Required CI checks executed
+- All required CI checks passed on the first verification path
+- No post-factum permission model
+- Merge became available only after verification
+
+**Execution flow demonstrated by the repository:**
+
+```text
+PROPOSE → VERIFY → ALLOW → MERGE
+```
+
+The branch proposed a change.  
+The CI gate evaluated the change.  
+The required checks passed.  
+The merge gate became available.
+
+This demonstrates the MCC-Core doctrine in executable form:
+
+```text
+A proposal is not permission.
+No verified decision — no execution.
+No verified path — no trusted execution.
+No post-factum permission.
+```
+
+This proof is not presented as production certification, formal audit, or external security validation.
+
+It is a public technical verification artifact showing the MCC-Core execution-boundary pattern operating inside the repository workflow itself.
+
+**Evidence:** [PR #2 — First-Run Gate Verification](https://github.com/mcc-prior-art/mcc-layer/pull/2)
+
+---
+
 ## External Public Signal
 
 In April 2026, a public Grok / xAI response independently acknowledged the MCC-Core execution governance concept as aligned with the need for layered controls around autonomous AI systems.
@@ -142,6 +189,7 @@ Related exhibits:
 
 - [X Platform Ban Event — April 2026](docs/exhibits/X_Ban_Event_2026-04.md)
 - [TML Governance Gap Analysis — 2026-06-11](docs/exhibits/TML_Governance_Gap_Analysis_2026-06-11.html)
+- [PR #2 — First-Run Gate Verification](https://github.com/mcc-prior-art/mcc-layer/pull/2)
 
 ### TML Governance Gap Analysis — 2026-06-11
 
@@ -459,6 +507,7 @@ The exhibit package includes:
 - **G4 — Stale Memory Production Deploy** — practical production deployment risk
 - **G4.1 — Technical Prevention Layer** — technical validation and execution-blocking model
 - **TML Governance Gap Analysis — 2026-06-11** — public frontier AI architecture signal showing where interaction/background systems require pre-execution authority governance
+- **PR #2 — First-Run Gate Verification** — public GitHub runtime verification record showing the execution-boundary pattern inside the repository workflow
 
 These exhibits serve as public reference architecture demonstrating why verified execution authority is required for infrastructure and cloud operations.
 
@@ -930,6 +979,7 @@ Recommended reading path:
 4. Review the MCC-I exhibits for the memory-authority boundary.
 5. Run the Quick Start proof.
 6. Inspect the runtime proof and API evaluation flow.
+7. Review PR #2 as the first-run gate verification record.
 
 ---
 
@@ -945,6 +995,7 @@ Correct descriptions:
 - Public technical record — Alexandr Ponomariov / AXLOGIQ Inc.
 - Prototype runtime for technical review, simulation, local testing, and integration design
 - Verified execution authority layer for autonomous systems
+- Public GitHub runtime verification record through PR #2
 
 Do not describe as:
 
@@ -1015,6 +1066,7 @@ This repository functions as a public technical record for:
 - Decision Boundary Doctrine
 - Non-Post-Execution Principle
 - Doctrine Lines v1.0
+- First-Run Gate Verification
 - TML Governance Gap Analysis
 - AXLOGIQ Inc. architecture doctrine
 - Reference implementation direction
@@ -1037,6 +1089,10 @@ Key corporate governance exhibit:
 Key frontier AI architecture signal:
 
 - [TML Governance Gap Analysis — 2026-06-11](docs/exhibits/TML_Governance_Gap_Analysis_2026-06-11.html)
+
+Key runtime verification record:
+
+- [PR #2 — First-Run Gate Verification](https://github.com/mcc-prior-art/mcc-layer/pull/2)
 
 ---
 
@@ -1070,6 +1126,7 @@ Key frontier AI architecture signal:
 - Prior Art Archive — April 2026: `docs/exhibits/Prior_Art_Archive_2026-04.md`
 - X Platform Ban Event — April 2026: `docs/exhibits/X_Ban_Event_2026-04.md`
 - TML Governance Gap Analysis — June 2026: `docs/exhibits/TML_Governance_Gap_Analysis_2026-06-11.html`
+- First-Run Gate Verification — PR #2: `https://github.com/mcc-prior-art/mcc-layer/pull/2`
 
 ---
 
@@ -1136,6 +1193,7 @@ MCC-Core and MCC-I are presented as public reference architecture and prototype 
 
 Prepared: **May 2026**  
 Doctrine record updated: **June 2026**  
+Runtime verification record added: **June 2026**  
 Classification: **Public Reference Architecture**  
 Status: **Prototype / Technical Review**
 
