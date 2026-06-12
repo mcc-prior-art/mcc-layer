@@ -1,0 +1,33 @@
+name: Publish Release v1.11.0
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const body = [
+              "MCC-Core v1.11.0 records the PR #4 runtime upgrade merge.",
+              "",
+              "This release anchors the runtime upgrade that tightened cache invariants, preserved token TTL boundaries, added policy drift CI validation, and maintained the public doctrine/prior-art record.",
+              "",
+              "Evidence:",
+              "- PR #4: https://github.com/mcc-prior-art/mcc-layer/pull/4",
+              "- Merge commit: 32d4d3a",
+              "- CI: 4/4 checks passed"
+            ].join("\n");
+            await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: "v1.11.0",
+              target_commitish: "32d4d3a07673f67748c76f3455119761b658983a",
+              name: "MCC-Core v1.11.0 — Runtime Upgrade Merge",
+              body: body
+            });
