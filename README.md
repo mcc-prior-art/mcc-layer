@@ -6,7 +6,7 @@
 **Version:** `v1.5.3` | **Date:** `2026-06-12`  
 **Commit:** `see GitHub history`  
 **Doctrine record:** `2026-06-02`  
-**Latest exhibit record:** `First-Run Gate Verification — PR #2`
+**Latest exhibit record:** `Runtime Upgrade Merge — PR #4`
 
 ---
 
@@ -103,6 +103,17 @@ MCC-Core acts as the verified execution boundary before irreversible action — 
 Autonomous systems may generate intent. Execution authority must be verified before action.
 
 *Doctrine timestamped on GitHub, 2026-06-02*
+
+---
+
+## AI-Built Governance Runtime
+
+MCC-Core is not only a governance doctrine.
+Its reference runtime was implemented with an AI coding agent, tested against doctrine-level invariants, and validated through public GitHub CI.
+
+**The constraint layer was built with the constrained.**
+
+**Evidence:** [PR #4 — Runtime Upgrade Merge](https://github.com/mcc-prior-art/mcc-layer/pull/4)
 
 ---
 
@@ -1029,6 +1040,7 @@ Recommended reading path:
 5. Run the Quick Start proof.
 6. Inspect the runtime proof and API evaluation flow.
 7. Review PR #2 as the first-run gate verification record.
+8. Review PR #4 as the AI-built runtime upgrade record.
 
 ---
 
