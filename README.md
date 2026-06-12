@@ -108,12 +108,14 @@ Autonomous systems may generate intent. Execution authority must be verified bef
 
 ## AI-Built Governance Runtime
 
-MCC-Core is not only a governance doctrine.
+MCC-Core is not only a governance doctrine.  
 Its reference runtime was implemented with an AI coding agent, tested against doctrine-level invariants, and validated through public GitHub CI.
 
 **The constraint layer was built with the constrained.**
 
 **Evidence:** [PR #4 — Runtime Upgrade Merge](https://github.com/mcc-prior-art/mcc-layer/pull/4)
+
+Runtime upgrade record: PR #4 merged as commit `32d4d3a`, extending the reference runtime with a bounded 10,000-entry cache invariant under public CI verification.
 
 ---
 
