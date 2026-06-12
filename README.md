@@ -108,12 +108,14 @@ Autonomous systems may generate intent. Execution authority must be verified bef
 
 ## AI-Built Governance Runtime
 
-MCC-Core is not only a governance doctrine.
+MCC-Core is not only a governance doctrine.  
 Its reference runtime was implemented with an AI coding agent, tested against doctrine-level invariants, and validated through public GitHub CI.
 
 **The constraint layer was built with the constrained.**
 
 **Evidence:** [PR #4 — Runtime Upgrade Merge](https://github.com/mcc-prior-art/mcc-layer/pull/4)
+
+Runtime upgrade record: PR #4 merged as commit `32d4d3a`, extending the reference runtime with a bounded 10,000-entry cache invariant under public CI verification.
 
 ---
 
@@ -1154,6 +1156,7 @@ Key frontier AI architecture signal:
 Key runtime verification record:
 
 - [PR #2 — First-Run Gate Verification](https://github.com/mcc-prior-art/mcc-layer/pull/2)
+- [PR #4 — Runtime Upgrade Merge](https://github.com/mcc-prior-art/mcc-layer/pull/4)
 
 ---
 
@@ -1188,6 +1191,7 @@ Key runtime verification record:
 - X Platform Ban Event — April 2026: `docs/exhibits/X_Ban_Event_2026-04.md`
 - TML Governance Gap Analysis — June 2026: `docs/exhibits/TML_Governance_Gap_Analysis_2026-06-11.html`
 - First-Run Gate Verification — PR #2: `https://github.com/mcc-prior-art/mcc-layer/pull/2`
+- Runtime Upgrade Merge — PR #4: `https://github.com/mcc-prior-art/mcc-layer/pull/4`
 
 ---
 
