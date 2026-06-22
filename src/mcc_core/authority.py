@@ -138,7 +138,14 @@ class ActionPolicy:
 class AuthorityDecision:
     """The verdict the authority model produced, with everything needed to
     audit *why*: which policy matched, which mandate (if any) was relied on,
-    and the constraints that bind execution."""
+    the constraints that bind execution, and — crucially for CONSTRAIN — the
+    ``forward_context`` that has actually been rewritten to fit those bounds.
+
+    ``forward_context`` is the context an executable verdict authorizes: the
+    original context for ALLOW, the rewritten (clamped) context for CONSTRAIN.
+    The decision token is signed over exactly this, so the gate's payload-hash
+    check binds to the body that will really be forwarded. ``applied_changes``
+    is a human-readable list of the rewrites performed (empty for ALLOW)."""
 
     verdict: Verdict
     reason: str
@@ -146,6 +153,8 @@ class AuthorityDecision:
     matched_action: Optional[str]
     authority_required: Optional[str]
     mandate_holder: Optional[str]
+    forward_context: Dict[str, Any] = field(default_factory=dict)
+    applied_changes: List[str] = field(default_factory=list)
 
 
 def _constraint_violations(
@@ -180,6 +189,38 @@ def _constraint_violations(
             if value not in bound:
                 violations.append(f"{field_name}={value!r} not in allowed set")
     return violations
+
+
+def apply_constraints(
+    constraints: Dict[str, Any], context: Dict[str, Any]
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Rewrite ``context`` to fit the mandate's numeric bounds.
+
+    This is what makes CONSTRAIN real rather than advisory: a value above a
+    ``max_`` cap is clamped down to the cap, a value below a ``min_`` floor is
+    raised to the floor. Returns ``(new_context, changes)``.
+
+    Only ``max_``/``min_`` on present numeric fields are clampable — clamping
+    is well-defined there. ``allowed_`` violations and missing/non-numeric
+    fields are *not* rewritten here; there is no safe value to invent, so the
+    caller treats a residual violation as DENY (it cannot be brought into
+    compliance) rather than silently forwarding a non-conforming request.
+    """
+    new_context = dict(context)
+    changes: List[str] = []
+    for key, bound in constraints.items():
+        if key.startswith(("max_", "min_")):
+            field_name = key[4:]
+            value = new_context.get(field_name)
+            if not isinstance(value, (int, float)):
+                continue  # nothing safe to clamp; stays a violation
+            if key.startswith("max_") and value > bound:
+                new_context[field_name] = bound
+                changes.append(f"{field_name}: {value} -> {bound} (max)")
+            elif key.startswith("min_") and value < bound:
+                new_context[field_name] = bound
+                changes.append(f"{field_name}: {value} -> {bound} (min)")
+    return new_context, changes
 
 
 class AuthorityModel:
@@ -262,26 +303,60 @@ class AuthorityModel:
                 mandate_holder=None,
             )
 
-        violations = _constraint_violations(mandate.constraints, context)
-        if violations:
+        constraints = dict(mandate.constraints)
+        violations = _constraint_violations(constraints, context)
+        if not violations:
+            # Within the mandate's bounds: ALLOW, context unchanged.
             return AuthorityDecision(
-                verdict=policy.on_violation,
-                reason=(
-                    f"mandate '{policy.requires}' held, but context breaches its "
-                    f"bounds: {'; '.join(violations)}"
-                ),
-                constraints=dict(mandate.constraints),
+                verdict=policy.on_mandate,
+                reason=f"verified mandate '{policy.requires}' held by '{identity}'",
+                constraints=constraints,
                 matched_action=policy.action,
                 authority_required=policy.requires,
                 mandate_holder=mandate.holder,
+                forward_context=dict(context),
             )
 
+        # Bounds breached. If the policy chose to constrain, try to rewrite the
+        # context into compliance. Anything left over after clamping cannot be
+        # brought into compliance, so it fails closed to DENY.
+        if policy.on_violation == Verdict.CONSTRAIN:
+            constrained, changes = apply_constraints(constraints, context)
+            residual = _constraint_violations(constraints, constrained)
+            if residual:
+                return AuthorityDecision(
+                    verdict=Verdict.DENY,
+                    reason=(
+                        f"mandate '{policy.requires}' held, but request cannot be "
+                        f"constrained into compliance: {'; '.join(residual)}"
+                    ),
+                    constraints=constraints,
+                    matched_action=policy.action,
+                    authority_required=policy.requires,
+                    mandate_holder=mandate.holder,
+                )
+            return AuthorityDecision(
+                verdict=Verdict.CONSTRAIN,
+                reason=(
+                    f"mandate '{policy.requires}' bounds applied: "
+                    f"{'; '.join(changes)}"
+                ),
+                constraints=constraints,
+                matched_action=policy.action,
+                authority_required=policy.requires,
+                mandate_holder=mandate.holder,
+                forward_context=constrained,
+                applied_changes=changes,
+            )
+
+        # Policy escalates or denies on violation rather than constraining.
         return AuthorityDecision(
-            verdict=policy.on_mandate,
+            verdict=policy.on_violation,
             reason=(
-                f"verified mandate '{policy.requires}' held by '{identity}'"
+                f"mandate '{policy.requires}' held, but context breaches its "
+                f"bounds: {'; '.join(violations)}"
             ),
-            constraints=dict(mandate.constraints),
+            constraints=constraints,
             matched_action=policy.action,
             authority_required=policy.requires,
             mandate_holder=mandate.holder,

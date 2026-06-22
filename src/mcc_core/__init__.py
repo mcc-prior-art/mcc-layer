@@ -13,16 +13,18 @@ from .authority import (
     AuthorityModel,
     Mandate,
     MandateRegistry,
+    apply_constraints,
 )
 from .core import EXECUTABLE_VERDICTS, DecisionEngine, TokenNotIssuable, Verdict
 from .gate import ExecutionGate, GateResult
-from .nonce import NonceRegistry
+from .nonce import InMemoryNonceRegistry, NonceRegistry
 from .policy import PolicyBundle, PolicyBundleError
 from .signing import (
     SigningKey,
     canonical_bytes,
     hash_action,
     hash_payload,
+    public_key_from_b64,
     sha256_hex,
     verify_token,
 )
@@ -38,15 +40,18 @@ __all__ = [
     "MandateRegistry",
     "ExecutionGate",
     "GateResult",
+    "InMemoryNonceRegistry",
     "NonceRegistry",
     "PolicyBundle",
     "PolicyBundleError",
     "SigningKey",
     "TokenNotIssuable",
     "Verdict",
+    "apply_constraints",
     "canonical_bytes",
     "hash_action",
     "hash_payload",
+    "public_key_from_b64",
     "sha256_hex",
     "verify_token",
 ]

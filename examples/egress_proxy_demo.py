@@ -42,6 +42,7 @@ from interceptors.egress_proxy import (  # noqa: E402
     EgressGovernor,
     Route,
     build_decide_via_http,
+    build_gate_from_health,
     build_proxy_app,
 )
 
@@ -49,15 +50,20 @@ GATEWAY_PORT = 8001
 PROXY_PORT = 8080
 UPSTREAM_PORT = 9009
 
-# Upstream the agent wants to reach. It records every call it actually sees.
+# Upstream the agent wants to reach. It records every call it actually sees,
+# including the body — so we can prove CONSTRAIN rewrote it before it arrived.
 upstream = FastAPI()
-SEEN: list[str] = []
+SEEN: list[dict] = []
 
 
 @upstream.api_route("/{path:path}", methods=["GET", "POST", "DELETE"])
 async def echo(request: Request, path: str):
-    SEEN.append(f"{request.method} /{path}")
-    return {"upstream_reached": True, "path": f"/{path}"}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    SEEN.append({"method": request.method, "path": f"/{path}", "body": body})
+    return {"upstream_reached": True, "path": f"/{path}", "received": body}
 
 
 def serve(app, port):
@@ -75,7 +81,15 @@ def wait_for(url: str, timeout: float = 10.0) -> None:
     raise RuntimeError(f"service at {url} did not come up")
 
 
-def main() -> None:
+def main() -> int:
+    # Start the gateway and upstream first; the proxy's ExecutionGate is keyed
+    # from the gateway's /health, so the gateway must be up before we build it.
+    for app, port in [(upstream, UPSTREAM_PORT), (gw.app, GATEWAY_PORT)]:
+        threading.Thread(target=serve, args=(app, port), daemon=True).start()
+    wait_for(f"http://127.0.0.1:{GATEWAY_PORT}/health")
+    wait_for(f"http://127.0.0.1:{UPSTREAM_PORT}/")
+
+    gateway_url = f"http://127.0.0.1:{GATEWAY_PORT}"
     governor = EgressGovernor(
         mapper=ActionMapper(
             [
@@ -84,52 +98,63 @@ def main() -> None:
                 Route(action="delete_resource", method="DELETE", host="*", path="*"),
             ]
         ),
-        decide=build_decide_via_http(f"http://127.0.0.1:{GATEWAY_PORT}", "demo-key"),
+        decide=build_decide_via_http(gateway_url, "demo-key"),
+        gate=build_gate_from_health(gateway_url),  # verifies signature + nonce
     )
-    proxy = build_proxy_app(
-        governor, upstream_base=f"http://127.0.0.1:{UPSTREAM_PORT}"
-    )
-
-    for app, port in [
-        (upstream, UPSTREAM_PORT),
-        (gw.app, GATEWAY_PORT),
-        (proxy, PROXY_PORT),
-    ]:
-        threading.Thread(target=serve, args=(app, port), daemon=True).start()
-
-    wait_for(f"http://127.0.0.1:{GATEWAY_PORT}/health")
-    wait_for(f"http://127.0.0.1:{UPSTREAM_PORT}/")
+    proxy = build_proxy_app(governor, upstream_base=f"http://127.0.0.1:{UPSTREAM_PORT}")
+    threading.Thread(target=serve, args=(proxy, PROXY_PORT), daemon=True).start()
     wait_for(f"http://127.0.0.1:{PROXY_PORT}/", timeout=10.0)
 
     base = f"http://127.0.0.1:{PROXY_PORT}"
     cases = [
         ("payments-bot, $100 charge (mandate, within cap)",
-         "POST", "/charge", {"amount": 100}, "agent/payments-bot"),
-        ("payments-bot, $99k charge (mandate, OVER cap)",
-         "POST", "/charge", {"amount": 99000}, "agent/payments-bot"),
+         "POST", "/charge", {"amount": 100}, "agent/payments-bot", "ALLOW"),
+        ("payments-bot, $99k charge (mandate, OVER cap -> clamp to 5000)",
+         "POST", "/charge", {"amount": 99000}, "agent/payments-bot", "CONSTRAIN"),
         ("ops-bot, DELETE resource (no mandate can authorize)",
-         "DELETE", "/db/users", {}, "agent/ops-bot"),
+         "DELETE", "/db/users", {}, "agent/ops-bot", "DENY"),
         ("unknown-bot, payment (no mandate)",
-         "POST", "/charge", {"amount": 1}, "agent/unknown"),
+         "POST", "/charge", {"amount": 1}, "agent/unknown", "ESCALATE"),
     ]
 
     print("\n=== Driving traffic through the MCC egress proxy (inline) ===\n")
-    for label, method, path, body, identity in cases:
+    failures = []
+    for label, method, path, body, identity, expected in cases:
         r = httpx.request(
-            method,
-            base + path,
-            json=body,
-            headers={"X-MCC-Identity": identity},
-            timeout=5.0,
+            method, base + path, json=body,
+            headers={"X-MCC-Identity": identity}, timeout=5.0,
         )
         decision = r.headers.get("X-MCC-Decision", "?")
         reached = r.status_code == 200 and r.json().get("upstream_reached")
-        verdict_mark = "→ upstream REACHED" if reached else "✗ BLOCKED at proxy"
-        print(f"[{decision:9}] {label}\n            {verdict_mark} (HTTP {r.status_code})")
+        mark = "→ upstream REACHED" if reached else "✗ BLOCKED at proxy"
+        extra = ""
+        if decision == "CONSTRAIN":
+            extra = f"  body rewritten to: {r.json().get('received')}"
+        print(f"[{decision:9}] {label}\n            {mark} (HTTP {r.status_code}){extra}")
+
+        # Assertions for the smoke test.
+        if decision != expected:
+            failures.append(f"{label}: decision {decision} != expected {expected}")
+        if expected in ("ALLOW", "CONSTRAIN") and not reached:
+            failures.append(f"{label}: executable verdict did not reach upstream")
+        if expected in ("DENY", "ESCALATE") and reached:
+            failures.append(f"{label}: blocked verdict reached upstream")
+        if expected == "CONSTRAIN":
+            got = (r.json().get("received") or {}).get("amount")
+            if got != 5000:
+                failures.append(f"{label}: amount not clamped (got {got!r}, want 5000)")
 
     print(f"\nUpstream actually saw: {SEEN}")
-    print("Only ALLOW/CONSTRAIN reached upstream. DENY/ESCALATE never opened the path.\n")
+    print("Only ALLOW/CONSTRAIN reached upstream. DENY/ESCALATE never opened the path.")
+
+    if failures:
+        print("\nSMOKE TEST FAILED:")
+        for f in failures:
+            print(f"  - {f}")
+        return 1
+    print("\nSMOKE TEST PASSED: ALLOW passes, CONSTRAIN rewrites body, DENY/ESCALATE blocked.\n")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

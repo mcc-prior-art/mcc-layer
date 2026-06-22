@@ -11,6 +11,7 @@ from mcc_core import (
     Mandate,
     MandateRegistry,
     Verdict,
+    apply_constraints,
 )
 
 NOW = 1_780_000_000
@@ -64,7 +65,7 @@ def test_held_mandate_within_bounds_allows():
     assert d.mandate_holder == "agent/payments-bot"
 
 
-def test_held_mandate_over_cap_constrains():
+def test_held_mandate_over_cap_constrains_and_rewrites():
     model = build_model()
     d = model.evaluate(
         identity="agent/payments-bot",
@@ -74,6 +75,9 @@ def test_held_mandate_over_cap_constrains():
     )
     assert d.verdict == Verdict.CONSTRAIN
     assert d.constraints == {"max_amount": 5000}
+    # The body is actually rewritten to fit the mandate, not merely flagged.
+    assert d.forward_context == {"amount": 5000}
+    assert d.applied_changes  # records what was clamped
 
 
 def test_no_mandate_escalates():
@@ -124,14 +128,42 @@ def test_read_with_infra_read_allows():
     assert d.verdict == Verdict.ALLOW
 
 
-def test_missing_constrained_field_is_a_violation():
-    # A mandate caps amount; a context with no amount cannot show the bound
-    # holds, so it constrains rather than allows (fail-closed).
+def test_within_cap_allows_unchanged():
+    model = build_model()
+    d = model.evaluate(
+        identity="agent/payments-bot",
+        action="send_payment",
+        context={"amount": 4999},
+        now=NOW,
+    )
+    assert d.verdict == Verdict.ALLOW
+    assert d.forward_context == {"amount": 4999}
+    assert d.applied_changes == []
+
+
+def test_missing_constrained_field_cannot_be_constrained_so_denies():
+    # A mandate caps amount; a payment with no amount cannot be clamped into
+    # compliance (there is no safe value to invent), so it fails closed to DENY
+    # rather than forwarding a non-conforming request.
     model = build_model()
     d = model.evaluate(
         identity="agent/payments-bot", action="send_payment", context={}, now=NOW
     )
-    assert d.verdict == Verdict.CONSTRAIN
+    assert d.verdict == Verdict.DENY
+
+
+def test_apply_constraints_clamps_max_and_min():
+    new, changes = apply_constraints(
+        {"max_amount": 5000, "min_qty": 2}, {"amount": 9000, "qty": 1, "memo": "x"}
+    )
+    assert new == {"amount": 5000, "qty": 2, "memo": "x"}
+    assert len(changes) == 2
+
+
+def test_apply_constraints_leaves_compliant_values():
+    new, changes = apply_constraints({"max_amount": 5000}, {"amount": 100})
+    assert new == {"amount": 100}
+    assert changes == []
 
 
 def test_from_config_roundtrip():

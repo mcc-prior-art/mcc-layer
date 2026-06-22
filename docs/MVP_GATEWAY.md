@@ -106,8 +106,12 @@ agent --HTTP--> [ MCC egress proxy ] --HTTP--> upstream
                       |
                       +-- map request -> (identity, action, context)
                       +-- POST /evaluate
-                      +-- ALLOW / CONSTRAIN -> forward (carry token)
-                      +-- DENY  / ESCALATE  -> 403, upstream never reached
+                      +-- verify signed token through ExecutionGate
+                      |     (Ed25519 signature + audience + expiry +
+                      |      action/payload-hash + single-use nonce)
+                      +-- ALLOW      -> forward original body
+                      +-- CONSTRAIN  -> forward REWRITTEN body (clamped to cap)
+                      +-- DENY/ESCALATE or any error -> 403/502, upstream never reached
 ```
 
 Drop-in: point the agent's `HTTP_PROXY` / base URL at MCC. Client code is not
@@ -116,31 +120,56 @@ touched; interception happens on the network. Identity arrives via
 The governing logic (`ActionMapper`, `EgressGovernor`) is socket-free and
 unit-tested; the forwarding layer is thin.
 
-### Run the end-to-end demo
+**The token is enforced, not trusted.** On the inline path the proxy does not
+act on the gateway's word — it verifies the Ed25519-signed decision token
+through `ExecutionGate` before forwarding: signature against the gateway's
+trusted key, audience, expiry, the action/payload-hash binding, and a
+single-use nonce (replay protection). The proxy keys its gate from the
+gateway's `/health` at startup. If the token does not verify, or no gate is
+configured, the request is blocked — fail-closed.
+
+**CONSTRAIN actually rewrites the request.** When a mandate caps `amount` at
+5000 and the agent asks for 99000, the gateway clamps the body to
+`{"amount": 5000}`, signs the token over the *clamped* body, and returns it as
+`forward_context`. The proxy forwards exactly that — so the gate's payload-hash
+check and the upstream both see 5000. CONSTRAIN is enforcement, not a header.
+
+### Run the end-to-end demo / smoke test
 
 ```bash
 python examples/egress_proxy_demo.py
 ```
 
 Starts a real upstream, gateway (inline), and proxy on loopback and drives
-four requests through. ALLOW and CONSTRAIN reach the upstream; DENY and
-ESCALATE never do — proven by what the upstream actually saw.
+four requests through. It **asserts** the outcomes and exits non-zero on any
+miss, so it doubles as the CI smoke test (`smoke` job in
+`.github/workflows/mcc-runtime-ci.yml`):
+
+- ALLOW → reaches upstream
+- CONSTRAIN → reaches upstream with the body **rewritten** to the cap (5000)
+- DENY / ESCALATE → blocked at the proxy; upstream never sees them
 
 ---
 
 ## Known limitations (honest list)
 
-- **CONSTRAIN is surfaced, not yet applied.** The proxy forwards a CONSTRAIN
-  with the mandate's bounds in `X-MCC-*` headers but does **not** rewrite the
-  request body (e.g. clamp the amount to the cap). Until body rewriting lands,
-  a CONSTRAIN behaves like a conditional ALLOW that advertises its bound. This
-  is the first thing to harden for any payments pilot.
+- **Constraint rewriting covers numeric clamps only.** `max_`/`min_` on a
+  present numeric field are clamped (this is what CONSTRAIN applies). An
+  `allowed_` violation or a missing/non-numeric field has no safe value to
+  invent, so it fails closed to **DENY** rather than forwarding something
+  non-conforming. Richer, action-specific rewriting (e.g. currency, recipient
+  allowlists) is future work.
+- **Proxy replay protection is single-process.** The proxy's `ExecutionGate`
+  uses an in-memory nonce registry (`InMemoryNonceRegistry`) — it rejects
+  replays within one process but is not shared across instances and does not
+  survive a restart. Multi-instance deployments must back the gate with the
+  Redis `NonceRegistry`.
 - **HTTPS interception** requires the proxy to terminate TLS (the agent trusts
   the proxy CA) or be given absolute-form requests. The MVP targets HTTP and
   TLS-terminating deployments.
-- **Token re-verification at the proxy** is optional in the MVP: the proxy and
-  gateway share a trust domain and the proxy enforces the returned decision
-  directly. Wiring the proxy through `ExecutionGate` (signature + nonce) closes
-  the loop fully and is the natural next step.
+- **Observe mode is deliberately non-enforcing.** In observe the proxy is
+  transparent: it forwards the original request unchanged and never blocks,
+  even on a gateway error. The fail-closed guarantee is an *inline*-mode
+  property; observe exists to build the audit record in shadow first.
 - **Pilot mandates are hardcoded.** Intentional for one client; needs a
   verifiable mandate store (each mandate itself signed) before multi-tenant.

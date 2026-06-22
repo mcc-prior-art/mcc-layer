@@ -22,6 +22,26 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v
 
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Egress proxy end-to-end smoke (ALLOW / CONSTRAIN / DENY / ESCALATE)
+        run: |
+          # Boots upstream + gateway + egress proxy on loopback and drives the
+          # full scenario through the proxy. The script asserts ALLOW passes,
+          # CONSTRAIN rewrites the body to the mandate cap, and DENY/ESCALATE
+          # are blocked before reaching upstream — exiting non-zero on any miss.
+          python examples/egress_proxy_demo.py
+
   invariants:
     runs-on: ubuntu-latest
     steps:

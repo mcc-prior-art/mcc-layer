@@ -86,3 +86,9 @@ def verify_token(token: Dict[str, Any], public_key: Ed25519PublicKey) -> bool:
         return True
     except Exception:
         return False
+
+
+def public_key_from_b64(b64: str) -> Ed25519PublicKey:
+    """Rebuild an Ed25519 public key from the raw base64 form used in
+    ``/health`` and ``/export`` (the inverse of ``SigningKey.public_key_b64``)."""
+    return Ed25519PublicKey.from_public_bytes(base64.b64decode(b64))

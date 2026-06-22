@@ -48,13 +48,28 @@ def test_deny_returns_no_token():
     assert resp.signature is None
 
 
-def test_constrain_carries_mandate_bounds():
+def test_constrain_rewrites_body_and_signs_over_it():
     resp = gw.gateway.evaluate(
         req("agent/payments-bot", "send_payment", {"amount": 99999}, mode="inline")
     )
     assert resp.decision == gw.Decision.CONSTRAIN
     assert resp.constraints == {"max_amount": 5000}
-    assert resp.decision_token["constraints"] == {"max_amount": 5000}
+    # The body is rewritten and the token is signed over the rewritten body.
+    assert resp.forward_context == {"amount": 5000}
+    assert resp.applied_constraints
+    # The token must verify against the clamped body through the gate.
+    gate = ExecutionGate(
+        trusted_keys={gw.gateway.signing_key.kid: gw.gateway.signing_key.public_key()},
+        audience=gw.settings.token_audience,
+        nonce_registry=NonceRegistry(FakeRedis()),
+        policy_hash=gw.gateway.policy_hash,
+    )
+    result = run(
+        gate.verify(
+            resp.decision_token, action="send_payment", payload={"amount": 5000}
+        )
+    )
+    assert result.allowed
 
 
 def test_escalate_for_unknown_identity():

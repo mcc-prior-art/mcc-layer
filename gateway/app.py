@@ -115,6 +115,11 @@ class EvaluateResponse(BaseModel):
     # Full signed decision token; the artifact the execution gate verifies.
     decision_token: Optional[Dict[str, Any]] = None
     constraints: Dict[str, Any] = Field(default_factory=dict)
+    # The body the verdict authorizes: original context for ALLOW, rewritten
+    # (clamped) context for CONSTRAIN. The decision token is signed over this.
+    forward_context: Dict[str, Any] = Field(default_factory=dict)
+    # Human-readable list of rewrites applied for CONSTRAIN (empty otherwise).
+    applied_constraints: List[str] = Field(default_factory=list)
     # False in observe mode: decision recorded, interceptor must not block on it.
     enforce: bool = True
     mode: str = "observe"
@@ -175,6 +180,10 @@ class Gateway:
         decision = Decision(authority.verdict.value)
         reason = authority.reason
         constraints = authority.constraints
+        # The body the verdict authorizes (rewritten for CONSTRAIN). The token
+        # is signed over this, so the gate binds to what is actually forwarded.
+        forward_context = dict(authority.forward_context)
+        applied = list(authority.applied_changes)
 
         # 2. Record before releasing any authority: no audit entry, no token.
         try:
@@ -184,6 +193,10 @@ class Gateway:
                     "identity": req.identity,
                     "action": req.action,
                     "context_hash": hash_payload(req.context),
+                    "forward_context_hash": hash_payload(forward_context)
+                    if forward_context
+                    else None,
+                    "applied_constraints": applied,
                     "decision": decision.value,
                     "reason": reason,
                     "authority_required": authority.authority_required,
@@ -217,7 +230,7 @@ class Gateway:
                     verdict=authority.verdict.value,
                     subject=req.identity,
                     action=req.action,
-                    payload=req.context,
+                    payload=forward_context,
                     constraints=constraints,
                     audit_ref=audit_id,
                 )
@@ -228,6 +241,8 @@ class Gateway:
                 decision_token = None
                 signature = None
                 constraints = {}
+                forward_context = {}
+                applied = []
                 try:
                     self.audit.append(
                         {
@@ -249,6 +264,8 @@ class Gateway:
             signature=signature,
             decision_token=decision_token,
             constraints=constraints,
+            forward_context=forward_context,
+            applied_constraints=applied,
             enforce=enforce,
             mode=mode,
             authority_required=authority.authority_required,
@@ -352,6 +369,8 @@ def health() -> Dict[str, Any]:
         "status": "ok",
         "mode": settings.mode,
         "fail_closed": True,
+        "token_audience": settings.token_audience,
+        "policy_hash": gateway.policy_hash,
         "signing": {
             "algorithm": "Ed25519",
             "kid": gateway.signing_key.kid,
