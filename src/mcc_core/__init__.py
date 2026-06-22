@@ -17,7 +17,13 @@ from .authority import (
 )
 from .core import EXECUTABLE_VERDICTS, DecisionEngine, TokenNotIssuable, Verdict
 from .gate import ExecutionGate, GateResult
-from .nonce import InMemoryNonceRegistry, NonceRegistry
+from .nonce import (
+    InMemoryNonceRegistry,
+    NonceConfigError,
+    NonceRegistry,
+    RedisNonceRegistry,
+    nonce_registry_from_env,
+)
 from .policy import PolicyBundle, PolicyBundleError
 from .signing import (
     SigningKey,
@@ -41,7 +47,10 @@ __all__ = [
     "ExecutionGate",
     "GateResult",
     "InMemoryNonceRegistry",
+    "NonceConfigError",
     "NonceRegistry",
+    "RedisNonceRegistry",
+    "nonce_registry_from_env",
     "PolicyBundle",
     "PolicyBundleError",
     "SigningKey",

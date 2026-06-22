@@ -178,7 +178,7 @@ mcc-layer/
 │       ├── core.py            ← decision engine: ALLOW/DENY/ESCALATE/CONSTRAIN → signed token
 │       ├── gate.py            ← fail-closed execution gate
 │       ├── audit.py           ← append-only hash-chain log (fsync on every write)
-│       ├── nonce.py           ← Redis-backed replay protection
+│       ├── nonce.py           ← replay protection: RedisNonceRegistry (multi-instance) + InMemory; env-selectable, no silent fallback
 │       ├── policy.py          ← PolicyBundle with hash verification
 │       ├── authority.py       ← mandate registry + action→authority→verdict (the formula in code)
 │       └── signing.py         ← Ed25519 token signing/verification
@@ -195,6 +195,7 @@ mcc-layer/
 │   └── egress_proxy_demo.py   ← live E2E: agent → proxy → upstream (ALLOW reaches, DENY blocked)
 ├── scripts/
 │   ├── generate_signing_key.py ← Ed25519 key generator (PKCS8 PEM, mode 0600)
+│   ├── redis_nonce_smoke.py    ← E2E: two gates share one Redis → cross-instance replay rejected
 │   └── smoke_test.sh
 ├── docs/                      ← architecture, security model, decision token spec
 │   ├── MVP_GATEWAY.md         ← MVP: authority model, gateway service, the one interceptor
@@ -207,6 +208,7 @@ mcc-layer/
     ├── test_authority.py      ← mandate-driven verdicts, constraint binding, expiry, deny-by-default
     ├── test_gateway.py        ← /evaluate + signed token through the gate, observe/inline, verify/export
     ├── test_egress_proxy.py   ← action mapping + fail-closed enforcement (proxy owns the path)
+    ├── test_nonce.py          ← RedisNonceRegistry: atomic claim, cross-instance + concurrent replay, TTL bounds, fail-closed
     └── opa_test_vectors.json
 ```
 

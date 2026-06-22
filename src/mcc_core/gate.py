@@ -38,12 +38,30 @@ class ExecutionGate:
         nonce_registry: NonceRegistry,
         policy_hash: Optional[str] = None,
         nonce_ttl_seconds: int = 300,
+        min_nonce_ttl_seconds: int = 1,
+        nonce_clock_skew_seconds: int = 30,
     ) -> None:
         self.trusted_keys = trusted_keys
         self.audience = audience
         self.nonce_registry = nonce_registry
         self.policy_hash = policy_hash
-        self.nonce_ttl_seconds = nonce_ttl_seconds
+        # The nonce record's TTL is derived per-token from the token's validity
+        # window; ``nonce_ttl_seconds`` is the upper bound on that derived value
+        # (it must be >= the token TTL so the nonce always outlives the token).
+        self.max_nonce_ttl_seconds = nonce_ttl_seconds
+        self.min_nonce_ttl_seconds = min_nonce_ttl_seconds
+        self.nonce_clock_skew_seconds = nonce_clock_skew_seconds
+
+    def _nonce_ttl(self, exp: int, now: int) -> int:
+        """Derive the nonce record's TTL from the token's validity window.
+
+        The nonce must outlive the token: if its record expired while the token
+        were still valid, the same token could be replayed into the freed slot.
+        So TTL = remaining token validity + a clock-skew margin, clamped to
+        ``[min_nonce_ttl_seconds, max_nonce_ttl_seconds]``.
+        """
+        remaining = int(exp) - int(now) + self.nonce_clock_skew_seconds
+        return max(self.min_nonce_ttl_seconds, min(self.max_nonce_ttl_seconds, remaining))
 
     async def verify(
         self,
@@ -101,7 +119,7 @@ class ExecutionGate:
             return GateResult(False, "PAYLOAD_HASH_MISMATCH: payload differs from authorized one")
 
         if not await self.nonce_registry.consume(
-            token.get("nonce"), ttl_seconds=self.nonce_ttl_seconds
+            token.get("nonce"), ttl_seconds=self._nonce_ttl(exp, ts)
         ):
             return GateResult(False, "NONCE_REJECTED: replay or registry unavailable (fail-closed)")
 

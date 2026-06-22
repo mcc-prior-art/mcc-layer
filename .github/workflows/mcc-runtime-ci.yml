@@ -42,6 +42,37 @@ jobs:
           # are blocked before reaching upstream — exiting non-zero on any miss.
           python examples/egress_proxy_demo.py
 
+  nonce-redis-smoke:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Cross-instance replay protection against a real Redis
+        env:
+          MCC_REDIS_URL: redis://127.0.0.1:6379/0
+        run: |
+          # Two independent gate instances share one Redis; a token verified on
+          # one must be rejected when replayed on the other. Exits non-zero on
+          # any miss.
+          python scripts/redis_nonce_smoke.py
+
   invariants:
     runs-on: ubuntu-latest
     steps:
