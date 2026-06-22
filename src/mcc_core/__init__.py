@@ -7,6 +7,13 @@ The audit chain records.
 """
 
 from .audit import AuditLog
+from .authority import (
+    ActionPolicy,
+    AuthorityDecision,
+    AuthorityModel,
+    Mandate,
+    MandateRegistry,
+)
 from .core import EXECUTABLE_VERDICTS, DecisionEngine, TokenNotIssuable, Verdict
 from .gate import ExecutionGate, GateResult
 from .nonce import NonceRegistry
@@ -21,9 +28,14 @@ from .signing import (
 )
 
 __all__ = [
+    "ActionPolicy",
     "AuditLog",
+    "AuthorityDecision",
+    "AuthorityModel",
     "DecisionEngine",
     "EXECUTABLE_VERDICTS",
+    "Mandate",
+    "MandateRegistry",
     "ExecutionGate",
     "GateResult",
     "NonceRegistry",
