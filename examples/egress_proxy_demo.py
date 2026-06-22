@@ -15,6 +15,7 @@ Run:  python examples/egress_proxy_demo.py
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import tempfile
@@ -146,6 +147,26 @@ def main() -> int:
 
     print(f"\nUpstream actually saw: {SEEN}")
     print("Only ALLOW/CONSTRAIN reached upstream. DENY/ESCALATE never opened the path.")
+
+    # Replay protection: a captured, validly-signed token cannot be used twice.
+    # Mint one token, then verify it through the proxy's gate twice — the nonce
+    # must make the second attempt fail.
+    print("\n=== Replay protection (single-use nonce) ===")
+    ev = httpx.post(
+        f"{gateway_url}/evaluate",
+        json={"identity": "agent/payments-bot", "action": "send_payment",
+              "context": {"amount": 42}, "mode": "inline"},
+        headers={"x-api-key": "demo-key"}, timeout=5.0,
+    ).json()
+    token, fctx = ev["decision_token"], ev["forward_context"]
+    first = asyncio.run(governor.gate.verify(token, action="send_payment", payload=fctx))
+    second = asyncio.run(governor.gate.verify(token, action="send_payment", payload=fctx))
+    print(f"first use:  allowed={first.allowed}  ({first.reason})")
+    print(f"replayed:   allowed={second.allowed}  ({second.reason})")
+    if not first.allowed:
+        failures.append("replay: first legitimate use was rejected")
+    if second.allowed:
+        failures.append("replay: a reused token was accepted (no replay protection)")
 
     if failures:
         print("\nSMOKE TEST FAILED:")
