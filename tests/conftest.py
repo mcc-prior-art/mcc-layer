@@ -14,3 +14,9 @@ os.environ.setdefault(
     os.path.join(tempfile.mkdtemp(prefix="mcc-test-"), "audit.jsonl"),
 )
 os.environ.setdefault("MCC_USE_OPA", "false")
+
+# Keep the gateway's audit log off the prior-art chain as well.
+os.environ.setdefault(
+    "MCC_GATEWAY_AUDIT_LOG_PATH",
+    os.path.join(tempfile.mkdtemp(prefix="mcc-gw-test-"), "audit.jsonl"),
+)

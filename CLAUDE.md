@@ -180,22 +180,33 @@ mcc-layer/
 │       ├── audit.py           ← append-only hash-chain log (fsync on every write)
 │       ├── nonce.py           ← Redis-backed replay protection
 │       ├── policy.py          ← PolicyBundle with hash verification
+│       ├── authority.py       ← mandate registry + action→authority→verdict (the formula in code)
 │       └── signing.py         ← Ed25519 token signing/verification
+├── gateway/                   ← MVP: the gate as an HTTP service
+│   ├── app.py                 ← POST /evaluate {identity,action,context}; /verify; /export; inline|observe
+│   └── pilot_policy.py        ← hardcoded authority config for the first pilot client
+├── interceptors/              ← MVP: where an action physically passes through the gate
+│   └── egress_proxy.py        ← the ONE interceptor (owns the path → DENY means DENY)
 ├── policies/
 │   └── mcc.rego               ← canonical policy source (OPA)
 ├── server/
 │   └── app.py                 ← DEPRECATED legacy runtime (no decision tokens)
 ├── examples/                  ← demo scripts and execution profiles
+│   └── egress_proxy_demo.py   ← live E2E: agent → proxy → upstream (ALLOW reaches, DENY blocked)
 ├── scripts/
 │   ├── generate_signing_key.py ← Ed25519 key generator (PKCS8 PEM, mode 0600)
 │   └── smoke_test.sh
 ├── docs/                      ← architecture, security model, decision token spec
+│   ├── MVP_GATEWAY.md         ← MVP: authority model, gateway service, the one interceptor
 │   └── exhibits/              ← NIW exhibits (protected)
 ├── proof/
 └── tests/
     ├── conftest.py
     ├── test_mcc_core.py       ← 42 tests: four verdict paths, replay, expiry,
     │                            fail-closed (Redis/OPA down), audit chain
+    ├── test_authority.py      ← mandate-driven verdicts, constraint binding, expiry, deny-by-default
+    ├── test_gateway.py        ← /evaluate + signed token through the gate, observe/inline, verify/export
+    ├── test_egress_proxy.py   ← action mapping + fail-closed enforcement (proxy owns the path)
     └── opa_test_vectors.json
 ```
 
