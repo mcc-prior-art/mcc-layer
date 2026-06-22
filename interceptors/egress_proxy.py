@@ -39,8 +39,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mcc_core import (  # noqa: E402
     ExecutionGate,
-    InMemoryNonceRegistry,
     public_key_from_b64,
+    nonce_registry_from_env,
 )
 
 
@@ -358,21 +358,30 @@ def build_proxy_app(governor: "EgressGovernor", *, upstream_base: Optional[str] 
 
 
 def build_gate_from_health(
-    gateway_url: str, *, nonce_ttl_seconds: int = 300, timeout: float = 5.0
+    gateway_url: str,
+    *,
+    nonce_registry=None,
+    nonce_ttl_seconds: int = 300,
+    timeout: float = 5.0,
 ) -> ExecutionGate:
     """Build an ExecutionGate that trusts the running gateway's signing key.
 
     Fetches the gateway's public key, kid, token audience and policy hash from
-    ``/health`` so the gate binds to exactly that gateway. Replay protection is
-    a single-process in-memory nonce registry (use the Redis-backed registry
-    for multi-instance deployments).
+    ``/health`` so the gate binds to exactly that gateway.
+
+    Replay protection comes from ``nonce_registry``; when not supplied it is
+    selected from the environment (``nonce_registry_from_env``): in-memory by
+    default, Redis when ``MCC_NONCE_BACKEND=redis`` + ``MCC_REDIS_URL`` are set.
+    Multi-instance enforcement deployments must select Redis so replays are
+    rejected across every proxy/gate instance, not just within one process.
     """
     info = httpx.get(f"{gateway_url.rstrip('/')}/health", timeout=timeout).json()
     signing = info["signing"]
+    registry = nonce_registry if nonce_registry is not None else nonce_registry_from_env()
     return ExecutionGate(
         trusted_keys={signing["kid"]: public_key_from_b64(signing["public_key_b64"])},
         audience=info["token_audience"],
-        nonce_registry=InMemoryNonceRegistry(),
+        nonce_registry=registry,
         policy_hash=info["policy_hash"],
         nonce_ttl_seconds=nonce_ttl_seconds,
     )

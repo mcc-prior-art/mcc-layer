@@ -53,8 +53,40 @@ absent from a gate's trust set is effectively revoked (UNTRUSTED_KEY → deny).
 | `MCC_POLICY_ID` | `mcc.rego/v1` | `policy_id` claim |
 | `MCC_USE_OPA` | `true` | `false` switches to the non-production local fallback |
 | `MCC_OPA_URL` | `http://opa:8181` | |
-| `MCC_REDIS_URL` | `redis://redis:6379` | required by gates for nonce replay protection |
+| `MCC_NONCE_BACKEND` | `memory` | gate replay-protection backend: `memory` (dev/single-instance) or `redis` (multi-instance) |
+| `MCC_REDIS_URL` | *(unset)* | required when `MCC_NONCE_BACKEND=redis`; the Redis shared by every gate instance |
 | `MCC_API_KEY` | `demo-key` | replace in production |
+
+---
+
+## Nonce replay protection (gate backend)
+
+Every execution gate consumes the decision token's single-use nonce before
+authorizing. The backend is selected by `MCC_NONCE_BACKEND`:
+
+| Backend | Class | Use |
+|---|---|---|
+| `memory` (default) | `InMemoryNonceRegistry` | development, single-instance pilots — rejects replays **within one process only**; not shared, not durable |
+| `redis` | `RedisNonceRegistry` | production / multi-instance — atomic `SET NX EX` on a shared Redis rejects replays **across every gate instance** |
+
+```yaml
+  egress-gate:
+    environment:
+      MCC_NONCE_BACKEND: redis
+      MCC_REDIS_URL: redis://redis:6379/0
+```
+
+**No silent fallback.** Selecting `redis` without a usable `MCC_REDIS_URL`
+raises `NonceConfigError` at startup — the process refuses to run with
+unshared, non-durable replay state. At request time, an unreachable or slow
+Redis (operation timeout), or any indeterminate reply, resolves to a denied
+nonce, never to a downgrade to in-memory mode.
+
+**TTL.** The nonce record's TTL is derived from the token's validity window
+(remaining lifetime + a clock-skew margin) and clamped to safe bounds, so the
+nonce always outlives the token it protects. The configured
+`nonce_ttl_seconds` on the gate is the upper bound and must be `>=` the token
+TTL.
 
 ---
 
@@ -66,7 +98,8 @@ absent from a gate's trust set is effectively revoked (UNTRUSTED_KEY → deny).
 | Policy bundle missing or unreadable | decisions still computed, but **no tokens issued** → no execution |
 | Audit log write fails | decision downgraded to DENY |
 | Token issuance fails | decision downgraded to DENY (downgrade is audited) |
-| Redis unavailable at the gate | nonce state unknown → token rejected |
+| Redis unavailable / timeout / indeterminate reply at the gate | nonce state unknown → token rejected (never a fallback to in-memory) |
+| `MCC_NONCE_BACKEND=redis` with no `MCC_REDIS_URL` | startup error (`NonceConfigError`), not a silent in-memory downgrade |
 | Token expired / nbf in future / wrong audience / unknown kid / any hash mismatch | rejected at the gate |
 
 None of these conditions are configurable to fail open.

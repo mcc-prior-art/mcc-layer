@@ -159,11 +159,15 @@ miss, so it doubles as the CI smoke test (`smoke` job in
   invent, so it fails closed to **DENY** rather than forwarding something
   non-conforming. Richer, action-specific rewriting (e.g. currency, recipient
   allowlists) is future work.
-- **Proxy replay protection is single-process.** The proxy's `ExecutionGate`
-  uses an in-memory nonce registry (`InMemoryNonceRegistry`) — it rejects
-  replays within one process but is not shared across instances and does not
-  survive a restart. Multi-instance deployments must back the gate with the
-  Redis `NonceRegistry`.
+- **Replay protection backend is selectable.** The proxy's `ExecutionGate`
+  picks its nonce registry from the environment (`nonce_registry_from_env`):
+  `MCC_NONCE_BACKEND=memory` (default) uses the single-process
+  `InMemoryNonceRegistry`; `MCC_NONCE_BACKEND=redis` + `MCC_REDIS_URL` uses
+  `RedisNonceRegistry`, whose atomic `SET NX EX` on a shared Redis rejects
+  replays **across every proxy/gate instance**. Multi-instance enforcement
+  deployments must select Redis — the registry never silently falls back from
+  Redis to in-memory, and an unreachable Redis fails closed (denied), it does
+  not downgrade. See `RUNTIME_DEPLOYMENT.md` → *Nonce replay protection*.
 - **HTTPS interception** requires the proxy to terminate TLS (the agent trusts
   the proxy CA) or be given absolute-form requests. The MVP targets HTTP and
   TLS-terminating deployments.
