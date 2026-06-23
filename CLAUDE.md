@@ -188,9 +188,14 @@ mcc-layer/
 │       ├── policy.py          ← PolicyBundle with hash verification
 │       ├── authority.py       ← config mandate registry + action→authority→verdict (the formula in code)
 │       └── signing.py         ← Ed25519 token signing/verification
-├── gateway/                   ← MVP: the gate as an HTTP service
-│   ├── app.py                 ← POST /evaluate {identity,action,context,+binding}; /verify; /export; inline|observe
-│   └── pilot_policy.py        ← hardcoded authority + velocity (PILOT_VELOCITY) config for the first pilot client
+├── gateway/                   ← the gate as an HTTP service
+│   ├── app.py                 ← POST /evaluate; /verify; /export; mounts governance HTTP routes
+│   ├── pilot_policy.py        ← hardcoded authority + velocity (PILOT_VELOCITY) config for the first pilot client
+│   ├── trust.py               ← multi-issuer trust set: Ed25519 public keys, rotation, disable/revoke, fail-closed startup
+│   ├── governance_service.py  ← wiring (no decision logic): trust→authority→token→coordinator→audit→upstream
+│   └── governance_api.py      ← thin HTTP: /mandates/*, /approvals/*, /trust/*; agent vs operator auth; strict schemas
+├── config/
+│   └── trust.pilot.example.json ← pilot multi-issuer trust config example (public keys only)
 ├── interceptors/              ← MVP: where an action physically passes through the gate
 │   └── egress_proxy.py        ← the ONE interceptor (owns the path → DENY means DENY); optional EnforcementCoordinator path
 ├── policies/
@@ -199,13 +204,15 @@ mcc-layer/
 │   └── app.py                 ← DEPRECATED legacy runtime (no decision tokens)
 ├── examples/                  ← demo scripts and execution profiles
 │   ├── egress_proxy_demo.py   ← live E2E: agent → proxy → upstream (ALLOW reaches, DENY blocked)
-│   └── transaction_governance_demo.py ← live E2E: idempotency dedup + cumulative ceiling through gateway+coordinator proxy
+│   ├── transaction_governance_demo.py ← live E2E: idempotency dedup + cumulative ceiling through gateway+coordinator proxy
+│   └── governance_http_demo.py ← live E2E HTTP: mandate execute/revoke + ESCALATE approve→single-use over the real gateway
 ├── scripts/
 │   ├── generate_signing_key.py ← Ed25519 key generator (PKCS8 PEM, mode 0600)
 │   ├── redis_nonce_smoke.py    ← E2E: two gates share one Redis → cross-instance replay rejected
 │   ├── redis_governance_smoke.py ← E2E: cross-instance idempotency dedup + aggregate ceiling on real Redis
 │   ├── redis_mandate_smoke.py  ← E2E: cross-instance mandate revocation on real Redis
 │   ├── redis_approval_smoke.py ← E2E: cross-instance single-use approval consume on real Redis
+│   ├── redis_governance_http_smoke.py ← E2E: cross-instance revocation + single-use through GovernanceService on real Redis
 │   └── smoke_test.sh
 ├── docs/                      ← architecture, security model, decision token spec
 │   ├── MVP_GATEWAY.md         ← MVP: authority model, gateway service, the one interceptor
@@ -213,6 +220,7 @@ mcc-layer/
 │   ├── SIGNED_MANDATES.md     ← signed/revocable mandate spec: trust model, lifecycle, revocation, deployment
 │   ├── ESCALATE_APPROVAL.md   ← ESCALATE state machine + operator workflow + service boundary
 │   ├── INFRA_PROFILE.md       ← non-payment (infrastructure) profile: domain neutrality demonstrated
+│   ├── GOVERNANCE_HTTP_API.md ← HTTP API reference, trust config, rotation/revocation, auth boundary, threat model
 │   ├── MIGRATION_NOTES.md     ← backward-compatibility + migration notes for the governance layers
 │   └── exhibits/              ← NIW exhibits (protected)
 ├── proof/
@@ -231,6 +239,9 @@ mcc-layer/
     ├── test_mandate.py        ← signed mandates: forged/expired/revoked/wrong-subject/scope-widening/backend-unavailable; MandateAuthority; actuation revocation
     ├── test_approvals.py      ← ESCALATE loop: full execution, single-use replay, denial terminal, substitution, policy drift, backend failure
     ├── test_infra_profile.py  ← infrastructure profile: canonical payload, substitution denied, constraint convention, full E2E, core-stays-agnostic
+    ├── test_trust.py          ← multi-issuer trust set: resolution, rotation, disable/revoke/expiry, malformed config, pilot fail-closed startup
+    ├── test_mandate_http.py   ← mandate HTTP: verify/execute/revoke, strict schemas, operator boundary, no-bypass (upstream unreached when blocked)
+    ├── test_approval_http.py  ← approval HTTP: ESCALATE scenarios (approve/deny/single-use/substitution/policy-drift/expiry/concurrency/backend-down)
     └── opa_test_vectors.json
 ```
 

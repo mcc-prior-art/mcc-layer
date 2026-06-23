@@ -80,6 +80,9 @@ class GatewaySettings(BaseSettings):
     mode: str = "observe"
 
     api_key: str = "demo-key"
+    # Operator boundary for approve/deny/invalidate/revoke/trust admin. Empty
+    # disables all operator actions (fail closed).
+    operator_api_key: str = ""
 
     class Config:
         env_prefix = "MCC_GATEWAY_"
@@ -408,6 +411,28 @@ def health() -> Dict[str, Any]:
         },
         "policy_ref": f"{settings.policy_id}@{gateway.policy_hash}",
     }
+
+
+# ---------- Governance HTTP layer (mandates, approvals, trust) ----------
+#
+# Built from env-selected backends and the trust set. In MCC_ENV=pilot an
+# invalid/empty trust configuration raises here and refuses startup (no silent
+# fallback to a development key); dev/test default to an empty trust set.
+
+from .governance_api import (  # noqa: E402
+    build_governance_service,
+    mount_approval_routes,
+    mount_mandate_routes,
+)
+
+governance = build_governance_service(
+    engine=gateway.engine, signing_key=gateway.signing_key, audit=gateway.audit,
+    policy_hash=gateway.policy_hash, token_audience=settings.token_audience,
+)
+mount_mandate_routes(app, governance, api_key=settings.api_key,
+                     operator_key=settings.operator_api_key)
+mount_approval_routes(app, governance, api_key=settings.api_key,
+                      operator_key=settings.operator_api_key)
 
 
 if __name__ == "__main__":

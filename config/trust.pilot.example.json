@@ -1,0 +1,32 @@
+{
+  "_comment": "Pilot trust set example. Holds ONLY Ed25519 public keys. Point MCC_TRUST_CONFIG at a copy of this file. Generate issuer keys with scripts/generate_signing_key.py and publish the base64 public key here. Rotate by adding a new key entry and retiring the old one (set not_after or remove it).",
+  "issuers": [
+    {
+      "issuer_id": "axlogiq-mandates",
+      "enabled": true,
+      "keys": [
+        {
+          "kid": "axlogiq-mandates-2026a",
+          "public_key_b64": "REPLACE_WITH_BASE64_ED25519_PUBLIC_KEY_32_BYTES",
+          "not_after": null
+        },
+        {
+          "kid": "axlogiq-mandates-2026b",
+          "public_key_b64": "REPLACE_WITH_NEXT_ROTATION_PUBLIC_KEY",
+          "not_after": null
+        }
+      ]
+    },
+    {
+      "issuer_id": "partner-procurement",
+      "enabled": true,
+      "keys": [
+        {
+          "kid": "partner-procurement-2026a",
+          "public_key_b64": "REPLACE_WITH_PARTNER_PUBLIC_KEY",
+          "not_after": 1790000000
+        }
+      ]
+    }
+  ]
+}
