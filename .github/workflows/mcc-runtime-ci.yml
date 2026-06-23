@@ -42,6 +42,14 @@ jobs:
           # are blocked before reaching upstream — exiting non-zero on any miss.
           python examples/egress_proxy_demo.py
 
+      - name: Transaction governance end-to-end smoke (idempotency + velocity)
+        run: |
+          # Boots upstream + gateway + coordinator-backed egress proxy and drives
+          # the full a-h ordering: a payment executes once, a duplicate
+          # idempotency key never executes again, and four valid payments cannot
+          # bypass the cumulative velocity ceiling. Exits non-zero on any miss.
+          python examples/transaction_governance_demo.py
+
   nonce-redis-smoke:
     runs-on: ubuntu-latest
     services:
@@ -72,6 +80,15 @@ jobs:
           # one must be rejected when replayed on the other. Exits non-zero on
           # any miss.
           python scripts/redis_nonce_smoke.py
+
+      - name: Cross-instance idempotency + aggregate ceiling against a real Redis
+        env:
+          MCC_REDIS_URL: redis://127.0.0.1:6379/0
+        run: |
+          # An operation executed on one instance cannot execute again on
+          # another, and a cumulative velocity ceiling holds across separately-
+          # signed transactions and instances. Exits non-zero on any miss.
+          python scripts/redis_governance_smoke.py
 
   invariants:
     runs-on: ubuntu-latest

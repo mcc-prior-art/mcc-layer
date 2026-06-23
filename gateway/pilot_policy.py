@@ -61,3 +61,22 @@ PILOT_POLICY: Dict[str, Any] = {
     # No policy matched -> no authority -> DENY.
     "default": "DENY",
 }
+
+
+# Velocity / aggregate ceilings enforced at actuation time (the coordinator),
+# distinct from the per-decision authority above. Action pattern -> list of
+# limits. Hardcoded for the pilot, like the authority policy.
+PILOT_VELOCITY: Dict[str, Any] = {
+    "send_payment": [
+        # No more than 3 payments per actor per minute.
+        {"name": "payment_count", "window_seconds": 60, "max_count": 3,
+         "aggregate_by": ["actor"], "on_exceed": "DENY"},
+        # No more than 10,000 cumulative per actor per minute — this is the
+        # ceiling that four split payments cannot bypass.
+        {"name": "payment_amount", "window_seconds": 60, "max_amount": 10000,
+         "aggregate_by": ["actor"], "on_exceed": "DENY"},
+        # No more than 2 new beneficiaries per actor per minute.
+        {"name": "payment_new_beneficiaries", "window_seconds": 60,
+         "max_new_destinations": 2, "aggregate_by": ["actor"], "on_exceed": "ESCALATE"},
+    ],
+}

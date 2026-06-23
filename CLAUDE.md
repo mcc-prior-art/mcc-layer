@@ -179,26 +179,33 @@ mcc-layer/
 │       ├── gate.py            ← fail-closed execution gate
 │       ├── audit.py           ← append-only hash-chain log (fsync on every write)
 │       ├── nonce.py           ← replay protection: RedisNonceRegistry (multi-instance) + InMemory; env-selectable, no silent fallback
+│       ├── idempotency.py     ← business-operation idempotency: RESERVED/EXECUTED/FAILED lifecycle, Redis+InMemory, fail-closed
+│       ├── velocity.py        ← atomic velocity/aggregate limits (count, cumulative amount, new destinations); anti-splitting
+│       ├── profiles.py        ← domain-neutral ActionProfile + payment-specific PaymentProfile (canonical payload + auth_claims)
+│       ├── coordinator.py     ← EnforcementCoordinator: the explicit a-h execution order (gate→idem→velocity→audit→execute→finalize)
 │       ├── policy.py          ← PolicyBundle with hash verification
 │       ├── authority.py       ← mandate registry + action→authority→verdict (the formula in code)
 │       └── signing.py         ← Ed25519 token signing/verification
 ├── gateway/                   ← MVP: the gate as an HTTP service
-│   ├── app.py                 ← POST /evaluate {identity,action,context}; /verify; /export; inline|observe
-│   └── pilot_policy.py        ← hardcoded authority config for the first pilot client
+│   ├── app.py                 ← POST /evaluate {identity,action,context,+binding}; /verify; /export; inline|observe
+│   └── pilot_policy.py        ← hardcoded authority + velocity (PILOT_VELOCITY) config for the first pilot client
 ├── interceptors/              ← MVP: where an action physically passes through the gate
-│   └── egress_proxy.py        ← the ONE interceptor (owns the path → DENY means DENY)
+│   └── egress_proxy.py        ← the ONE interceptor (owns the path → DENY means DENY); optional EnforcementCoordinator path
 ├── policies/
 │   └── mcc.rego               ← canonical policy source (OPA)
 ├── server/
 │   └── app.py                 ← DEPRECATED legacy runtime (no decision tokens)
 ├── examples/                  ← demo scripts and execution profiles
-│   └── egress_proxy_demo.py   ← live E2E: agent → proxy → upstream (ALLOW reaches, DENY blocked)
+│   ├── egress_proxy_demo.py   ← live E2E: agent → proxy → upstream (ALLOW reaches, DENY blocked)
+│   └── transaction_governance_demo.py ← live E2E: idempotency dedup + cumulative ceiling through gateway+coordinator proxy
 ├── scripts/
 │   ├── generate_signing_key.py ← Ed25519 key generator (PKCS8 PEM, mode 0600)
 │   ├── redis_nonce_smoke.py    ← E2E: two gates share one Redis → cross-instance replay rejected
+│   ├── redis_governance_smoke.py ← E2E: cross-instance idempotency dedup + aggregate ceiling on real Redis
 │   └── smoke_test.sh
 ├── docs/                      ← architecture, security model, decision token spec
 │   ├── MVP_GATEWAY.md         ← MVP: authority model, gateway service, the one interceptor
+│   ├── TRANSACTION_GOVERNANCE.md ← the five protections: nonce, idempotency, binding, velocity, aggregate
 │   └── exhibits/              ← NIW exhibits (protected)
 ├── proof/
 └── tests/
@@ -209,6 +216,10 @@ mcc-layer/
     ├── test_gateway.py        ← /evaluate + signed token through the gate, observe/inline, verify/export
     ├── test_egress_proxy.py   ← action mapping + fail-closed enforcement (proxy owns the path)
     ├── test_nonce.py          ← RedisNonceRegistry: atomic claim, cross-instance + concurrent replay, TTL bounds, fail-closed
+    ├── test_idempotency.py    ← RESERVED/EXECUTED lifecycle, exactly-one winner, restart persistence, stale recovery, fail-closed
+    ├── test_velocity.py       ← cumulative ceiling/anti-splitting, count + new-destination caps, concurrency safety, fail-closed
+    ├── test_transaction_binding.py ← actor/resource/transaction + beneficiary/amount/currency substitution denied; non-payment compat
+    ├── test_coordinator.py    ← a-h ordering, replay, shared idempotency key, audit-before-actuation, execution-failure recovery
     └── opa_test_vectors.json
 ```
 

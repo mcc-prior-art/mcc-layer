@@ -38,9 +38,15 @@ from fastapi.responses import JSONResponse, Response
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mcc_core import (  # noqa: E402
+    AuditLog,
+    EnforcementCoordinator,
     ExecutionGate,
-    public_key_from_b64,
+    ProfileRegistry,
+    VelocityLimit,
+    idempotency_registry_from_env,
     nonce_registry_from_env,
+    public_key_from_b64,
+    velocity_registry_from_env,
 )
 
 
@@ -163,6 +169,21 @@ class EgressGovernor:
         lower = {k.lower(): v for k, v in req.headers.items()}
         return lower.get(self.identity_header, "unknown")
 
+    def _binding(self, req: OutboundRequest) -> Dict[str, Any]:
+        """Extract the operation binding the executor will present to the gate.
+
+        Actor is the identity; transaction/idempotency/resource come from
+        ``X-MCC-*`` headers. The gate compares these to the token's signed
+        claims, so a substituted actor/resource/transaction is denied.
+        """
+        lower = {k.lower(): v for k, v in req.headers.items()}
+        return {
+            "actor_id": lower.get(self.identity_header),
+            "transaction_id": lower.get("x-mcc-transaction-id"),
+            "idempotency_key": lower.get("x-mcc-idempotency-key"),
+            "resource_id": lower.get("x-mcc-resource-id"),
+        }
+
     @staticmethod
     def _block(status_code: int, reason: str, audit_id: str = "") -> EnforcementOutcome:
         return EnforcementOutcome(
@@ -178,10 +199,16 @@ class EgressGovernor:
     async def govern(self, req: OutboundRequest) -> EnforcementOutcome:
         identity = self._identity(req)
         action, context = self.mapper.map(req)
+        binding = self._binding(req)
 
         try:
             result = await self.decide(
-                {"identity": identity, "action": action, "context": context}
+                {
+                    "identity": identity,
+                    "action": action,
+                    "context": context,
+                    **{k: v for k, v in binding.items() if v is not None},
+                }
             )
         except Exception:
             # Gateway unreachable / timeout / error -> fail-closed.
@@ -228,7 +255,7 @@ class EgressGovernor:
             return self._block(403, "no execution gate configured; fail-closed", audit_id)
         try:
             gate_result = await self.gate.verify(
-                token, action=action, payload=forward_context
+                token, action=action, payload=forward_context, binding=binding
             )
         except Exception:
             return self._block(403, "gate verification error; fail-closed", audit_id)
@@ -246,6 +273,59 @@ class EgressGovernor:
             forward_body=forward_context,
             applied_constraints=applied,
         )
+
+    async def decide_operation(self, req: OutboundRequest) -> "OperationDecision":
+        """Run only the decision round trip (no gate/nonce). Used by the
+        coordinator path, where the EnforcementCoordinator owns the gate (a),
+        the nonce (b), and steps c-h around the actual forward."""
+        identity = self._identity(req)
+        action, context = self.mapper.map(req)
+        binding = self._binding(req)
+        try:
+            result = await self.decide(
+                {
+                    "identity": identity,
+                    "action": action,
+                    "context": context,
+                    **{k: v for k, v in binding.items() if v is not None},
+                }
+            )
+        except Exception:
+            return OperationDecision(
+                action=action, context=context, decision="DENY", enforce=True,
+                reason="gateway unreachable; fail-closed", forward_context=context,
+                token=None, binding=binding, reachable=False,
+            )
+        return OperationDecision(
+            action=action,
+            context=context,
+            decision=str(result.get("decision", "DENY")),
+            enforce=bool(result.get("enforce", True)),
+            reason=str(result.get("reason", "")),
+            audit_id=str(result.get("audit_id", "")),
+            forward_context=result.get("forward_context") or dict(context),
+            token=result.get("decision_token"),
+            binding=binding,
+            reachable=True,
+        )
+
+
+@dataclass(frozen=True)
+class OperationDecision:
+    action: str
+    context: Dict[str, Any]
+    decision: str
+    enforce: bool
+    reason: str
+    forward_context: Dict[str, Any]
+    token: Optional[Dict[str, Any]]
+    binding: Dict[str, Any]
+    reachable: bool
+    audit_id: str = ""
+
+    @property
+    def executable(self) -> bool:
+        return self.decision in ("ALLOW", "CONSTRAIN")
 
 
 # --------------------------------------------------------------------------
@@ -269,12 +349,37 @@ def build_decide_via_http(
     return decide
 
 
-def build_proxy_app(governor: "EgressGovernor", *, upstream_base: Optional[str] = None):
+async def _forward_upstream(outbound: "OutboundRequest", target: str, body: Optional[Dict[str, Any]]):
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        return await client.request(
+            outbound.method,
+            target,
+            json=body or None,
+            headers={
+                k: v
+                for k, v in outbound.headers.items()
+                if k.lower() not in ("host", "content-length")
+            },
+        )
+
+
+def build_proxy_app(
+    governor: "EgressGovernor",
+    *,
+    upstream_base: Optional[str] = None,
+    coordinator: "Optional[Any]" = None,
+):
     """A forwarding proxy: governs every request, forwards only what's allowed.
 
     Target resolution, in order: an absolute-form URL (as a true HTTP proxy
     receives), an ``X-MCC-Target`` header, or a configured ``upstream_base``.
     On a blocked decision the upstream is never contacted.
+
+    When an ``EnforcementCoordinator`` is supplied, the inline path runs the
+    full a-h ordering — gate (token + binding + nonce), idempotency reservation,
+    velocity reservation, audit-before-actuation, the forward, the outcome
+    record, and idempotency finalize — wrapping the upstream call as the
+    executor. Without one, the proxy uses the gate-only path (token + nonce).
     """
     app = FastAPI(title="MCC-Core Egress Proxy", version="1.0.0-mvp")
 
@@ -289,6 +394,79 @@ def build_proxy_app(governor: "EgressGovernor", *, upstream_base: Optional[str] 
             return upstream_base.rstrip("/") + "/" + path.lstrip("/")
         return None
 
+    async def _read(request: Request, target: str) -> "OutboundRequest":
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        return OutboundRequest(
+            method=request.method,
+            url=target,
+            headers=dict(request.headers),
+            body=body if isinstance(body, dict) else {},
+        )
+
+    async def _via_governor(outbound: "OutboundRequest", target: str) -> Response:
+        outcome = await governor.govern(outbound)
+        headers = {
+            "X-MCC-Decision": outcome.decision,
+            "X-MCC-Audit-Id": outcome.audit_id,
+            "X-MCC-Reason": outcome.reason,
+        }
+        if outcome.applied_constraints:
+            headers["X-MCC-Constraints-Applied"] = "; ".join(outcome.applied_constraints)
+        if not outcome.forward:
+            return JSONResponse(
+                {"error": "BLOCKED_BY_MCC", "decision": outcome.decision,
+                 "reason": outcome.reason, "audit_id": outcome.audit_id},
+                status_code=outcome.status_code, headers=headers,
+            )
+        upstream = await _forward_upstream(outbound, target, outcome.forward_body)
+        return Response(
+            content=upstream.content, status_code=upstream.status_code,
+            headers={**headers, "Content-Type": upstream.headers.get("content-type", "application/json")},
+        )
+
+    async def _via_coordinator(outbound: "OutboundRequest", target: str) -> Response:
+        from mcc_core import ActuationStatus  # local import to keep base path light
+
+        op = await governor.decide_operation(outbound)
+        headers = {"X-MCC-Decision": op.decision, "X-MCC-Reason": op.reason}
+
+        if not op.enforce:  # observe: transparent
+            upstream = await _forward_upstream(outbound, target, op.context)
+            return Response(content=upstream.content, status_code=upstream.status_code,
+                            headers={**headers, "Content-Type": upstream.headers.get("content-type", "application/json")})
+
+        if not op.executable:
+            status = 502 if not op.reachable else 403
+            return JSONResponse(
+                {"error": "BLOCKED_BY_MCC", "decision": op.decision, "reason": op.reason},
+                status_code=status, headers=headers,
+            )
+
+        captured: Dict[str, Any] = {}
+
+        async def executor():
+            resp = await _forward_upstream(outbound, target, op.forward_context)
+            captured["resp"] = resp
+            return resp
+
+        result = await coordinator.enforce(
+            token=op.token, action=op.action, payload=op.forward_context,
+            executor=executor, request_binding=op.binding,
+        )
+        headers["X-MCC-Audit-Ref"] = result.audit_ref or ""
+        if result.status == ActuationStatus.EXECUTED:
+            resp = captured["resp"]
+            return Response(content=resp.content, status_code=resp.status_code,
+                            headers={**headers, "Content-Type": resp.headers.get("content-type", "application/json")})
+        status = 502 if result.status == ActuationStatus.EXECUTION_FAILED else 403
+        return JSONResponse(
+            {"error": "BLOCKED_BY_MCC", "status": result.status.value, "reason": result.reason},
+            status_code=status, headers=headers,
+        )
+
     @app.api_route(
         "/{path:path}",
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
@@ -297,62 +475,12 @@ def build_proxy_app(governor: "EgressGovernor", *, upstream_base: Optional[str] 
         target = _resolve_target(request, path)
         if target is None:
             return JSONResponse(
-                {"error": "NO_TARGET", "detail": "no upstream resolved"},
-                status_code=400,
+                {"error": "NO_TARGET", "detail": "no upstream resolved"}, status_code=400,
             )
-
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-
-        outbound = OutboundRequest(
-            method=request.method,
-            url=target,
-            headers=dict(request.headers),
-            body=body if isinstance(body, dict) else {},
-        )
-        outcome = await governor.govern(outbound)
-
-        headers = {
-            "X-MCC-Decision": outcome.decision,
-            "X-MCC-Audit-Id": outcome.audit_id,
-            "X-MCC-Reason": outcome.reason,
-        }
-        if outcome.applied_constraints:
-            headers["X-MCC-Constraints-Applied"] = "; ".join(outcome.applied_constraints)
-
-        if not outcome.forward:
-            return JSONResponse(
-                {
-                    "error": "BLOCKED_BY_MCC",
-                    "decision": outcome.decision,
-                    "reason": outcome.reason,
-                    "audit_id": outcome.audit_id,
-                },
-                status_code=outcome.status_code,
-                headers=headers,
-            )
-
-        # Forward exactly the body MCC authorized: rewritten (clamped) for
-        # CONSTRAIN, original for ALLOW/observe.
-        forward_body = outcome.forward_body or None
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            upstream = await client.request(
-                outbound.method,
-                target,
-                json=forward_body,
-                headers={
-                    k: v
-                    for k, v in outbound.headers.items()
-                    if k.lower() not in ("host", "content-length")
-                },
-            )
-        return Response(
-            content=upstream.content,
-            status_code=upstream.status_code,
-            headers={**headers, "Content-Type": upstream.headers.get("content-type", "application/json")},
-        )
+        outbound = await _read(request, target)
+        if coordinator is not None:
+            return await _via_coordinator(outbound, target)
+        return await _via_governor(outbound, target)
 
     return app
 
@@ -387,6 +515,47 @@ def build_gate_from_health(
     )
 
 
+def build_velocity_resolver(velocity_config: Dict[str, Any]):
+    """action -> [VelocityLimit] resolver from a ``{action_pattern: [limit,...]}``
+    config, first matching pattern wins."""
+    compiled = [
+        (pattern, [VelocityLimit.from_config(item) for item in items])
+        for pattern, items in velocity_config.items()
+    ]
+
+    def resolve(action: str) -> List[VelocityLimit]:
+        for pattern, limits in compiled:
+            if fnmatch.fnmatchcase(action, pattern):
+                return limits
+        return []
+
+    return resolve
+
+
+def build_coordinator(
+    gate: ExecutionGate,
+    *,
+    velocity_config: Optional[Dict[str, Any]] = None,
+    audit_path: Optional[str] = None,
+    profiles: Optional[ProfileRegistry] = None,
+) -> EnforcementCoordinator:
+    """Assemble the EnforcementCoordinator for the proxy.
+
+    Idempotency and velocity backends are selected from the environment
+    (in-memory by default, Redis under ``MCC_*_BACKEND=redis`` + ``MCC_REDIS_URL``
+    with no silent fallback). The audit log is the enforcement-side
+    audit-before-actuation chain.
+    """
+    return EnforcementCoordinator(
+        gate=gate,
+        idempotency=idempotency_registry_from_env(),
+        velocity=velocity_registry_from_env(),
+        audit=AuditLog(audit_path or os.environ.get("MCC_PROXY_AUDIT_LOG_PATH", "proxy-audit.jsonl")),
+        profiles=profiles or ProfileRegistry.default_pilot(),
+        velocity_limits_for=build_velocity_resolver(velocity_config or {}),
+    )
+
+
 # Module-level app for ``uvicorn interceptors.egress_proxy:app``.
 def _default_app():
     gateway_url = os.environ.get("MCC_GATEWAY_URL", "http://127.0.0.1:8001")
@@ -398,13 +567,19 @@ def _default_app():
         Route(action="read_account", method="GET", host="*", path="*"),
         Route(action="delete_resource", method="DELETE", host="*", path="*"),
     ]
+    gate = build_gate_from_health(gateway_url)
     governor = EgressGovernor(
         mapper=ActionMapper(routes),
         decide=build_decide_via_http(gateway_url, api_key),
-        gate=build_gate_from_health(gateway_url),
+        gate=gate,
     )
     upstream = os.environ.get("MCC_PROXY_UPSTREAM")
-    return build_proxy_app(governor, upstream_base=upstream)
+    coordinator = None
+    if os.environ.get("MCC_PROXY_COORDINATOR", "1") == "1":
+        from gateway.pilot_policy import PILOT_VELOCITY
+
+        coordinator = build_coordinator(gate, velocity_config=PILOT_VELOCITY)
+    return build_proxy_app(governor, upstream_base=upstream, coordinator=coordinator)
 
 
 # Built lazily: ``uvicorn interceptors.egress_proxy:app`` requires a running
