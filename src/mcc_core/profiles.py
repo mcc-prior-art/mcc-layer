@@ -172,6 +172,64 @@ class InfraProfile(ActionProfile):
         )
 
 
+class RoboticsProfile(ActionProfile):
+    """Robotics actuation (move_to_zone, pick_object, release_object,
+    enter_restricted_area, exceed_force_limit, ...).
+
+    The authorization-bearing fields are the **robot** (the resource actuating)
+    and the **zone** (where), plus optional ``object_id`` and ``force``; all go
+    into the canonical payload (covered by ``payload_hash``) and into signed
+    ``auth_claims``. Profile-specific safety limits ride the *universal*
+    constraint convention — ``allowed_zone`` (an allow-list; a restricted zone
+    is simply one not on it) and ``max_force`` (a ceiling). Velocity aggregates
+    by actor + robot + zone.
+
+    A second non-payment domain expressed entirely through a profile: the
+    universal token, gate, authority, audit, and replay semantics are unchanged
+    and gain no robotics vocabulary.
+    """
+
+    name = "robotics"
+    required_fields: Tuple[str, ...] = ("robot", "zone")
+
+    def canonical_payload(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(context)
+        missing = [f for f in self.required_fields if f not in payload]
+        if missing:
+            raise ProfileError(
+                f"robotics profile requires fields {self.required_fields}; missing {missing}"
+            )
+        payload["zone"] = str(payload["zone"]).lower()
+        if "force" in payload and isinstance(payload["force"], (int, float)):
+            payload["force"] = float(payload["force"])
+        return payload
+
+    def auth_claims(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        force = context.get("force")
+        return {
+            "robot": context.get("robot"),
+            "zone": str(context["zone"]).lower() if "zone" in context else None,
+            "object_id": context.get("object_id"),
+            "force": float(force) if isinstance(force, (int, float)) else None,
+        }
+
+    def velocity_descriptor(
+        self, *, actor_id, resource_id, action, policy_scope, context,
+    ) -> VelocityDescriptor:
+        force = context.get("force")
+        return VelocityDescriptor(
+            dimensions={
+                "actor": actor_id,
+                "robot": context.get("robot", resource_id),
+                "zone": context.get("zone"),
+                "action": action,
+                "policy_scope": policy_scope,
+            },
+            amount=float(force) if isinstance(force, (int, float)) else None,
+            destination=context.get("zone"),
+        )
+
+
 class ProfileError(Exception):
     """Raised when a context does not satisfy its action profile."""
 
@@ -196,9 +254,10 @@ class ProfileRegistry:
 
     @classmethod
     def default_pilot(cls) -> "ProfileRegistry":
-        """Pilot wiring: payment actions use PaymentProfile, infrastructure
-        actions use InfraProfile, everything else the generic profile."""
+        """Pilot wiring: payments -> PaymentProfile, infrastructure ->
+        InfraProfile, robotics -> RoboticsProfile, everything else generic."""
         infra = InfraProfile()
+        robotics = RoboticsProfile()
         return cls(
             [
                 ("send_payment", PaymentProfile()),
@@ -208,5 +267,10 @@ class ProfileRegistry:
                 ("deploy_release", infra),
                 ("scale_cluster", infra),
                 ("rotate_secret", infra),
+                ("move_to_zone", robotics),
+                ("pick_object", robotics),
+                ("release_object", robotics),
+                ("enter_restricted_area", robotics),
+                ("exceed_force_limit", robotics),
             ]
         )

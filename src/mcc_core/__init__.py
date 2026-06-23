@@ -64,6 +64,7 @@ from .profiles import (
     PaymentProfile,
     ProfileError,
     ProfileRegistry,
+    RoboticsProfile,
     VelocityDescriptor,
 )
 from .velocity import (
@@ -129,6 +130,7 @@ __all__ = [
     "revocation_registry_from_env",
     "ProfileError",
     "ProfileRegistry",
+    "RoboticsProfile",
     "RedisIdempotencyRegistry",
     "RedisNonceRegistry",
     "RedisVelocityRegistry",
