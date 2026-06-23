@@ -181,10 +181,12 @@ mcc-layer/
 │       ├── nonce.py           ← replay protection: RedisNonceRegistry (multi-instance) + InMemory; env-selectable, no silent fallback
 │       ├── idempotency.py     ← business-operation idempotency: RESERVED/EXECUTED/FAILED lifecycle, Redis+InMemory, fail-closed
 │       ├── velocity.py        ← atomic velocity/aggregate limits (count, cumulative amount, new destinations); anti-splitting
-│       ├── profiles.py        ← domain-neutral ActionProfile + payment-specific PaymentProfile (canonical payload + auth_claims)
-│       ├── coordinator.py     ← EnforcementCoordinator: the explicit a-h execution order (gate→idem→velocity→audit→execute→finalize)
+│       ├── profiles.py        ← domain-neutral ActionProfile + PaymentProfile + InfraProfile (canonical payload + auth_claims)
+│       ├── coordinator.py     ← EnforcementCoordinator: a-h order (gate→revocation→approval-consume→idem→velocity→audit→execute→finalize)
+│       ├── mandate.py         ← signed, revocable mandates: issue/verify (fail-closed), MandateAuthority, revocation registry (Redis+InMemory)
+│       ├── approvals.py       ← ESCALATE loop: ApprovalService + state machine + single-use signed approval mandate (Redis+InMemory)
 │       ├── policy.py          ← PolicyBundle with hash verification
-│       ├── authority.py       ← mandate registry + action→authority→verdict (the formula in code)
+│       ├── authority.py       ← config mandate registry + action→authority→verdict (the formula in code)
 │       └── signing.py         ← Ed25519 token signing/verification
 ├── gateway/                   ← MVP: the gate as an HTTP service
 │   ├── app.py                 ← POST /evaluate {identity,action,context,+binding}; /verify; /export; inline|observe
@@ -202,10 +204,16 @@ mcc-layer/
 │   ├── generate_signing_key.py ← Ed25519 key generator (PKCS8 PEM, mode 0600)
 │   ├── redis_nonce_smoke.py    ← E2E: two gates share one Redis → cross-instance replay rejected
 │   ├── redis_governance_smoke.py ← E2E: cross-instance idempotency dedup + aggregate ceiling on real Redis
+│   ├── redis_mandate_smoke.py  ← E2E: cross-instance mandate revocation on real Redis
+│   ├── redis_approval_smoke.py ← E2E: cross-instance single-use approval consume on real Redis
 │   └── smoke_test.sh
 ├── docs/                      ← architecture, security model, decision token spec
 │   ├── MVP_GATEWAY.md         ← MVP: authority model, gateway service, the one interceptor
 │   ├── TRANSACTION_GOVERNANCE.md ← the five protections: nonce, idempotency, binding, velocity, aggregate
+│   ├── SIGNED_MANDATES.md     ← signed/revocable mandate spec: trust model, lifecycle, revocation, deployment
+│   ├── ESCALATE_APPROVAL.md   ← ESCALATE state machine + operator workflow + service boundary
+│   ├── INFRA_PROFILE.md       ← non-payment (infrastructure) profile: domain neutrality demonstrated
+│   ├── MIGRATION_NOTES.md     ← backward-compatibility + migration notes for the governance layers
 │   └── exhibits/              ← NIW exhibits (protected)
 ├── proof/
 └── tests/
@@ -220,6 +228,9 @@ mcc-layer/
     ├── test_velocity.py       ← cumulative ceiling/anti-splitting, count + new-destination caps, concurrency safety, fail-closed
     ├── test_transaction_binding.py ← actor/resource/transaction + beneficiary/amount/currency substitution denied; non-payment compat
     ├── test_coordinator.py    ← a-h ordering, replay, shared idempotency key, audit-before-actuation, execution-failure recovery
+    ├── test_mandate.py        ← signed mandates: forged/expired/revoked/wrong-subject/scope-widening/backend-unavailable; MandateAuthority; actuation revocation
+    ├── test_approvals.py      ← ESCALATE loop: full execution, single-use replay, denial terminal, substitution, policy drift, backend failure
+    ├── test_infra_profile.py  ← infrastructure profile: canonical payload, substitution denied, constraint convention, full E2E, core-stays-agnostic
     └── opa_test_vectors.json
 ```
 
