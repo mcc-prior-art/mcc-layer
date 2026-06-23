@@ -70,6 +70,7 @@ from .profiles import (
     PaymentProfile,
     ProfileError,
     ProfileRegistry,
+    RoboticsProfile,
     VelocityDescriptor,
 )
 from .velocity import (
@@ -139,6 +140,7 @@ __all__ = [
     "issue_vote",
     "ProfileError",
     "ProfileRegistry",
+    "RoboticsProfile",
     "RedisIdempotencyRegistry",
     "RedisNonceRegistry",
     "RedisVelocityRegistry",

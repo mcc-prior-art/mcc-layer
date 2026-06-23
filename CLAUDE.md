@@ -181,7 +181,7 @@ mcc-layer/
 │       ├── nonce.py           ← replay protection: RedisNonceRegistry (multi-instance) + InMemory; env-selectable, no silent fallback
 │       ├── idempotency.py     ← business-operation idempotency: RESERVED/EXECUTED/FAILED lifecycle, Redis+InMemory, fail-closed
 │       ├── velocity.py        ← atomic velocity/aggregate limits (count, cumulative amount, new destinations); anti-splitting
-│       ├── profiles.py        ← domain-neutral ActionProfile + PaymentProfile + InfraProfile (canonical payload + auth_claims)
+│       ├── profiles.py        ← domain-neutral ActionProfile + PaymentProfile + InfraProfile + RoboticsProfile (canonical payload + auth_claims)
 │       ├── coordinator.py     ← EnforcementCoordinator: a-h order (gate→revocation→approval-consume→idem→velocity→audit→execute→finalize)
 │       ├── mandate.py         ← signed, revocable mandates: issue/verify (fail-closed), MandateAuthority, revocation registry (Redis+InMemory)
 │       ├── approvals.py       ← ESCALATE loop: ApprovalService + state machine + single-use signed approval mandate (Redis+InMemory)
@@ -221,6 +221,7 @@ mcc-layer/
 │   ├── SIGNED_MANDATES.md     ← signed/revocable mandate spec: trust model, lifecycle, revocation, deployment
 │   ├── ESCALATE_APPROVAL.md   ← ESCALATE state machine + operator workflow + service boundary
 │   ├── INFRA_PROFILE.md       ← non-payment (infrastructure) profile: domain neutrality demonstrated
+│   ├── ROBOTICS_PROFILE.md    ← robotics profile: domain neutrality demonstrated a second time
 │   ├── GOVERNANCE_HTTP_API.md ← HTTP API reference, trust config, rotation/revocation, auth boundary, threat model
 │   ├── MULTI_CONTEXT_CONSENSUS.md ← N-of-M signed evaluator consensus: votes, policy, /consensus HTTP, deployment
 │   ├── MIGRATION_NOTES.md     ← backward-compatibility + migration notes for the governance layers
@@ -241,6 +242,7 @@ mcc-layer/
     ├── test_mandate.py        ← signed mandates: forged/expired/revoked/wrong-subject/scope-widening/backend-unavailable; MandateAuthority; actuation revocation
     ├── test_approvals.py      ← ESCALATE loop: full execution, single-use replay, denial terminal, substitution, policy drift, backend failure
     ├── test_infra_profile.py  ← infrastructure profile: canonical payload, substitution denied, constraint convention, full E2E, core-stays-agnostic
+    ├── test_robotics_profile.py ← robotics profile (2nd non-payment domain): zone/force constraints, restricted-zone DENY, full E2E, core-stays-agnostic
     ├── test_trust.py          ← multi-issuer trust set: resolution, rotation, disable/revoke/expiry, malformed config, pilot fail-closed startup
     ├── test_mandate_http.py   ← mandate HTTP: verify/execute/revoke, strict schemas, operator boundary, no-bypass (upstream unreached when blocked)
     ├── test_approval_http.py  ← approval HTTP: ESCALATE scenarios (approve/deny/single-use/substitution/policy-drift/expiry/concurrency/backend-down)
