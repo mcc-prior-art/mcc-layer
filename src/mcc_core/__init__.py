@@ -6,6 +6,16 @@ The gate enforces.
 The audit chain records.
 """
 
+from .approvals import (
+    ApprovalConfigError,
+    ApprovalRecord,
+    ApprovalService,
+    ApprovalState,
+    ConsumeResult,
+    InMemoryApprovalRegistry,
+    RedisApprovalRegistry,
+    approval_registry_from_env,
+)
 from .audit import AuditLog
 from .authority import (
     ActionPolicy,
@@ -78,6 +88,14 @@ __all__ = [
     "ActionProfile",
     "ActuationResult",
     "ActuationStatus",
+    "ApprovalConfigError",
+    "ApprovalRecord",
+    "ApprovalService",
+    "ApprovalState",
+    "ConsumeResult",
+    "InMemoryApprovalRegistry",
+    "RedisApprovalRegistry",
+    "approval_registry_from_env",
     "AuditLog",
     "AuthorityDecision",
     "AuthorityModel",

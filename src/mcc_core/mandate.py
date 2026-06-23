@@ -54,10 +54,13 @@ def issue_mandate(
     revocation_required: bool = False,
     policy_hash: Optional[str] = None,
     mandate_id: Optional[str] = None,
+    extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Issue a signed mandate. The issuer's ``signing_key`` carries the kid that
     a verifier must trust. ``policy_hash`` optionally binds the mandate to a
-    trust-set / policy version."""
+    trust-set / policy version. ``extra`` adds further signature-covered claims
+    (e.g. an approval's action_hash / transaction_id) without changing the
+    universal verification path, which ignores unknown fields."""
     iat = int(issued_at if issued_at is not None else time.time())
     claims = {
         "mandate_id": mandate_id or f"mdt-{uuid.uuid4().hex}",
@@ -72,6 +75,12 @@ def issue_mandate(
         "revocation_required": bool(revocation_required),
         "policy_hash": policy_hash,
     }
+    if extra:
+        # Reserved fields cannot be overridden by extra claims.
+        for key in extra:
+            if key in claims or key in ("kid", "sig"):
+                raise ValueError(f"extra mandate claim '{key}' is reserved")
+        claims.update(extra)
     return signing_key.sign_token(claims)
 
 
