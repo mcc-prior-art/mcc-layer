@@ -419,7 +419,11 @@ def health() -> Dict[str, Any]:
 # invalid/empty trust configuration raises here and refuses startup (no silent
 # fallback to a development key); dev/test default to an empty trust set.
 
-from .governance_api import build_governance_service, mount_mandate_routes  # noqa: E402
+from .governance_api import (  # noqa: E402
+    build_governance_service,
+    mount_approval_routes,
+    mount_mandate_routes,
+)
 
 governance = build_governance_service(
     engine=gateway.engine, signing_key=gateway.signing_key, audit=gateway.audit,
@@ -427,6 +431,8 @@ governance = build_governance_service(
 )
 mount_mandate_routes(app, governance, api_key=settings.api_key,
                      operator_key=settings.operator_api_key)
+mount_approval_routes(app, governance, api_key=settings.api_key,
+                      operator_key=settings.operator_api_key)
 
 
 if __name__ == "__main__":

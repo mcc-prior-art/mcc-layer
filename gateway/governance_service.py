@@ -134,6 +134,7 @@ class GovernanceService:
         self, *, mandate: Any, actor: str, action: str, resource: Optional[str],
         context: Dict[str, Any], transaction_id: Optional[str] = None,
         idempotency_key: Optional[str] = None, headers: Optional[Dict[str, str]] = None,
+        extra_auth_claims: Optional[Dict[str, Any]] = None,
     ) -> ExecOutcome:
         now = self._now()
         authority, resolution = self._authority_for(mandate, now)
@@ -157,15 +158,72 @@ class GovernanceService:
             return ExecOutcome("BLOCKED", decision.reason, decision=decision.verdict.value)
 
         forward_context = decision.forward_context or canonical
+        auth_claims = dict(profile.auth_claims(forward_context))
+        if extra_auth_claims:
+            auth_claims.update(extra_auth_claims)
         token = self.engine.issue_token(
             verdict=decision.verdict.value, subject=actor, action=action,
             payload=forward_context, constraints=decision.constraints,
             transaction_id=transaction_id, idempotency_key=idempotency_key,
             actor_id=actor, resource_id=resource,
-            auth_claims=profile.auth_claims(forward_context), mandate_id=decision.mandate_id,
+            auth_claims=auth_claims, mandate_id=decision.mandate_id,
         )
         return await self._run(token, action, forward_context, actor, resource,
                                transaction_id, headers)
+
+    # ---- approval operations (ESCALATE loop) ----
+
+    async def create_approval(
+        self, *, actor: str, action: str, resource: Optional[str] = None,
+        transaction_id: Optional[str] = None, policy_hash: Optional[str] = None,
+        payload_hash: Optional[str] = None, constraints: Optional[Dict[str, Any]] = None,
+        ttl_seconds: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        request_id = await self.approvals.request(
+            actor=actor, action=action, resource=resource, transaction_id=transaction_id,
+            policy_hash=policy_hash, payload_hash=payload_hash, constraints=constraints,
+            ttl_seconds=ttl_seconds,
+        )
+        rec = await self.approvals.get(request_id)
+        return {"request_id": request_id, "state": rec.state}
+
+    async def get_approval(self, request_id: str) -> Optional[Dict[str, Any]]:
+        rec = await self.approvals.get(request_id)
+        if rec is None:
+            return None
+        # Non-sensitive view (hashes are not secrets; no key material).
+        return {
+            "request_id": rec.request_id, "state": rec.state, "actor": rec.actor,
+            "action": rec.action, "resource": rec.resource,
+            "transaction_id": rec.transaction_id, "created_at": rec.created_at,
+            "expires_at": rec.expires_at,
+        }
+
+    async def approve(self, request_id: str) -> Optional[Dict[str, Any]]:
+        """Human approval mints a scoped, signed, single-use approval mandate.
+        It does not execute anything."""
+        return await self.approvals.approve(request_id)
+
+    async def deny(self, request_id: str) -> bool:
+        return await self.approvals.deny(request_id)
+
+    async def invalidate(self, request_id: str) -> bool:
+        return await self.approvals.invalidate(request_id)
+
+    async def execute_with_approval(
+        self, *, mandate: Any, actor: str, action: str, resource: Optional[str],
+        context: Dict[str, Any], transaction_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> ExecOutcome:
+        """Re-evaluate against the approval mandate and execute through the one
+        coordinator path. The token carries the approval_id, so the coordinator
+        consumes the approval single-use at actuation."""
+        approval_id = mandate.get("approval_id") if isinstance(mandate, dict) else None
+        return await self.execute_with_mandate(
+            mandate=mandate, actor=actor, action=action, resource=resource,
+            context=context, transaction_id=transaction_id, idempotency_key=idempotency_key,
+            extra_auth_claims={"approval_id": approval_id} if approval_id else None,
+        )
 
     # ---- the one governed execution path ----
 

@@ -73,6 +73,49 @@ class OkResponse(_Strict):
     detail: Optional[str] = None
 
 
+class ApprovalCreateRequest(_Strict):
+    actor: str = Field(min_length=1)
+    action: str = Field(min_length=1)
+    resource: Optional[str] = None
+    transaction_id: Optional[str] = None
+    policy_hash: Optional[str] = None
+    payload_hash: Optional[str] = None
+    constraints: Optional[Dict[str, Any]] = None
+    ttl_seconds: Optional[int] = Field(default=None, ge=1)
+
+
+class ApprovalCreateResponse(_Strict):
+    request_id: str
+    state: str
+
+
+class ApprovalStatusResponse(_Strict):
+    request_id: str
+    state: str
+    actor: str
+    action: str
+    resource: Optional[str] = None
+    transaction_id: Optional[str] = None
+    created_at: int
+    expires_at: int
+
+
+class ApprovalDecisionResponse(_Strict):
+    request_id: str
+    state: str
+    mandate: Optional[Dict[str, Any]] = None
+
+
+class ApprovalExecuteRequest(_Strict):
+    mandate: Dict[str, Any]
+    actor: str = Field(min_length=1)
+    action: str = Field(min_length=1)
+    resource: Optional[str] = None
+    context: Dict[str, Any] = Field(default_factory=dict)
+    transaction_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
+
+
 # ---------- auth boundaries ----------
 
 def _auth_deps(api_key: str, operator_key: Optional[str]):
@@ -137,6 +180,63 @@ def mount_mandate_routes(app: FastAPI, service: GovernanceService, *, api_key: s
     @app.post("/trust/keys/{kid}/revoke", response_model=OkResponse)
     async def revoke_key(kid: str, _=Depends(require_operator)):
         return OkResponse(ok=service.trust_set.revoke_key(kid))
+
+
+def mount_approval_routes(app: FastAPI, service: GovernanceService, *, api_key: str,
+                          operator_key: Optional[str]) -> None:
+    """ESCALATE approval endpoints. Operators approve/deny/invalidate; agents
+    create requests and execute the approved single-use mandate. Human approval
+    never executes — it only mints bounded authority."""
+    require_agent, require_operator = _auth_deps(api_key, operator_key)
+
+    @app.post("/approvals", response_model=ApprovalCreateResponse)
+    async def create_approval(req: ApprovalCreateRequest, _=Depends(require_agent)):
+        out = await service.create_approval(
+            actor=req.actor, action=req.action, resource=req.resource,
+            transaction_id=req.transaction_id, policy_hash=req.policy_hash,
+            payload_hash=req.payload_hash, constraints=req.constraints,
+            ttl_seconds=req.ttl_seconds,
+        )
+        return ApprovalCreateResponse(**out)
+
+    @app.get("/approvals/{request_id}", response_model=ApprovalStatusResponse)
+    async def get_approval(request_id: str, _=Depends(require_agent)):
+        rec = await service.get_approval(request_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        return ApprovalStatusResponse(**rec)
+
+    @app.post("/approvals/{request_id}/approve", response_model=ApprovalDecisionResponse)
+    async def approve(request_id: str, _=Depends(require_operator)):
+        mandate = await service.approve(request_id)
+        if mandate is None:
+            rec = await service.get_approval(request_id)
+            state = rec["state"] if rec else "NOT_FOUND"
+            raise HTTPException(status_code=409, detail=f"not approvable in state {state}")
+        return ApprovalDecisionResponse(request_id=request_id, state="APPROVED", mandate=mandate)
+
+    @app.post("/approvals/{request_id}/deny", response_model=ApprovalDecisionResponse)
+    async def deny(request_id: str, _=Depends(require_operator)):
+        if not await service.deny(request_id):
+            raise HTTPException(status_code=409, detail="not deniable in current state")
+        return ApprovalDecisionResponse(request_id=request_id, state="DENIED")
+
+    @app.post("/approvals/{request_id}/invalidate", response_model=ApprovalDecisionResponse)
+    async def invalidate(request_id: str, _=Depends(require_operator)):
+        if not await service.invalidate(request_id):
+            raise HTTPException(status_code=409, detail="not invalidatable in current state")
+        return ApprovalDecisionResponse(request_id=request_id, state="INVALIDATED")
+
+    @app.post("/approvals/{request_id}/execute", response_model=ExecuteResponse)
+    async def execute_with_approval(request_id: str, req: ApprovalExecuteRequest,
+                                    _=Depends(require_agent)):
+        out = await service.execute_with_approval(
+            mandate=req.mandate, actor=req.actor, action=req.action, resource=req.resource,
+            context=req.context, transaction_id=req.transaction_id,
+            idempotency_key=req.idempotency_key,
+        )
+        return ExecuteResponse(status=out.status, reason=out.reason, decision=out.decision,
+                               audit_ref=out.audit_ref, execution=out.execution)
 
 
 # ---------- service builder ----------
