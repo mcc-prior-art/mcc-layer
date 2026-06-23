@@ -67,6 +67,7 @@ class DecisionEngine:
         actor_id: Optional[str] = None,
         resource_id: Optional[str] = None,
         auth_claims: Optional[Dict[str, Any]] = None,
+        mandate_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         verdict = Verdict(verdict)
         if verdict not in EXECUTABLE_VERDICTS:
@@ -101,5 +102,9 @@ class DecisionEngine:
             "actor_id": actor_id,
             "resource_id": resource_id,
             "auth_claims": auth_claims or {},
+            # The id of the signed mandate whose authority justified this token
+            # (when issued under a verified mandate). Binds token <-> authority
+            # for audit and actuation-time revocation re-checks.
+            "mandate_id": mandate_id,
         }
         return self.signing_key.sign_token(claims)

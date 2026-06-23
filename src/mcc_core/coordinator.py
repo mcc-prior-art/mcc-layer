@@ -67,6 +67,7 @@ class EnforcementCoordinator:
         audit: AuditLog,
         profiles: Optional[ProfileRegistry] = None,
         velocity_limits_for: Optional[LimitsResolver] = None,
+        revocation_registry: Optional[Any] = None,
     ) -> None:
         self.gate = gate
         self.idempotency = idempotency
@@ -74,6 +75,11 @@ class EnforcementCoordinator:
         self.audit = audit
         self.profiles = profiles or ProfileRegistry()
         self.velocity_limits_for = velocity_limits_for or (lambda action: [])
+        # Optional actuation-time revocation re-check: a mandate revoked between
+        # decision and execution must still block. When configured, a token that
+        # names a mandate_id is checked here; REVOKED or an unconfirmable status
+        # fails closed.
+        self.revocation_registry = revocation_registry
 
     def _record(self, **fields: Any) -> Optional[str]:
         try:
@@ -99,6 +105,18 @@ class EnforcementCoordinator:
         if not gate_result.allowed:
             self._record(kind="actuation_rejected", action=action, reason=gate_result.reason)
             return ActuationResult(ActuationStatus.BLOCKED, gate_result.reason)
+
+        # Actuation-time revocation re-check: a mandate revoked after the token
+        # was issued must block here (fail-closed on REVOKED or unconfirmable).
+        mandate_id = token.get("mandate_id")
+        if self.revocation_registry is not None and mandate_id:
+            from .mandate import RevocationStatus
+
+            status = await self.revocation_registry.check(mandate_id)
+            if status != RevocationStatus.ACTIVE:
+                reason = f"mandate {mandate_id} {status.value.lower()} at actuation; fail-closed"
+                self._record(kind="actuation_rejected", action=action, reason=reason)
+                return ActuationResult(ActuationStatus.BLOCKED, reason)
 
         # Authoritative operation identity comes from the (now-verified) token.
         idem_key = token.get("idempotency_key")
