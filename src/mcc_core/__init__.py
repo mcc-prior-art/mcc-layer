@@ -60,6 +60,7 @@ from .nonce import (
 from .policy import PolicyBundle, PolicyBundleError
 from .profiles import (
     ActionProfile,
+    InfraProfile,
     PaymentProfile,
     ProfileError,
     ProfileRegistry,
@@ -106,6 +107,7 @@ __all__ = [
     "IdempotencyState",
     "InMemoryIdempotencyRegistry",
     "InMemoryVelocityRegistry",
+    "InfraProfile",
     "Mandate",
     "MandateRegistry",
     "ExecutionGate",

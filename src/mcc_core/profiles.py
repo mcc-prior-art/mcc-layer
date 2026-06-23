@@ -118,6 +118,60 @@ class PaymentProfile(ActionProfile):
         )
 
 
+class InfraProfile(ActionProfile):
+    """Infrastructure operations (restart_service, change_firewall_rule,
+    deploy_release, scale_cluster, rotate_secret, ...).
+
+    The authorization-bearing fields are the **target** (the resource being
+    operated on) and the **environment** (e.g. ``prod``/``staging``); both go
+    into the canonical payload (covered by ``payload_hash``) and into signed
+    ``auth_claims``. Profile-specific limits ride on the *universal* constraint
+    convention — ``allowed_environment`` (an allow-list), ``max_replicas``, etc.
+    — so the core gains no infrastructure vocabulary. Velocity aggregates by
+    actor + target + environment.
+
+    This is the demonstration of domain neutrality: a completely different
+    domain, expressed entirely through a profile, with the universal token,
+    gate, authority, audit, and replay semantics unchanged.
+    """
+
+    name = "infrastructure"
+    required_fields: Tuple[str, ...] = ("target", "environment")
+
+    def canonical_payload(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(context)
+        missing = [f for f in self.required_fields if f not in payload]
+        if missing:
+            raise ProfileError(
+                f"infrastructure profile requires fields {self.required_fields}; missing {missing}"
+            )
+        payload["environment"] = str(payload["environment"]).lower()
+        return payload
+
+    def auth_claims(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "target": context.get("target"),
+            "environment": str(context["environment"]).lower() if "environment" in context else None,
+            "change_ref": context.get("change_ref"),
+        }
+
+    def velocity_descriptor(
+        self, *, actor_id, resource_id, action, policy_scope, context,
+    ) -> VelocityDescriptor:
+        replicas = context.get("replicas")
+        return VelocityDescriptor(
+            dimensions={
+                "actor": actor_id,
+                "target": context.get("target", resource_id),
+                "environment": context.get("environment"),
+                "action": action,
+                "policy_scope": policy_scope,
+            },
+            amount=float(replicas) if isinstance(replicas, (int, float)) else None,
+            destination=context.get("target"),
+        )
+
+
 class ProfileError(Exception):
     """Raised when a context does not satisfy its action profile."""
 
@@ -142,11 +196,17 @@ class ProfileRegistry:
 
     @classmethod
     def default_pilot(cls) -> "ProfileRegistry":
-        """Pilot wiring: payment actions use PaymentProfile, everything else
-        the generic profile."""
+        """Pilot wiring: payment actions use PaymentProfile, infrastructure
+        actions use InfraProfile, everything else the generic profile."""
+        infra = InfraProfile()
         return cls(
             [
                 ("send_payment", PaymentProfile()),
                 ("pay_*", PaymentProfile()),
+                ("restart_service", infra),
+                ("change_firewall_rule", infra),
+                ("deploy_release", infra),
+                ("scale_cluster", infra),
+                ("rotate_secret", infra),
             ]
         )
