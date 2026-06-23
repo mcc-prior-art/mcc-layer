@@ -56,7 +56,15 @@ absent from a gate's trust set is effectively revoked (UNTRUSTED_KEY → deny).
 | `MCC_NONCE_BACKEND` | `memory` | gate replay-protection backend: `memory` (dev/single-instance) or `redis` (multi-instance) |
 | `MCC_IDEMPOTENCY_BACKEND` | `memory` | business-operation idempotency backend: `memory` or `redis` |
 | `MCC_VELOCITY_BACKEND` | `memory` | velocity/aggregate backend: `memory` or `redis` |
+| `MCC_REVOCATION_BACKEND` | `memory` | mandate revocation backend: `memory` or `redis` |
+| `MCC_APPROVAL_BACKEND` | `memory` | ESCALATE approval store backend: `memory` or `redis` |
 | `MCC_REDIS_URL` | *(unset)* | required when any backend above is `redis`; the Redis shared by every instance |
+| `MCC_ENV` | `dev` | `dev`/`test`/`pilot`; `pilot` requires a valid trust config and refuses unsafe startup |
+| `MCC_TRUST_CONFIG` | *(unset)* | path to the multi-issuer trust JSON (public keys only); required in pilot |
+| `MCC_APPROVER_SIGNING_KEY_PATH` | *(empty)* | PEM for the approval signer; empty = ephemeral dev approver key |
+| `MCC_APPROVER_KEY_ID` | `mcc-approver-1` | kid for the approver key |
+| `MCC_UPSTREAM_BASE` | *(unset)* | upstream base URL governed execution forwards to (via the coordinator only) |
+| `MCC_GATEWAY_OPERATOR_API_KEY` | *(empty)* | operator boundary for approve/deny/revoke/trust admin; empty disables operator actions (fail closed) |
 | `MCC_PROXY_COORDINATOR` | `1` | proxy runs the a-h EnforcementCoordinator (idempotency + velocity); `0` = gate-only path |
 | `MCC_PROXY_AUDIT_LOG_PATH` | `proxy-audit.jsonl` | enforcement-side audit-before-actuation chain (set outside the repo in production) |
 | `MCC_API_KEY` | `demo-key` | replace in production |
@@ -106,6 +114,10 @@ TTL.
 | `MCC_NONCE_BACKEND=redis` with no `MCC_REDIS_URL` | startup error (`NonceConfigError`), not a silent in-memory downgrade |
 | Idempotency registry unavailable / indeterminate | reservation denied → operation blocked before execution |
 | `MCC_IDEMPOTENCY_BACKEND=redis` / `MCC_VELOCITY_BACKEND=redis` with no `MCC_REDIS_URL` | startup error, not a silent in-memory downgrade |
+| `MCC_ENV=pilot` with missing/invalid/empty `MCC_TRUST_CONFIG` | startup refused (`TrustConfigError`); no fallback to a development key |
+| Unknown issuer / unknown kid / disabled issuer / expired or revoked key | mandate verification denies with the specific trust status |
+| Operator action without/with wrong `X-Operator-Key` | 403 (operator boundary), never executed |
+| Governed execution with unverifiable mandate/approval | BLOCKED before the upstream is reached (no second execution path) |
 | Velocity registry unavailable | capacity unreservable → operation blocked (no over-spend) |
 | Audit-before-actuation write cannot be confirmed | operation blocked, reserved capacity released |
 | Executor fails after reservation | idempotency key freed (`FAILED`, retryable); reported fail-closed, never finalized |

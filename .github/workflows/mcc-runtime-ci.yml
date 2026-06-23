@@ -50,6 +50,14 @@ jobs:
           # bypass the cumulative velocity ceiling. Exits non-zero on any miss.
           python examples/transaction_governance_demo.py
 
+      - name: Governance HTTP end-to-end smoke (mandates + approvals)
+        run: |
+          # Boots the real gateway (with a pilot trust config) + upstream and
+          # drives mandate verify/execute/revoke and the ESCALATE approve→execute
+          # single-use flow over HTTP. Asserts no blocked decision reaches the
+          # upstream (no bypass). Exits non-zero on any miss.
+          python examples/governance_http_demo.py
+
   nonce-redis-smoke:
     runs-on: ubuntu-latest
     services:
@@ -105,6 +113,15 @@ jobs:
           # An approved request can be consumed exactly once even when two
           # instances race to consume it. Exits non-zero on any miss.
           python scripts/redis_approval_smoke.py
+
+      - name: Governance HTTP layer cross-instance against a real Redis
+        env:
+          MCC_REDIS_URL: redis://127.0.0.1:6379/0
+        run: |
+          # Two GovernanceService instances share one Redis; a mandate revoked on
+          # one is blocked on the other, and an approval consumed on one cannot be
+          # replayed on the other — through the full coordinator+gate path.
+          python scripts/redis_governance_http_smoke.py
 
   invariants:
     runs-on: ubuntu-latest
