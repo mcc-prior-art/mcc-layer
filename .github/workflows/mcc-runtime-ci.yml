@@ -58,6 +58,31 @@ jobs:
           # upstream (no bypass). Exits non-zero on any miss.
           python examples/governance_http_demo.py
 
+  consensus-evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Reproducible consensus 3-of-3 evidence (regeneration + scenarios)
+        run: |
+          # Regenerates the evidence in a temp dir and fails on any drift from
+          # the committed artifacts (proves reproducibility) and on any scenario
+          # that does not fail closed.
+          python evidence/consensus_3of3/harness.py --check
+
+      - name: Independent re-verification (no mcc_core)
+        run: |
+          # Re-checks MANIFEST integrity and independently re-derives every
+          # consensus verdict using only cryptography + stdlib.
+          python evidence/consensus_3of3/verify_independent.py
+
   nonce-redis-smoke:
     runs-on: ubuntu-latest
     services:
