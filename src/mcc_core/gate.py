@@ -69,10 +69,13 @@ class ExecutionGate:
         *,
         action: Optional[str] = None,
         payload: Optional[Dict[str, Any]] = None,
+        binding: Optional[Dict[str, Any]] = None,
         now: Optional[int] = None,
     ) -> GateResult:
         try:
-            return await self._verify(token, action=action, payload=payload, now=now)
+            return await self._verify(
+                token, action=action, payload=payload, binding=binding, now=now
+            )
         except Exception:
             return GateResult(False, "GATE_ERROR: fail-closed")
 
@@ -82,6 +85,7 @@ class ExecutionGate:
         *,
         action: Optional[str],
         payload: Optional[Dict[str, Any]],
+        binding: Optional[Dict[str, Any]],
         now: Optional[int],
     ) -> GateResult:
         if not isinstance(token, dict) or not token:
@@ -117,6 +121,27 @@ class ExecutionGate:
 
         if payload is not None and token.get("payload_hash") != hash_payload(payload):
             return GateResult(False, "PAYLOAD_HASH_MISMATCH: payload differs from authorized one")
+
+        # Generic operation binding: the executor's view of the operation
+        # (actor, resource, transaction, idempotency key, or any signed claim)
+        # must match what the token authorized. Only fields the caller asks to
+        # check against a token that actually carries them are compared, so an
+        # unbound (legacy) token is unaffected. Checked before the nonce so a
+        # mismatch does not burn the nonce.
+        if binding:
+            for field, expected in binding.items():
+                if expected is None:
+                    continue
+                authorized = token.get(field)
+                # A token that does not carry this field is simply not bound on
+                # it (an authentic None — the signature covers it, so it cannot
+                # be stripped). Only enforce when the token actually asserts a
+                # value and it differs from the operation being executed.
+                if authorized is not None and authorized != expected:
+                    return GateResult(
+                        False,
+                        f"BINDING_MISMATCH: {field} differs from authorized operation",
+                    )
 
         if not await self.nonce_registry.consume(
             token.get("nonce"), ttl_seconds=self._nonce_ttl(exp, ts)

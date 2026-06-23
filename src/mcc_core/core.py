@@ -62,6 +62,11 @@ class DecisionEngine:
         audit_ref: Optional[str] = None,
         nonce: Optional[str] = None,
         now: Optional[int] = None,
+        transaction_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        actor_id: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        auth_claims: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         verdict = Verdict(verdict)
         if verdict not in EXECUTABLE_VERDICTS:
@@ -85,5 +90,16 @@ class DecisionEngine:
             "policy_hash": self.policy_hash,
             "nonce": nonce or uuid.uuid4().hex,
             "audit_ref": audit_ref,
+            # Generic, domain-neutral operation binding. These tie the token to
+            # the exact authorized operation regardless of action type. Payment
+            # specifics (beneficiary/amount/currency/source) are not here — they
+            # live in the canonical payload (covered by payload_hash) and, when a
+            # profile supplies them, in the opaque ``auth_claims`` map below,
+            # which the Ed25519 signature covers like every other claim.
+            "transaction_id": transaction_id,
+            "idempotency_key": idempotency_key,
+            "actor_id": actor_id,
+            "resource_id": resource_id,
+            "auth_claims": auth_claims or {},
         }
         return self.signing_key.sign_token(claims)

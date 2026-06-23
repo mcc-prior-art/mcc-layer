@@ -53,6 +53,7 @@ from mcc_core import (  # noqa: E402
     AuditLog,
     AuthorityModel,
     DecisionEngine,
+    ProfileRegistry,
     SigningKey,
     Verdict,
     canonical_bytes,
@@ -102,6 +103,12 @@ class EvaluateRequest(BaseModel):
     context: Dict[str, Any] = Field(
         default_factory=dict, description="Parameters of the action"
     )
+    # Generic, domain-neutral operation binding (optional). When provided they
+    # are signed into the decision token and bound at the gate.
+    transaction_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    actor_id: Optional[str] = None
+    resource_id: Optional[str] = None
     # Per-request override of the gateway mode; falls back to the deployment default.
     mode: Optional[str] = None
 
@@ -126,6 +133,12 @@ class EvaluateResponse(BaseModel):
     authority_required: Optional[str] = None
     policy_ref: str = ""
     trace_id: str = ""
+    # Echo of the generic operation binding the token was issued against, so the
+    # interceptor can re-present it to the gate/coordinator unchanged.
+    transaction_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    actor_id: Optional[str] = None
+    resource_id: Optional[str] = None
 
 
 # ---------- Auth ----------
@@ -144,6 +157,9 @@ class Gateway:
         # token to the exact configuration that produced it.
         self.authority = AuthorityModel.from_config(PILOT_POLICY)
         self.policy_hash = sha256_hex(canonical_bytes(PILOT_POLICY))
+        # Action-specific profiles. Payment actions surface their authorization
+        # fields as signed auth_claims; everything else uses the generic profile.
+        self.profiles = ProfileRegistry.default_pilot()
 
         if settings.signing_key_path:
             self.signing_key = SigningKey.from_pem_file(
@@ -226,6 +242,7 @@ class Gateway:
         signature: Optional[str] = None
         if authority.verdict in (Verdict.ALLOW, Verdict.CONSTRAIN):
             try:
+                profile = self.profiles.for_action(req.action)
                 decision_token = self.engine.issue_token(
                     verdict=authority.verdict.value,
                     subject=req.identity,
@@ -233,6 +250,14 @@ class Gateway:
                     payload=forward_context,
                     constraints=constraints,
                     audit_ref=audit_id,
+                    transaction_id=req.transaction_id,
+                    idempotency_key=req.idempotency_key,
+                    actor_id=req.actor_id or req.identity,
+                    resource_id=req.resource_id,
+                    # Profile-derived, action-specific authorization claims (e.g.
+                    # beneficiary/amount/currency for payments); empty for generic
+                    # actions. Covered by the Ed25519 signature like every claim.
+                    auth_claims=profile.auth_claims(forward_context),
                 )
                 signature = decision_token["sig"]
             except Exception:
@@ -271,6 +296,10 @@ class Gateway:
             authority_required=authority.authority_required,
             policy_ref=f"{settings.policy_id}@{self.policy_hash}",
             trace_id=trace_id,
+            transaction_id=req.transaction_id,
+            idempotency_key=req.idempotency_key,
+            actor_id=req.actor_id or req.identity,
+            resource_id=req.resource_id,
         )
 
     def verify_chain(self) -> Dict[str, Any]:

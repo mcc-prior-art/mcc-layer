@@ -15,8 +15,18 @@ from .authority import (
     MandateRegistry,
     apply_constraints,
 )
+from .coordinator import ActuationResult, ActuationStatus, EnforcementCoordinator
 from .core import EXECUTABLE_VERDICTS, DecisionEngine, TokenNotIssuable, Verdict
 from .gate import ExecutionGate, GateResult
+from .idempotency import (
+    IdempotencyConfigError,
+    IdempotencyState,
+    InMemoryIdempotencyRegistry,
+    RedisIdempotencyRegistry,
+    ReserveResult,
+    ReserveStatus,
+    idempotency_registry_from_env,
+)
 from .nonce import (
     InMemoryNonceRegistry,
     NonceConfigError,
@@ -25,6 +35,21 @@ from .nonce import (
     nonce_registry_from_env,
 )
 from .policy import PolicyBundle, PolicyBundleError
+from .profiles import (
+    ActionProfile,
+    PaymentProfile,
+    ProfileError,
+    ProfileRegistry,
+    VelocityDescriptor,
+)
+from .velocity import (
+    InMemoryVelocityRegistry,
+    RedisVelocityRegistry,
+    VelocityConfigError,
+    VelocityLimit,
+    VelocityOutcome,
+    velocity_registry_from_env,
+)
 from .signing import (
     SigningKey,
     canonical_bytes,
@@ -37,11 +62,19 @@ from .signing import (
 
 __all__ = [
     "ActionPolicy",
+    "ActionProfile",
+    "ActuationResult",
+    "ActuationStatus",
     "AuditLog",
     "AuthorityDecision",
     "AuthorityModel",
     "DecisionEngine",
     "EXECUTABLE_VERDICTS",
+    "EnforcementCoordinator",
+    "IdempotencyConfigError",
+    "IdempotencyState",
+    "InMemoryIdempotencyRegistry",
+    "InMemoryVelocityRegistry",
     "Mandate",
     "MandateRegistry",
     "ExecutionGate",
@@ -49,8 +82,21 @@ __all__ = [
     "InMemoryNonceRegistry",
     "NonceConfigError",
     "NonceRegistry",
+    "PaymentProfile",
+    "ProfileError",
+    "ProfileRegistry",
+    "RedisIdempotencyRegistry",
     "RedisNonceRegistry",
+    "RedisVelocityRegistry",
+    "ReserveResult",
+    "ReserveStatus",
+    "VelocityConfigError",
+    "VelocityDescriptor",
+    "VelocityLimit",
+    "VelocityOutcome",
+    "idempotency_registry_from_env",
     "nonce_registry_from_env",
+    "velocity_registry_from_env",
     "PolicyBundle",
     "PolicyBundleError",
     "SigningKey",

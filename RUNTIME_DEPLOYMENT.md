@@ -54,7 +54,11 @@ absent from a gate's trust set is effectively revoked (UNTRUSTED_KEY → deny).
 | `MCC_USE_OPA` | `true` | `false` switches to the non-production local fallback |
 | `MCC_OPA_URL` | `http://opa:8181` | |
 | `MCC_NONCE_BACKEND` | `memory` | gate replay-protection backend: `memory` (dev/single-instance) or `redis` (multi-instance) |
-| `MCC_REDIS_URL` | *(unset)* | required when `MCC_NONCE_BACKEND=redis`; the Redis shared by every gate instance |
+| `MCC_IDEMPOTENCY_BACKEND` | `memory` | business-operation idempotency backend: `memory` or `redis` |
+| `MCC_VELOCITY_BACKEND` | `memory` | velocity/aggregate backend: `memory` or `redis` |
+| `MCC_REDIS_URL` | *(unset)* | required when any backend above is `redis`; the Redis shared by every instance |
+| `MCC_PROXY_COORDINATOR` | `1` | proxy runs the a-h EnforcementCoordinator (idempotency + velocity); `0` = gate-only path |
+| `MCC_PROXY_AUDIT_LOG_PATH` | `proxy-audit.jsonl` | enforcement-side audit-before-actuation chain (set outside the repo in production) |
 | `MCC_API_KEY` | `demo-key` | replace in production |
 
 ---
@@ -100,6 +104,12 @@ TTL.
 | Token issuance fails | decision downgraded to DENY (downgrade is audited) |
 | Redis unavailable / timeout / indeterminate reply at the gate | nonce state unknown → token rejected (never a fallback to in-memory) |
 | `MCC_NONCE_BACKEND=redis` with no `MCC_REDIS_URL` | startup error (`NonceConfigError`), not a silent in-memory downgrade |
+| Idempotency registry unavailable / indeterminate | reservation denied → operation blocked before execution |
+| `MCC_IDEMPOTENCY_BACKEND=redis` / `MCC_VELOCITY_BACKEND=redis` with no `MCC_REDIS_URL` | startup error, not a silent in-memory downgrade |
+| Velocity registry unavailable | capacity unreservable → operation blocked (no over-spend) |
+| Audit-before-actuation write cannot be confirmed | operation blocked, reserved capacity released |
+| Executor fails after reservation | idempotency key freed (`FAILED`, retryable); reported fail-closed, never finalized |
+| Substituted actor / resource / transaction / beneficiary / amount / currency | `BINDING_MISMATCH` or `PAYLOAD_HASH_MISMATCH` → rejected at the gate |
 | Token expired / nbf in future / wrong audience / unknown kid / any hash mismatch | rejected at the gate |
 
 None of these conditions are configurable to fail open.
