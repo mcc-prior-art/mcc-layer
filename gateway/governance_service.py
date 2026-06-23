@@ -73,9 +73,12 @@ class GovernanceService:
         profiles: Optional[ProfileRegistry] = None,
         upstream: Optional[Upstream] = None,
         policy_hash: Optional[str] = None,
+        consensus_verifier: Optional[Any] = None,
     ) -> None:
         self.engine = engine
         self.coordinator = coordinator
+        # Optional pre-token Multi-Context Consensus step (None = disabled).
+        self.consensus_verifier = consensus_verifier
         self.trust_set = trust_set
         self.revocation_registry = revocation_registry
         self.approvals = approvals
@@ -224,6 +227,50 @@ class GovernanceService:
             context=context, transaction_id=transaction_id, idempotency_key=idempotency_key,
             extra_auth_claims={"approval_id": approval_id} if approval_id else None,
         )
+
+    # ---- multi-context consensus (pre-token authority step) ----
+
+    def _consensus(self, votes, action, context, actor):
+        profile = self.profiles.for_action(action)
+        canonical = profile.canonical_payload(context)  # may raise ProfileError
+        result = self.consensus_verifier.verify(votes, action=action, payload=canonical, actor=actor)
+        return profile, canonical, result
+
+    async def verify_consensus(self, *, votes, action, context, actor) -> Dict[str, Any]:
+        if self.consensus_verifier is None:
+            return {"verdict": "DENY", "reason": "consensus not configured; fail-closed",
+                    "agreement": 0, "threshold": 0, "evaluators": [], "rejected_votes": 0}
+        try:
+            _, _, result = self._consensus(votes, action, context, actor)
+        except ProfileError as exc:
+            return {"verdict": "DENY", "reason": f"PROFILE_ERROR: {exc}", "agreement": 0,
+                    "threshold": 0, "evaluators": [], "rejected_votes": 0}
+        return {"verdict": result.verdict.value, "reason": result.reason,
+                "agreement": result.agreement, "threshold": result.threshold,
+                "evaluators": result.allow_evaluators, "rejected_votes": result.rejected_votes}
+
+    async def execute_with_consensus(
+        self, *, votes, actor: str, action: str, resource: Optional[str],
+        context: Dict[str, Any], transaction_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> ExecOutcome:
+        """Require N-of-M independent signed evaluators to agree, then issue the
+        token and run the one coordinator path. No consensus -> no token."""
+        if self.consensus_verifier is None:
+            return ExecOutcome("BLOCKED", "consensus not configured; fail-closed", decision="DENY")
+        try:
+            profile, canonical, result = self._consensus(votes, action, context, actor)
+        except ProfileError as exc:
+            return ExecOutcome("BLOCKED", f"PROFILE_ERROR: {exc}", decision="DENY")
+        if not result.ok:
+            return ExecOutcome("BLOCKED", result.reason, decision=result.verdict.value)
+        auth_claims = dict(profile.auth_claims(canonical))
+        auth_claims["consensus"] = result.summary()
+        token = self.engine.issue_token(
+            verdict="ALLOW", subject=actor, action=action, payload=canonical,
+            transaction_id=transaction_id, idempotency_key=idempotency_key,
+            actor_id=actor, resource_id=resource, auth_claims=auth_claims)
+        return await self._run(token, action, canonical, actor, resource, transaction_id, None)
 
     # ---- the one governed execution path ----
 

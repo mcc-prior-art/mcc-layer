@@ -116,6 +116,33 @@ class ApprovalExecuteRequest(_Strict):
     idempotency_key: Optional[str] = None
 
 
+class ConsensusVerifyRequest(_Strict):
+    votes: List[Dict[str, Any]]
+    actor: str = Field(min_length=1)
+    action: str = Field(min_length=1)
+    resource: Optional[str] = None
+    context: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ConsensusVerifyResponse(_Strict):
+    verdict: str
+    reason: str
+    agreement: int
+    threshold: int
+    evaluators: List[str]
+    rejected_votes: int
+
+
+class ConsensusExecuteRequest(_Strict):
+    votes: List[Dict[str, Any]]
+    actor: str = Field(min_length=1)
+    action: str = Field(min_length=1)
+    resource: Optional[str] = None
+    context: Dict[str, Any] = Field(default_factory=dict)
+    transaction_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
+
+
 # ---------- auth boundaries ----------
 
 def _auth_deps(api_key: str, operator_key: Optional[str]):
@@ -239,6 +266,29 @@ def mount_approval_routes(app: FastAPI, service: GovernanceService, *, api_key: 
                                audit_ref=out.audit_ref, execution=out.execution)
 
 
+def mount_consensus_routes(app: FastAPI, service: GovernanceService, *, api_key: str,
+                           operator_key: Optional[str]) -> None:
+    """Multi-Context Consensus endpoints: N-of-M independent signed evaluators
+    must agree before a token is issued. /verify is a pure check; /execute runs
+    the one coordinator path only on consensus."""
+    require_agent, _ = _auth_deps(api_key, operator_key)
+
+    @app.post("/consensus/verify", response_model=ConsensusVerifyResponse)
+    async def verify_consensus(req: ConsensusVerifyRequest, _=Depends(require_agent)):
+        out = await service.verify_consensus(votes=req.votes, action=req.action,
+                                             context=req.context, actor=req.actor)
+        return ConsensusVerifyResponse(**out)
+
+    @app.post("/consensus/execute", response_model=ExecuteResponse)
+    async def execute_with_consensus(req: ConsensusExecuteRequest, _=Depends(require_agent)):
+        out = await service.execute_with_consensus(
+            votes=req.votes, actor=req.actor, action=req.action, resource=req.resource,
+            context=req.context, transaction_id=req.transaction_id,
+            idempotency_key=req.idempotency_key)
+        return ExecuteResponse(status=out.status, reason=out.reason, decision=out.decision,
+                               audit_ref=out.audit_ref, execution=out.execution)
+
+
 # ---------- service builder ----------
 
 def _httpx_upstream(base: str, timeout: float = 10.0):
@@ -322,8 +372,32 @@ def build_governance_service(
         base = env.get("MCC_UPSTREAM_BASE", "").strip()
         upstream = _httpx_upstream(base) if base else None
 
+    # Optional Multi-Context Consensus: a separate trust set of evaluator keys
+    # plus an N-of-M threshold. Disabled (None) unless a config is provided.
+    consensus_verifier = _build_consensus_verifier(env)
+
     return GovernanceService(
         engine=engine, coordinator=coordinator, trust_set=trust_set,
         revocation_registry=revocation, approvals=approvals,
         profiles=ProfileRegistry.default_pilot(), upstream=upstream, policy_hash=policy_hash,
+        consensus_verifier=consensus_verifier,
+    )
+
+
+def _build_consensus_verifier(env):
+    import json
+    from pathlib import Path
+
+    from mcc_core import ConsensusPolicy, ConsensusVerifier
+    from .trust import load_trust_config
+
+    path = env.get("MCC_CONSENSUS_TRUST_CONFIG", "").strip()
+    if not path:
+        return None
+    trust = load_trust_config(json.loads(Path(path).read_text(encoding="utf-8")))
+    import time
+    threshold = int(env.get("MCC_CONSENSUS_THRESHOLD", "3"))
+    return ConsensusVerifier(
+        trusted_keys=trust.active_trusted_keys(now=int(time.time())),
+        policy=ConsensusPolicy(threshold=threshold),
     )
