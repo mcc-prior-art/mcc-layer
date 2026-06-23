@@ -147,7 +147,7 @@ When editing docs or code, treat this repo as a **legal and commercial artifact*
 - Do not add dependencies without explicit approval
 - Do not change the canonical four-line formula wording
 - Do not use “HMAC” in signing-related code or docs
-- Do not reference “Multi-Context Consensus 3/3” until the consensus implementation exists in code
+- Multi-Context Consensus 3/3 is now implemented in code (`src/mcc_core/consensus.py` — N-of-M signed evaluator votes, `docs/MULTI_CONTEXT_CONSENSUS.md`); referencing it is unblocked. Keep all claims aligned with the actual N-of-M implementation — do not over-state beyond what the code does
 - Do not soften the fail-closed default — it is a design principle, not a configuration option
 
 -----
@@ -185,6 +185,7 @@ mcc-layer/
 │       ├── coordinator.py     ← EnforcementCoordinator: a-h order (gate→revocation→approval-consume→idem→velocity→audit→execute→finalize)
 │       ├── mandate.py         ← signed, revocable mandates: issue/verify (fail-closed), MandateAuthority, revocation registry (Redis+InMemory)
 │       ├── approvals.py       ← ESCALATE loop: ApprovalService + state machine + single-use signed approval mandate (Redis+InMemory)
+│       ├── consensus.py       ← Multi-Context Consensus: N-of-M independent Ed25519-signed evaluator votes (pre-token authority step)
 │       ├── policy.py          ← PolicyBundle with hash verification
 │       ├── authority.py       ← config mandate registry + action→authority→verdict (the formula in code)
 │       └── signing.py         ← Ed25519 token signing/verification
@@ -222,6 +223,7 @@ mcc-layer/
 │   ├── INFRA_PROFILE.md       ← non-payment (infrastructure) profile: domain neutrality demonstrated
 │   ├── ROBOTICS_PROFILE.md    ← robotics profile: domain neutrality demonstrated a second time
 │   ├── GOVERNANCE_HTTP_API.md ← HTTP API reference, trust config, rotation/revocation, auth boundary, threat model
+│   ├── MULTI_CONTEXT_CONSENSUS.md ← N-of-M signed evaluator consensus: votes, policy, /consensus HTTP, deployment
 │   ├── MIGRATION_NOTES.md     ← backward-compatibility + migration notes for the governance layers
 │   └── exhibits/              ← NIW exhibits (protected)
 ├── proof/
@@ -244,6 +246,8 @@ mcc-layer/
     ├── test_trust.py          ← multi-issuer trust set: resolution, rotation, disable/revoke/expiry, malformed config, pilot fail-closed startup
     ├── test_mandate_http.py   ← mandate HTTP: verify/execute/revoke, strict schemas, operator boundary, no-bypass (upstream unreached when blocked)
     ├── test_approval_http.py  ← approval HTTP: ESCALATE scenarios (approve/deny/single-use/substitution/policy-drift/expiry/concurrency/backend-down)
+    ├── test_consensus.py      ← N-of-M consensus: unanimity/threshold/veto, forged/duplicate/mismatched/expired votes fail-closed
+    ├── test_consensus_http.py ← consensus HTTP: verify + execute, below-threshold/veto/forged → BLOCKED (upstream unreached)
     └── opa_test_vectors.json
 ```
 

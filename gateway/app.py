@@ -422,6 +422,7 @@ def health() -> Dict[str, Any]:
 from .governance_api import (  # noqa: E402
     build_governance_service,
     mount_approval_routes,
+    mount_consensus_routes,
     mount_mandate_routes,
 )
 
@@ -433,6 +434,8 @@ mount_mandate_routes(app, governance, api_key=settings.api_key,
                      operator_key=settings.operator_api_key)
 mount_approval_routes(app, governance, api_key=settings.api_key,
                       operator_key=settings.operator_api_key)
+mount_consensus_routes(app, governance, api_key=settings.api_key,
+                       operator_key=settings.operator_api_key)
 
 
 if __name__ == "__main__":

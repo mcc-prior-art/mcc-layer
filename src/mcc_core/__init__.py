@@ -57,6 +57,12 @@ from .nonce import (
     RedisNonceRegistry,
     nonce_registry_from_env,
 )
+from .consensus import (
+    ConsensusPolicy,
+    ConsensusResult,
+    ConsensusVerifier,
+    issue_vote,
+)
 from .policy import PolicyBundle, PolicyBundleError
 from .profiles import (
     ActionProfile,
@@ -128,6 +134,10 @@ __all__ = [
     "RevocationStatus",
     "issue_mandate",
     "revocation_registry_from_env",
+    "ConsensusPolicy",
+    "ConsensusResult",
+    "ConsensusVerifier",
+    "issue_vote",
     "ProfileError",
     "ProfileRegistry",
     "RoboticsProfile",
