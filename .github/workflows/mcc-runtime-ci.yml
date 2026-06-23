@@ -90,6 +90,22 @@ jobs:
           # signed transactions and instances. Exits non-zero on any miss.
           python scripts/redis_governance_smoke.py
 
+      - name: Cross-instance mandate revocation against a real Redis
+        env:
+          MCC_REDIS_URL: redis://127.0.0.1:6379/0
+        run: |
+          # A mandate revoked through a shared Redis revocation list on one
+          # instance must verify as REVOKED on another. Exits non-zero on miss.
+          python scripts/redis_mandate_smoke.py
+
+      - name: Cross-instance single-use approval consume against a real Redis
+        env:
+          MCC_REDIS_URL: redis://127.0.0.1:6379/0
+        run: |
+          # An approved request can be consumed exactly once even when two
+          # instances race to consume it. Exits non-zero on any miss.
+          python scripts/redis_approval_smoke.py
+
   invariants:
     runs-on: ubuntu-latest
     steps:

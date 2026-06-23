@@ -6,6 +6,16 @@ The gate enforces.
 The audit chain records.
 """
 
+from .approvals import (
+    ApprovalConfigError,
+    ApprovalRecord,
+    ApprovalService,
+    ApprovalState,
+    ConsumeResult,
+    InMemoryApprovalRegistry,
+    RedisApprovalRegistry,
+    approval_registry_from_env,
+)
 from .audit import AuditLog
 from .authority import (
     ActionPolicy,
@@ -27,6 +37,19 @@ from .idempotency import (
     ReserveStatus,
     idempotency_registry_from_env,
 )
+from .mandate import (
+    InMemoryRevocationRegistry,
+    MandateAuthority,
+    MandateAuthorityDecision,
+    MandateResult,
+    MandateVerifier,
+    RedisRevocationRegistry,
+    RevocationConfigError,
+    RevocationRegistry,
+    RevocationStatus,
+    issue_mandate,
+    revocation_registry_from_env,
+)
 from .nonce import (
     InMemoryNonceRegistry,
     NonceConfigError,
@@ -37,6 +60,7 @@ from .nonce import (
 from .policy import PolicyBundle, PolicyBundleError
 from .profiles import (
     ActionProfile,
+    InfraProfile,
     PaymentProfile,
     ProfileError,
     ProfileRegistry,
@@ -65,6 +89,14 @@ __all__ = [
     "ActionProfile",
     "ActuationResult",
     "ActuationStatus",
+    "ApprovalConfigError",
+    "ApprovalRecord",
+    "ApprovalService",
+    "ApprovalState",
+    "ConsumeResult",
+    "InMemoryApprovalRegistry",
+    "RedisApprovalRegistry",
+    "approval_registry_from_env",
     "AuditLog",
     "AuthorityDecision",
     "AuthorityModel",
@@ -75,14 +107,26 @@ __all__ = [
     "IdempotencyState",
     "InMemoryIdempotencyRegistry",
     "InMemoryVelocityRegistry",
+    "InfraProfile",
     "Mandate",
     "MandateRegistry",
     "ExecutionGate",
     "GateResult",
     "InMemoryNonceRegistry",
+    "InMemoryRevocationRegistry",
+    "MandateAuthority",
+    "MandateAuthorityDecision",
+    "MandateResult",
+    "MandateVerifier",
     "NonceConfigError",
     "NonceRegistry",
     "PaymentProfile",
+    "RedisRevocationRegistry",
+    "RevocationConfigError",
+    "RevocationRegistry",
+    "RevocationStatus",
+    "issue_mandate",
+    "revocation_registry_from_env",
     "ProfileError",
     "ProfileRegistry",
     "RedisIdempotencyRegistry",

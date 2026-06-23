@@ -137,3 +137,33 @@ Fail closed by default.
 8. Treat internal systems as untrusted until verified.
 9. Make authority portable but bounded.
 10. Make uncertainty non-permissive.
+
+---
+
+## Governance Layers (authority, approval, domains)
+
+Three capabilities extend the boundary above without changing its meaning. Each
+is domain-neutral and fail-closed; domain specifics live only in profiles.
+
+1. **Signed, revocable mandates** — a cryptographically verifiable authority
+   object, distinct from identity and from the decision token. A verified
+   mandate's `mandate_id` is bound into the token; revocation is checked at
+   decision time and re-checked at actuation. See `docs/SIGNED_MANDATES.md`.
+
+2. **ESCALATE human-in-the-loop** — `ESCALATE` opens an approval flow whose
+   approval mints a scoped, signed, single-use approval mandate (never a direct
+   execution); re-evaluation → gate → audit-before-actuation → single-use
+   consume → execute. See `docs/ESCALATE_APPROVAL.md`.
+
+3. **Profiles (domain neutrality)** — payments and infrastructure are profiles,
+   not core concepts. A profile defines the canonical payload, the
+   authorization-bearing fields (signed via `payload_hash` + `auth_claims`), and
+   the velocity aggregation — over the *same* universal token, gate, authority,
+   constraint convention, and audit. See `docs/INFRA_PROFILE.md` and
+   `docs/TRANSACTION_GOVERNANCE.md`.
+
+Invariant across all three: the universal core — actor/resource/transaction
+binding, action hash, policy hash, replay protection, constraint convention,
+audit-before-actuation, and execution-gate semantics — is unchanged. Adding a
+domain is adding a profile; adding an authority source is verifying a mandate;
+neither rewrites the boundary.
