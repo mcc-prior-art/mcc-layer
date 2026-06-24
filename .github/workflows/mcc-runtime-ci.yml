@@ -83,6 +83,33 @@ jobs:
           # consensus verdict using only cryptography + stdlib.
           python evidence/consensus_3of3/verify_independent.py
 
+  consensus-enforcement:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Mandatory consensus 3-of-3 enforced in the execution path
+        run: |
+          # The coordinator runs with require_consensus=True: no governed action
+          # actuates without a valid 3-of-3 bound to the token's
+          # action/actor/payload/resource/policy_hash/nonce. Proves a valid 3-of-3
+          # reaches the downstream once and every invalid or incomplete case
+          # (missing, <3, veto, duplicate, untrusted, bad-sig, expired,
+          # action/actor/resource/payload/nonce/policy mismatch, replay) is denied
+          # and never forwarded — at the coordinator, over HTTP, and in the builder.
+          pytest tests/test_consensus_enforcement.py \
+                 tests/test_consensus_enforcement_http.py \
+                 tests/test_consensus_builder.py -v
+
   nonce-redis-smoke:
     runs-on: ubuntu-latest
     services:

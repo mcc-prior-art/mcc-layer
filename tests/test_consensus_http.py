@@ -67,9 +67,13 @@ def build(threshold=3):
     return evals, TestClient(app), calls
 
 
-def votes_for(evals, *, actor="agent/x", verdicts=("ALLOW", "ALLOW", "ALLOW")):
+def votes_for(evals, *, actor="agent/x", verdicts=("ALLOW", "ALLOW", "ALLOW"),
+              policy_hash="sha256:p", nonce=None):
+    # Votes are bound to the gateway's policy hash (and, on the execute path,
+    # the one-time nonce); the service requires both to match.
     return [issue_vote(evals[i], evaluator_id=f"eval-{i}", verdict=verdicts[i], action=ACTION,
-                       payload=CTX, actor=actor, not_before=0, not_after=FUTURE)
+                       payload=CTX, actor=actor, not_before=0, not_after=FUTURE,
+                       policy_hash=policy_hash, nonce=nonce)
             for i in range(len(verdicts))]
 
 

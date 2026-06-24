@@ -230,18 +230,21 @@ class GovernanceService:
 
     # ---- multi-context consensus (pre-token authority step) ----
 
-    def _consensus(self, votes, action, context, actor):
+    def _consensus(self, votes, action, context, actor, resource=None, nonce=None):
         profile = self.profiles.for_action(action)
         canonical = profile.canonical_payload(context)  # may raise ProfileError
-        result = self.consensus_verifier.verify(votes, action=action, payload=canonical, actor=actor)
+        result = self.consensus_verifier.verify(
+            votes, action=action, payload=canonical, actor=actor,
+            resource=resource, policy_hash=self.policy_hash, nonce=nonce)
         return profile, canonical, result
 
-    async def verify_consensus(self, *, votes, action, context, actor) -> Dict[str, Any]:
+    async def verify_consensus(self, *, votes, action, context, actor,
+                               resource=None, nonce=None) -> Dict[str, Any]:
         if self.consensus_verifier is None:
             return {"verdict": "DENY", "reason": "consensus not configured; fail-closed",
                     "agreement": 0, "threshold": 0, "evaluators": [], "rejected_votes": 0}
         try:
-            _, _, result = self._consensus(votes, action, context, actor)
+            _, _, result = self._consensus(votes, action, context, actor, resource, nonce)
         except ProfileError as exc:
             return {"verdict": "DENY", "reason": f"PROFILE_ERROR: {exc}", "agreement": 0,
                     "threshold": 0, "evaluators": [], "rejected_votes": 0}
@@ -252,14 +255,17 @@ class GovernanceService:
     async def execute_with_consensus(
         self, *, votes, actor: str, action: str, resource: Optional[str],
         context: Dict[str, Any], transaction_id: Optional[str] = None,
-        idempotency_key: Optional[str] = None,
+        idempotency_key: Optional[str] = None, nonce: Optional[str] = None,
     ) -> ExecOutcome:
-        """Require N-of-M independent signed evaluators to agree, then issue the
-        token and run the one coordinator path. No consensus -> no token."""
+        """Require N-of-M independent signed evaluators to agree — bound to the
+        exact action/actor/payload/resource/policy/nonce — then issue the token
+        (carrying that same nonce) and run the one coordinator path, which
+        re-verifies consensus before any actuation. No consensus -> no token,
+        and a token with no/invalid consensus never actuates."""
         if self.consensus_verifier is None:
             return ExecOutcome("BLOCKED", "consensus not configured; fail-closed", decision="DENY")
         try:
-            profile, canonical, result = self._consensus(votes, action, context, actor)
+            profile, canonical, result = self._consensus(votes, action, context, actor, resource, nonce)
         except ProfileError as exc:
             return ExecOutcome("BLOCKED", f"PROFILE_ERROR: {exc}", decision="DENY")
         if not result.ok:
@@ -269,13 +275,14 @@ class GovernanceService:
         token = self.engine.issue_token(
             verdict="ALLOW", subject=actor, action=action, payload=canonical,
             transaction_id=transaction_id, idempotency_key=idempotency_key,
-            actor_id=actor, resource_id=resource, auth_claims=auth_claims)
-        return await self._run(token, action, canonical, actor, resource, transaction_id, None)
+            actor_id=actor, resource_id=resource, auth_claims=auth_claims, nonce=nonce)
+        return await self._run(token, action, canonical, actor, resource, transaction_id, None,
+                               consensus_votes=votes)
 
     # ---- the one governed execution path ----
 
     async def _run(self, token, action, forward_context, actor, resource,
-                   transaction_id, headers) -> ExecOutcome:
+                   transaction_id, headers, consensus_votes=None) -> ExecOutcome:
         async def executor():
             if self.upstream is None:
                 raise RuntimeError("no upstream configured")
@@ -285,6 +292,7 @@ class GovernanceService:
             token=token, action=action, payload=forward_context, executor=executor,
             request_binding={"actor_id": actor, "resource_id": resource,
                              "transaction_id": transaction_id},
+            consensus_votes=consensus_votes,
         )
         status = (ActuationStatus.EXECUTED if result.status == ActuationStatus.EXECUTED
                   else result.status)
