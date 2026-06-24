@@ -25,6 +25,15 @@ from .authority import (
     MandateRegistry,
     apply_constraints,
 )
+from .challenge import (
+    ChallengeConfigError,
+    ChallengeRecord,
+    ChallengeService,
+    ChallengeState,
+    InMemoryChallengeRegistry,
+    RedisChallengeRegistry,
+    challenge_registry_from_env,
+)
 from .coordinator import ActuationResult, ActuationStatus, EnforcementCoordinator
 from .core import EXECUTABLE_VERDICTS, DecisionEngine, TokenNotIssuable, Verdict
 from .gate import ExecutionGate, GateResult
@@ -105,6 +114,13 @@ __all__ = [
     "RedisApprovalRegistry",
     "approval_registry_from_env",
     "AuditLog",
+    "ChallengeConfigError",
+    "ChallengeRecord",
+    "ChallengeService",
+    "ChallengeState",
+    "InMemoryChallengeRegistry",
+    "RedisChallengeRegistry",
+    "challenge_registry_from_env",
     "AuthorityDecision",
     "AuthorityModel",
     "DecisionEngine",

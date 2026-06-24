@@ -58,3 +58,19 @@ def test_require_consensus_with_trust_enables_coordinator(tmp_path):
 def test_default_does_not_require_consensus(tmp_path):
     svc = _build(tmp_path, {})
     assert svc.coordinator.require_consensus is False
+
+
+# ---- consensus challenge wiring ----
+
+def test_challenge_service_always_built(tmp_path):
+    # The gateway always owns a challenge service so it can issue nonces.
+    svc = _build(tmp_path, {})
+    assert svc.challenge_service is not None
+    assert svc.coordinator.challenges is not None
+    assert svc.coordinator.require_challenge is False
+
+
+def test_require_challenge_enables_mandatory_challenge(tmp_path):
+    svc = _build(tmp_path, {"MCC_REQUIRE_CHALLENGE": "true"})
+    assert svc.coordinator.require_challenge is True
+

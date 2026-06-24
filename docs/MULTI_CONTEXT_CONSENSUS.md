@@ -110,6 +110,15 @@ The guarantee is path-independent: with mandatory consensus on, a path that
 carries no votes (e.g. `/mandates/execute`) also fails closed — there is no way
 to actuate without consensus.
 
+## Who issues the nonce — the consensus challenge
+
+The one-time `nonce` is the anti-replay material. By default a client may supply
+it on `/consensus/execute`; for deployments that must not trust the client to
+generate it, the **consensus challenge** has the gateway mint the nonce inside a
+single-use, TTL-bound challenge and consume it exactly once before actuation.
+See [`CONSENSUS_CHALLENGE.md`](CONSENSUS_CHALLENGE.md) — `POST /consensus/challenge`,
+`MCC_REQUIRE_CHALLENGE`, and the cross-instance store.
+
 ## HTTP API
 
 | Method | Endpoint | Boundary |

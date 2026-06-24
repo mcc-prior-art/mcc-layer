@@ -143,6 +143,27 @@ class ConsensusExecuteRequest(_Strict):
     transaction_id: Optional[str] = None
     idempotency_key: Optional[str] = None
     nonce: Optional[str] = None
+    challenge_id: Optional[str] = None
+
+
+class ChallengeCreateRequest(_Strict):
+    actor: str = Field(min_length=1)
+    action: str = Field(min_length=1)
+    resource: Optional[str] = None
+    context: Dict[str, Any] = Field(default_factory=dict)
+    ttl_seconds: Optional[int] = Field(default=None, ge=1)
+
+
+class ChallengeCreateResponse(_Strict):
+    challenge_id: str
+    nonce: str
+    action: str
+    actor: str
+    resource: Optional[str] = None
+    payload_hash: str
+    policy_hash: Optional[str] = None
+    issued_at: int
+    expires_at: int
 
 
 # ---------- auth boundaries ----------
@@ -275,6 +296,15 @@ def mount_consensus_routes(app: FastAPI, service: GovernanceService, *, api_key:
     the one coordinator path only on consensus."""
     require_agent, _ = _auth_deps(api_key, operator_key)
 
+    @app.post("/consensus/challenge", response_model=ChallengeCreateResponse)
+    async def create_challenge(req: ChallengeCreateRequest, _=Depends(require_agent)):
+        out = await service.issue_challenge(
+            action=req.action, actor=req.actor, resource=req.resource,
+            context=req.context, ttl_seconds=req.ttl_seconds)
+        if "error" in out:
+            raise HTTPException(status_code=409, detail=out["error"])
+        return ChallengeCreateResponse(**out)
+
     @app.post("/consensus/verify", response_model=ConsensusVerifyResponse)
     async def verify_consensus(req: ConsensusVerifyRequest, _=Depends(require_agent)):
         out = await service.verify_consensus(votes=req.votes, action=req.action,
@@ -287,7 +317,8 @@ def mount_consensus_routes(app: FastAPI, service: GovernanceService, *, api_key:
         out = await service.execute_with_consensus(
             votes=req.votes, actor=req.actor, action=req.action, resource=req.resource,
             context=req.context, transaction_id=req.transaction_id,
-            idempotency_key=req.idempotency_key, nonce=req.nonce)
+            idempotency_key=req.idempotency_key, nonce=req.nonce,
+            challenge_id=req.challenge_id)
         return ExecuteResponse(status=out.status, reason=out.reason, decision=out.decision,
                                audit_ref=out.audit_ref, execution=out.execution)
 
@@ -318,12 +349,14 @@ def build_governance_service(
     pilot if the trust configuration is invalid (TrustConfigError)."""
     from mcc_core import (
         ApprovalService,
+        ChallengeService,
         EnforcementCoordinator,
         ExecutionGate,
         ProfileRegistry,
         SigningKey,
         VelocityLimit,
         approval_registry_from_env,
+        challenge_registry_from_env,
         idempotency_registry_from_env,
         nonce_registry_from_env,
         revocation_registry_from_env,
@@ -378,12 +411,20 @@ def build_governance_service(
             "(MCC_CONSENSUS_TRUST_CONFIG) was provided; refusing fail-open startup"
         )
 
+    # Consensus challenge: the gateway issues the one-time nonce. The challenge
+    # store is single-use and TTL-bounded; the coordinator consumes it before
+    # actuation. Always available; MCC_REQUIRE_CHALLENGE makes a gateway-issued
+    # challenge mandatory for actuation (clients can no longer supply a nonce).
+    challenge_service = ChallengeService(challenge_registry_from_env(env))
+    require_challenge = _env_flag(env, "MCC_REQUIRE_CHALLENGE")
+
     coordinator = EnforcementCoordinator(
         gate=gate, idempotency=idempotency_registry_from_env(env),
         velocity=velocity_registry_from_env(env), audit=audit,
         profiles=ProfileRegistry.default_pilot(), velocity_limits_for=limits_for,
         revocation_registry=revocation, approvals=approvals,
         consensus_verifier=consensus_verifier, require_consensus=require_consensus,
+        challenges=challenge_service, require_challenge=require_challenge,
     )
 
     if upstream is None:
@@ -394,7 +435,7 @@ def build_governance_service(
         engine=engine, coordinator=coordinator, trust_set=trust_set,
         revocation_registry=revocation, approvals=approvals,
         profiles=ProfileRegistry.default_pilot(), upstream=upstream, policy_hash=policy_hash,
-        consensus_verifier=consensus_verifier,
+        consensus_verifier=consensus_verifier, challenge_service=challenge_service,
     )
 
 

@@ -34,6 +34,7 @@ from mcc_core import (
     ProfileRegistry,
     RevocationStatus,
     Verdict,
+    hash_payload,
 )
 
 from .trust import TrustSet
@@ -74,11 +75,15 @@ class GovernanceService:
         upstream: Optional[Upstream] = None,
         policy_hash: Optional[str] = None,
         consensus_verifier: Optional[Any] = None,
+        challenge_service: Optional[Any] = None,
     ) -> None:
         self.engine = engine
         self.coordinator = coordinator
         # Optional pre-token Multi-Context Consensus step (None = disabled).
         self.consensus_verifier = consensus_verifier
+        # Optional consensus-challenge service: the gateway issues the one-time
+        # nonce (None = disabled; clients would supply their own nonce instead).
+        self.challenge_service = challenge_service
         self.trust_set = trust_set
         self.revocation_registry = revocation_registry
         self.approvals = approvals
@@ -228,6 +233,26 @@ class GovernanceService:
             extra_auth_claims={"approval_id": approval_id} if approval_id else None,
         )
 
+    # ---- consensus challenge (gateway-issued one-time nonce) ----
+
+    async def issue_challenge(
+        self, *, action: str, actor: str, resource: Optional[str],
+        context: Dict[str, Any], ttl_seconds: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Mint a single-use consensus challenge bound to the canonical payload.
+        The gateway owns the nonce; the client receives it (plus the binding) to
+        gather evaluator votes. Fail-closed if no challenge service / profile."""
+        if self.challenge_service is None:
+            return {"error": "challenge service not configured; fail-closed"}
+        profile = self.profiles.for_action(action)          # may raise ProfileError
+        canonical = profile.canonical_payload(context)
+        rec = await self.challenge_service.issue(
+            action=action, actor=actor, resource=resource,
+            payload_hash=hash_payload(canonical), policy_hash=self.policy_hash,
+            ttl_seconds=ttl_seconds,
+        )
+        return rec.public_view()
+
     # ---- multi-context consensus (pre-token authority step) ----
 
     def _consensus(self, votes, action, context, actor, resource=None, nonce=None):
@@ -256,14 +281,36 @@ class GovernanceService:
         self, *, votes, actor: str, action: str, resource: Optional[str],
         context: Dict[str, Any], transaction_id: Optional[str] = None,
         idempotency_key: Optional[str] = None, nonce: Optional[str] = None,
+        challenge_id: Optional[str] = None,
     ) -> ExecOutcome:
         """Require N-of-M independent signed evaluators to agree — bound to the
         exact action/actor/payload/resource/policy/nonce — then issue the token
         (carrying that same nonce) and run the one coordinator path, which
         re-verifies consensus before any actuation. No consensus -> no token,
-        and a token with no/invalid consensus never actuates."""
+        and a token with no/invalid consensus never actuates.
+
+        When ``challenge_id`` is supplied, the gateway-issued challenge is the
+        authority for the nonce: it is resolved and re-bound here (unknown or
+        expired -> fail closed), its nonce is used to verify the votes and issue
+        the token, and the coordinator consumes it single-use before actuation."""
         if self.consensus_verifier is None:
             return ExecOutcome("BLOCKED", "consensus not configured; fail-closed", decision="DENY")
+
+        auth_claims_extra: Dict[str, Any] = {}
+        if challenge_id is not None:
+            if self.challenge_service is None:
+                return ExecOutcome("BLOCKED", "challenge service not configured; fail-closed",
+                                   decision="DENY")
+            rec = await self.challenge_service.get(challenge_id)
+            if rec is None:
+                return ExecOutcome("BLOCKED", "UNKNOWN_CHALLENGE: not found", decision="DENY")
+            if rec.state != "ISSUED":
+                return ExecOutcome("BLOCKED", f"CHALLENGE_NOT_OPEN: state {rec.state}",
+                                   decision="DENY")
+            # The gateway-issued nonce is authoritative; ignore any client nonce.
+            nonce = rec.nonce
+            auth_claims_extra["challenge_id"] = challenge_id
+
         try:
             profile, canonical, result = self._consensus(votes, action, context, actor, resource, nonce)
         except ProfileError as exc:
@@ -272,6 +319,7 @@ class GovernanceService:
             return ExecOutcome("BLOCKED", result.reason, decision=result.verdict.value)
         auth_claims = dict(profile.auth_claims(canonical))
         auth_claims["consensus"] = result.summary()
+        auth_claims.update(auth_claims_extra)
         token = self.engine.issue_token(
             verdict="ALLOW", subject=actor, action=action, payload=canonical,
             transaction_id=transaction_id, idempotency_key=idempotency_key,

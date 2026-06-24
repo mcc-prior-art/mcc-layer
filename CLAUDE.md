@@ -182,10 +182,11 @@ mcc-layer/
 │       ├── idempotency.py     ← business-operation idempotency: RESERVED/EXECUTED/FAILED lifecycle, Redis+InMemory, fail-closed
 │       ├── velocity.py        ← atomic velocity/aggregate limits (count, cumulative amount, new destinations); anti-splitting
 │       ├── profiles.py        ← domain-neutral ActionProfile + PaymentProfile + InfraProfile + RoboticsProfile (canonical payload + auth_claims)
-│       ├── coordinator.py     ← EnforcementCoordinator: a-h order (gate→[require_consensus]→revocation→approval-consume→idem→velocity→audit→execute→finalize)
+│       ├── coordinator.py     ← EnforcementCoordinator: a-h order (gate→[require_consensus]→[challenge-consume]→revocation→approval-consume→idem→velocity→audit→execute→finalize)
 │       ├── mandate.py         ← signed, revocable mandates: issue/verify (fail-closed), MandateAuthority, revocation registry (Redis+InMemory)
 │       ├── approvals.py       ← ESCALATE loop: ApprovalService + state machine + single-use signed approval mandate (Redis+InMemory)
 │       ├── consensus.py       ← Multi-Context Consensus: N-of-M independent Ed25519-signed evaluator votes (pre-token authority step + mandatory enforcement; binds action/actor/payload/resource/policy_hash/nonce)
+│       ├── challenge.py        ← consensus challenge: gateway-issued one-time nonce; single-use TTL-bound ChallengeService + registries (Redis+InMemory); consumed once before actuation (clients never generate the nonce)
 │       ├── policy.py          ← PolicyBundle with hash verification
 │       ├── authority.py       ← config mandate registry + action→authority→verdict (the formula in code)
 │       └── signing.py         ← Ed25519 token signing/verification
@@ -213,6 +214,7 @@ mcc-layer/
 │   ├── redis_governance_smoke.py ← E2E: cross-instance idempotency dedup + aggregate ceiling on real Redis
 │   ├── redis_mandate_smoke.py  ← E2E: cross-instance mandate revocation on real Redis
 │   ├── redis_approval_smoke.py ← E2E: cross-instance single-use approval consume on real Redis
+│   ├── redis_challenge_smoke.py ← E2E: cross-instance challenge issue + single-use consume on real Redis
 │   ├── redis_governance_http_smoke.py ← E2E: cross-instance revocation + single-use through GovernanceService on real Redis
 │   └── smoke_test.sh
 ├── docs/                      ← architecture, security model, decision token spec
@@ -224,6 +226,7 @@ mcc-layer/
 │   ├── ROBOTICS_PROFILE.md    ← robotics profile: domain neutrality demonstrated a second time
 │   ├── GOVERNANCE_HTTP_API.md ← HTTP API reference, trust config, rotation/revocation, auth boundary, threat model
 │   ├── MULTI_CONTEXT_CONSENSUS.md ← N-of-M signed evaluator consensus: votes, policy, /consensus HTTP, deployment
+│   ├── CONSENSUS_CHALLENGE.md ← gateway-issued one-time nonce: challenge handshake, single-use consume, binding/rejection table, MCC_REQUIRE_CHALLENGE
 │   ├── MIGRATION_NOTES.md     ← backward-compatibility + migration notes for the governance layers
 │   └── exhibits/              ← NIW exhibits (protected)
 ├── proof/
@@ -250,7 +253,11 @@ mcc-layer/
     ├── test_consensus_http.py ← consensus HTTP: verify + execute, below-threshold/veto/forged → BLOCKED (upstream unreached)
     ├── test_consensus_enforcement.py ← mandatory consensus at the coordinator: valid 3-of-3 actuates; every invalid/incomplete case BLOCKED before executor runs
     ├── test_consensus_enforcement_http.py ← mandatory consensus E2E HTTP: valid 3-of-3 reaches downstream; missing/<3/veto/duplicate/untrusted/bad-sig/expired/mismatch/replay denied + upstream unreached; cross-path (mandate execute) also fails closed
-    ├── test_consensus_builder.py ← build_governance_service wiring: MCC_REQUIRE_CONSENSUS without trust config refuses startup (no fail-open); with config enables the coordinator gate
+    ├── test_consensus_builder.py ← build_governance_service wiring: MCC_REQUIRE_CONSENSUS without trust config refuses startup (no fail-open); with config enables the coordinator gate; challenge service always built + MCC_REQUIRE_CHALLENGE
+    ├── test_challenge.py      ← consensus challenge service/registry: strong unique nonce, single-use consume, unknown/expired/reused/mismatch fail-closed, concurrency single-winner
+    ├── test_challenge_coordinator.py ← coordinator consumes the challenge once before actuation; challenge_consumed before pre_actuation; unknown/expired/nonce/actor/resource mismatch BLOCKED
+    ├── test_challenge_http.py ← challenge E2E HTTP: gateway-issued nonce; valid flow reaches downstream once; reused/expired/unknown + every binding mismatch denied; client-supplied nonce w/o challenge denied
+    ├── test_challenge_redis.py ← multi-instance challenge: cross-instance visibility + single-use consume (no double-spend), TTL expiry, backend-down fail-closed
     └── opa_test_vectors.json
 ```
 
