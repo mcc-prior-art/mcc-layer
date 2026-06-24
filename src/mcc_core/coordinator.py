@@ -71,6 +71,8 @@ class EnforcementCoordinator:
         approvals: Optional[Any] = None,
         consensus_verifier: Optional[Any] = None,
         require_consensus: bool = False,
+        challenges: Optional[Any] = None,
+        require_challenge: bool = False,
     ) -> None:
         self.gate = gate
         self.idempotency = idempotency
@@ -85,6 +87,13 @@ class EnforcementCoordinator:
         # reservation or execution.
         self.consensus_verifier = consensus_verifier
         self.require_consensus = require_consensus
+        # Optional consensus-challenge consumption: a token issued against a
+        # gateway-issued challenge names a challenge_id in its auth_claims; the
+        # challenge is consumed single-use here, bound to the exact operation
+        # (action/actor/resource/payload_hash/policy_hash/nonce). Unknown,
+        # expired, reused, or mismatched challenges fail closed before execution.
+        self.challenges = challenges
+        self.require_challenge = require_challenge
         # Optional actuation-time revocation re-check: a mandate revoked between
         # decision and execution must still block. When configured, a token that
         # names a mandate_id is checked here; REVOKED or an unconfirmable status
@@ -141,6 +150,33 @@ class EnforcementCoordinator:
                 return ActuationResult(ActuationStatus.BLOCKED, reason)
             self._record(kind="consensus_verified", action=action,
                          evaluators=result.allow_evaluators, consensus_hash=result.consensus_hash)
+
+        # Consume the gateway-issued consensus challenge exactly once, bound to
+        # this exact (gate-verified) operation. The one-time nonce came from the
+        # challenge, so consuming it here makes the whole evidence package
+        # single-use at the actuation boundary — before any reservation or
+        # execution. Unknown/expired/reused/mismatched fails closed.
+        challenge_id = (token.get("auth_claims") or {}).get("challenge_id")
+        if self.require_challenge and not (self.challenges is not None and challenge_id):
+            reason = "challenge required: no gateway-issued consensus challenge supplied; fail-closed"
+            self._record(kind="actuation_rejected", action=action, reason=reason)
+            return ActuationResult(ActuationStatus.BLOCKED, reason)
+        if self.challenges is not None and challenge_id:
+            consumed = await self.challenges.consume(
+                challenge_id,
+                action=action,
+                actor=token.get("actor_id"),
+                resource=token.get("resource_id"),
+                payload_hash=token.get("payload_hash"),
+                policy_hash=token.get("policy_hash"),
+                nonce=token.get("nonce"),
+                now=now,
+            )
+            if not consumed.ok:
+                reason = f"challenge {challenge_id} not consumable: {consumed.reason}"
+                self._record(kind="actuation_rejected", action=action, reason=reason)
+                return ActuationResult(ActuationStatus.BLOCKED, reason)
+            self._record(kind="challenge_consumed", action=action, challenge_id=challenge_id)
 
         # Actuation-time revocation re-check: a mandate revoked after the token
         # was issued must block here (fail-closed on REVOKED or unconfirmable).
