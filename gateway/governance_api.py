@@ -122,6 +122,7 @@ class ConsensusVerifyRequest(_Strict):
     action: str = Field(min_length=1)
     resource: Optional[str] = None
     context: Dict[str, Any] = Field(default_factory=dict)
+    nonce: Optional[str] = None
 
 
 class ConsensusVerifyResponse(_Strict):
@@ -141,6 +142,7 @@ class ConsensusExecuteRequest(_Strict):
     context: Dict[str, Any] = Field(default_factory=dict)
     transaction_id: Optional[str] = None
     idempotency_key: Optional[str] = None
+    nonce: Optional[str] = None
 
 
 # ---------- auth boundaries ----------
@@ -276,7 +278,8 @@ def mount_consensus_routes(app: FastAPI, service: GovernanceService, *, api_key:
     @app.post("/consensus/verify", response_model=ConsensusVerifyResponse)
     async def verify_consensus(req: ConsensusVerifyRequest, _=Depends(require_agent)):
         out = await service.verify_consensus(votes=req.votes, action=req.action,
-                                             context=req.context, actor=req.actor)
+                                             context=req.context, actor=req.actor,
+                                             resource=req.resource, nonce=req.nonce)
         return ConsensusVerifyResponse(**out)
 
     @app.post("/consensus/execute", response_model=ExecuteResponse)
@@ -284,7 +287,7 @@ def mount_consensus_routes(app: FastAPI, service: GovernanceService, *, api_key:
         out = await service.execute_with_consensus(
             votes=req.votes, actor=req.actor, action=req.action, resource=req.resource,
             context=req.context, transaction_id=req.transaction_id,
-            idempotency_key=req.idempotency_key)
+            idempotency_key=req.idempotency_key, nonce=req.nonce)
         return ExecuteResponse(status=out.status, reason=out.reason, decision=out.decision,
                                audit_ref=out.audit_ref, execution=out.execution)
 
@@ -361,20 +364,31 @@ def build_governance_service(
                 return lst
         return []
 
+    # Optional Multi-Context Consensus: a separate trust set of evaluator keys
+    # plus an N-of-M threshold. Disabled (None) unless a config is provided.
+    consensus_verifier = _build_consensus_verifier(env)
+
+    # Mandatory consensus: when MCC_REQUIRE_CONSENSUS is set, the coordinator
+    # refuses to actuate any governed action without a valid N-of-M consensus
+    # bound to the token. Refuse fail-open startup: require a verifier to exist.
+    require_consensus = _env_flag(env, "MCC_REQUIRE_CONSENSUS")
+    if require_consensus and consensus_verifier is None:
+        raise RuntimeError(
+            "MCC_REQUIRE_CONSENSUS is set but no consensus trust config "
+            "(MCC_CONSENSUS_TRUST_CONFIG) was provided; refusing fail-open startup"
+        )
+
     coordinator = EnforcementCoordinator(
         gate=gate, idempotency=idempotency_registry_from_env(env),
         velocity=velocity_registry_from_env(env), audit=audit,
         profiles=ProfileRegistry.default_pilot(), velocity_limits_for=limits_for,
         revocation_registry=revocation, approvals=approvals,
+        consensus_verifier=consensus_verifier, require_consensus=require_consensus,
     )
 
     if upstream is None:
         base = env.get("MCC_UPSTREAM_BASE", "").strip()
         upstream = _httpx_upstream(base) if base else None
-
-    # Optional Multi-Context Consensus: a separate trust set of evaluator keys
-    # plus an N-of-M threshold. Disabled (None) unless a config is provided.
-    consensus_verifier = _build_consensus_verifier(env)
 
     return GovernanceService(
         engine=engine, coordinator=coordinator, trust_set=trust_set,
@@ -382,6 +396,10 @@ def build_governance_service(
         profiles=ProfileRegistry.default_pilot(), upstream=upstream, policy_hash=policy_hash,
         consensus_verifier=consensus_verifier,
     )
+
+
+def _env_flag(env, name: str) -> bool:
+    return env.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _build_consensus_verifier(env):

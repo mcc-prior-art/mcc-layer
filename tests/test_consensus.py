@@ -145,6 +145,89 @@ def test_expired_vote_ignored():
     assert decide(trusted, votes, threshold=3).verdict == Verdict.DENY
 
 
+# ---- Extra binding dimensions: resource / policy_hash / nonce ----
+# When the operation supplies these, every counted vote must match them. These
+# are what bind consensus evidence to a single, non-replayable operation.
+
+RESOURCE = "cluster-1/prod"
+POLICY_HASH = "sha256:policy-v1"
+NONCE = "nonce-abc123"
+
+
+def vote_bound(key, evaluator_id, *, resource=RESOURCE, policy_hash=POLICY_HASH,
+               nonce=NONCE, verdict=Verdict.ALLOW):
+    return issue_vote(key, evaluator_id=evaluator_id, verdict=verdict, action=ACTION,
+                      payload=PAYLOAD, actor=ACTOR, not_before=NOW - 10, not_after=NOW + 3600,
+                      issued_at=NOW, resource=resource, policy_hash=policy_hash, nonce=nonce)
+
+
+def decide_bound(trusted, votes, *, resource=RESOURCE, policy_hash=POLICY_HASH,
+                 nonce=NONCE, threshold=3):
+    return verifier(trusted, threshold).verify(
+        votes, action=ACTION, payload=PAYLOAD, actor=ACTOR,
+        resource=resource, policy_hash=policy_hash, nonce=nonce, now=NOW)
+
+
+def test_fully_bound_3_of_3_allows():
+    keys, trusted = evaluators(3)
+    votes = [vote_bound(keys[i], f"eval-{i}") for i in range(3)]
+    r = decide_bound(trusted, votes)
+    assert r.verdict == Verdict.ALLOW and r.agreement == 3
+
+
+def test_vote_missing_required_resource_ignored():
+    keys, trusted = evaluators(3)
+    # eval-2's vote was issued without the resource binding the operation requires.
+    votes = [vote_bound(keys[0], "eval-0"), vote_bound(keys[1], "eval-1"),
+             vote_bound(keys[2], "eval-2", resource=None)]
+    r = decide_bound(trusted, votes)
+    assert r.verdict == Verdict.DENY and r.rejected_votes == 1
+
+
+def test_vote_wrong_resource_ignored():
+    keys, trusted = evaluators(3)
+    votes = [vote_bound(keys[0], "eval-0"), vote_bound(keys[1], "eval-1"),
+             vote_bound(keys[2], "eval-2", resource="cluster-2/prod")]
+    assert decide_bound(trusted, votes).verdict == Verdict.DENY
+
+
+def test_vote_wrong_policy_hash_ignored():
+    keys, trusted = evaluators(3)
+    votes = [vote_bound(keys[0], "eval-0"), vote_bound(keys[1], "eval-1"),
+             vote_bound(keys[2], "eval-2", policy_hash="sha256:policy-v2")]
+    assert decide_bound(trusted, votes).verdict == Verdict.DENY
+
+
+def test_vote_wrong_nonce_ignored():
+    keys, trusted = evaluators(3)
+    votes = [vote_bound(keys[0], "eval-0"), vote_bound(keys[1], "eval-1"),
+             vote_bound(keys[2], "eval-2", nonce="nonce-other")]
+    assert decide_bound(trusted, votes).verdict == Verdict.DENY
+
+
+def test_evidence_for_one_nonce_does_not_satisfy_another():
+    # Replay defense: a fully valid 3-of-3 bound to NONCE is rejected when the
+    # operation now carries a fresh nonce. The one-time nonce makes the evidence
+    # non-replayable onto a second operation.
+    keys, trusted = evaluators(3)
+    votes = [vote_bound(keys[i], f"eval-{i}") for i in range(3)]
+    assert decide_bound(trusted, votes).verdict == Verdict.ALLOW
+    assert decide_bound(trusted, votes, nonce="nonce-fresh").verdict == Verdict.DENY
+
+
+def test_consensus_hash_covers_binding_dimensions():
+    keys, trusted = evaluators(3)
+    votes = [vote_bound(keys[i], f"eval-{i}") for i in range(3)]
+    a = decide_bound(trusted, votes)
+    # A different nonce cannot reuse the votes, but build a clean comparison: the
+    # consensus_hash must differ when resource/policy/nonce differ.
+    votes_b = [vote_bound(keys[i], f"eval-{i}", resource="other", policy_hash="sha256:x",
+                          nonce="n2") for i in range(3)]
+    b = decide_bound(trusted, votes_b, resource="other", policy_hash="sha256:x", nonce="n2")
+    assert a.verdict == b.verdict == Verdict.ALLOW
+    assert a.consensus_hash != b.consensus_hash
+
+
 # ---- Robustness ----
 
 def test_malformed_votes_deny():

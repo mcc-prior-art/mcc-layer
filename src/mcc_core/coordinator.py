@@ -69,6 +69,8 @@ class EnforcementCoordinator:
         velocity_limits_for: Optional[LimitsResolver] = None,
         revocation_registry: Optional[Any] = None,
         approvals: Optional[Any] = None,
+        consensus_verifier: Optional[Any] = None,
+        require_consensus: bool = False,
     ) -> None:
         self.gate = gate
         self.idempotency = idempotency
@@ -76,6 +78,13 @@ class EnforcementCoordinator:
         self.audit = audit
         self.profiles = profiles or ProfileRegistry()
         self.velocity_limits_for = velocity_limits_for or (lambda action: [])
+        # Mandatory Multi-Context Consensus: when ``require_consensus`` is set, no
+        # action reaches actuation unless a valid N-of-M consensus, bound to the
+        # token's exact action/actor/payload/resource/policy_hash/nonce, is
+        # supplied. Missing or invalid consensus fails closed before any
+        # reservation or execution.
+        self.consensus_verifier = consensus_verifier
+        self.require_consensus = require_consensus
         # Optional actuation-time revocation re-check: a mandate revoked between
         # decision and execution must still block. When configured, a token that
         # names a mandate_id is checked here; REVOKED or an unconfirmable status
@@ -102,6 +111,7 @@ class EnforcementCoordinator:
         payload: Dict[str, Any],
         executor: Executor,
         request_binding: Optional[Dict[str, Any]] = None,
+        consensus_votes: Optional[Any] = None,
         now: Optional[int] = None,
     ) -> ActuationResult:
         # (a) validate token + operation binding, (b) consume nonce.
@@ -111,6 +121,26 @@ class EnforcementCoordinator:
         if not gate_result.allowed:
             self._record(kind="actuation_rejected", action=action, reason=gate_result.reason)
             return ActuationResult(ActuationStatus.BLOCKED, gate_result.reason)
+
+        # Mandatory Multi-Context Consensus — no actuation without a valid N-of-M
+        # authorization bound to this exact (now gate-verified) token: action,
+        # actor, payload, resource, policy hash, and one-time nonce. Runs before
+        # any idempotency/velocity reservation or execution.
+        if self.require_consensus:
+            result = None
+            if self.consensus_verifier is not None and consensus_votes is not None:
+                result = self.consensus_verifier.verify(
+                    consensus_votes, action=action, payload=payload,
+                    actor=token.get("actor_id"), resource=token.get("resource_id"),
+                    policy_hash=token.get("policy_hash"), nonce=token.get("nonce"), now=now)
+            if result is None or result.verdict != Verdict.ALLOW:
+                reason = ("consensus required: " +
+                          (result.reason if result is not None else
+                           "no consensus evidence supplied; fail-closed"))
+                self._record(kind="actuation_rejected", action=action, reason=reason)
+                return ActuationResult(ActuationStatus.BLOCKED, reason)
+            self._record(kind="consensus_verified", action=action,
+                         evaluators=result.allow_evaluators, consensus_hash=result.consensus_hash)
 
         # Actuation-time revocation re-check: a mandate revoked after the token
         # was issued must block here (fail-closed on REVOKED or unconfirmable).

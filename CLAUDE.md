@@ -182,10 +182,10 @@ mcc-layer/
 │       ├── idempotency.py     ← business-operation idempotency: RESERVED/EXECUTED/FAILED lifecycle, Redis+InMemory, fail-closed
 │       ├── velocity.py        ← atomic velocity/aggregate limits (count, cumulative amount, new destinations); anti-splitting
 │       ├── profiles.py        ← domain-neutral ActionProfile + PaymentProfile + InfraProfile + RoboticsProfile (canonical payload + auth_claims)
-│       ├── coordinator.py     ← EnforcementCoordinator: a-h order (gate→revocation→approval-consume→idem→velocity→audit→execute→finalize)
+│       ├── coordinator.py     ← EnforcementCoordinator: a-h order (gate→[require_consensus]→revocation→approval-consume→idem→velocity→audit→execute→finalize)
 │       ├── mandate.py         ← signed, revocable mandates: issue/verify (fail-closed), MandateAuthority, revocation registry (Redis+InMemory)
 │       ├── approvals.py       ← ESCALATE loop: ApprovalService + state machine + single-use signed approval mandate (Redis+InMemory)
-│       ├── consensus.py       ← Multi-Context Consensus: N-of-M independent Ed25519-signed evaluator votes (pre-token authority step)
+│       ├── consensus.py       ← Multi-Context Consensus: N-of-M independent Ed25519-signed evaluator votes (pre-token authority step + mandatory enforcement; binds action/actor/payload/resource/policy_hash/nonce)
 │       ├── policy.py          ← PolicyBundle with hash verification
 │       ├── authority.py       ← config mandate registry + action→authority→verdict (the formula in code)
 │       └── signing.py         ← Ed25519 token signing/verification
@@ -246,8 +246,11 @@ mcc-layer/
     ├── test_trust.py          ← multi-issuer trust set: resolution, rotation, disable/revoke/expiry, malformed config, pilot fail-closed startup
     ├── test_mandate_http.py   ← mandate HTTP: verify/execute/revoke, strict schemas, operator boundary, no-bypass (upstream unreached when blocked)
     ├── test_approval_http.py  ← approval HTTP: ESCALATE scenarios (approve/deny/single-use/substitution/policy-drift/expiry/concurrency/backend-down)
-    ├── test_consensus.py      ← N-of-M consensus: unanimity/threshold/veto, forged/duplicate/mismatched/expired votes fail-closed
+    ├── test_consensus.py      ← N-of-M consensus: unanimity/threshold/veto, forged/duplicate/mismatched/expired votes + resource/policy_hash/nonce binding fail-closed
     ├── test_consensus_http.py ← consensus HTTP: verify + execute, below-threshold/veto/forged → BLOCKED (upstream unreached)
+    ├── test_consensus_enforcement.py ← mandatory consensus at the coordinator: valid 3-of-3 actuates; every invalid/incomplete case BLOCKED before executor runs
+    ├── test_consensus_enforcement_http.py ← mandatory consensus E2E HTTP: valid 3-of-3 reaches downstream; missing/<3/veto/duplicate/untrusted/bad-sig/expired/mismatch/replay denied + upstream unreached; cross-path (mandate execute) also fails closed
+    ├── test_consensus_builder.py ← build_governance_service wiring: MCC_REQUIRE_CONSENSUS without trust config refuses startup (no fail-open); with config enables the coordinator gate
     └── opa_test_vectors.json
 ```
 

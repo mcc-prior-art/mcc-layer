@@ -47,9 +47,17 @@ def issue_vote(
     not_after: int,
     issued_at: Optional[int] = None,
     reason: str = "",
+    resource: Optional[str] = None,
+    policy_hash: Optional[str] = None,
+    nonce: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Sign one evaluator's vote, bound to the exact operation. The evaluator's
-    ``signing_key`` kid is what the verifier must trust."""
+    ``signing_key`` kid is what the verifier must trust.
+
+    ``resource``, ``policy_hash``, and ``nonce`` are optional extra binding
+    dimensions (added to the signed claims only when provided). The mandatory
+    execution path binds all of them — the ``nonce`` (one-time) makes the
+    evidence itself non-replayable."""
     iat = int(issued_at if issued_at is not None else time.time())
     claims = {
         "vote_id": f"vote-{uuid.uuid4().hex}",
@@ -63,6 +71,12 @@ def issue_vote(
         "nbf": int(not_before),
         "exp": int(not_after),
     }
+    if resource is not None:
+        claims["resource"] = resource
+    if policy_hash is not None:
+        claims["policy_hash"] = policy_hash
+    if nonce is not None:
+        claims["nonce"] = nonce
     return signing_key.sign_token(claims)
 
 
@@ -117,15 +131,22 @@ class ConsensusVerifier:
 
     def verify(
         self, votes: Any, *, action: str, payload: Dict[str, Any], actor: str,
-        now: Optional[int] = None,
+        resource: Optional[str] = None, policy_hash: Optional[str] = None,
+        nonce: Optional[str] = None, now: Optional[int] = None,
     ) -> ConsensusResult:
+        """Verify N-of-M consensus bound to the operation. ``resource``,
+        ``policy_hash``, and ``nonce``, when provided, are *required* to match
+        on every counted vote — a vote that lacks or mismatches a required
+        dimension is rejected. The one-time ``nonce`` makes the evidence
+        non-replayable across operations."""
         try:
-            return self._verify(votes, action=action, payload=payload, actor=actor, now=now)
+            return self._verify(votes, action=action, payload=payload, actor=actor,
+                                 resource=resource, policy_hash=policy_hash, nonce=nonce, now=now)
         except Exception:
             return ConsensusResult(Verdict.DENY, "CONSENSUS_ERROR: fail-closed",
                                    self.policy.threshold, 0)
 
-    def _verify(self, votes, *, action, payload, actor, now) -> ConsensusResult:
+    def _verify(self, votes, *, action, payload, actor, resource, policy_hash, nonce, now) -> ConsensusResult:
         ts = int(now if now is not None else time.time())
         expected_action = hash_action(action)
         expected_payload = hash_payload(payload)
@@ -159,6 +180,13 @@ class ConsensusVerifier:
                     or vote.get("actor") != actor):
                 rejected += 1
                 continue
+            # Extra binding dimensions, required only when the operation supplies
+            # them: resource, policy version, and the one-time nonce.
+            if (resource is not None and vote.get("resource") != resource) \
+                    or (policy_hash is not None and vote.get("policy_hash") != policy_hash) \
+                    or (nonce is not None and vote.get("nonce") != nonce):
+                rejected += 1
+                continue
             nbf, exp = vote.get("nbf"), vote.get("exp")
             if not isinstance(nbf, int) or not isinstance(exp, int) or ts < nbf or ts >= exp:
                 rejected += 1
@@ -183,7 +211,8 @@ class ConsensusVerifier:
         deny_ids = sorted(deny)
         consensus_hash = sha256_hex(canonical_bytes(
             {"action_hash": expected_action, "payload_hash": expected_payload,
-             "actor": actor, "evaluators": allow_ids}))
+             "actor": actor, "resource": resource, "policy_hash": policy_hash,
+             "nonce": nonce, "evaluators": allow_ids}))
 
         if self.policy.veto_on_deny and deny_ids:
             return ConsensusResult(Verdict.DENY, f"VETO: {deny_ids[0]} voted DENY",
