@@ -28,7 +28,7 @@ import time
 import uuid
 from pathlib import Path
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 import redis.asyncio as redis
@@ -41,11 +41,24 @@ from pydantic_settings import BaseSettings
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from mcc_core import (
+    ActuationStatus,
     AuditLog,
+    ChallengeService,
+    ConsensusPolicy,
+    ConsensusVerifier,
     DecisionEngine,
+    EnforcementCoordinator,
+    ExecutionGate,
+    InMemoryChallengeRegistry,
+    InMemoryIdempotencyRegistry,
+    InMemoryNonceRegistry,
+    InMemoryVelocityRegistry,
     PolicyBundle,
+    ProfileRegistry,
+    RUNTIME_VERSION,
     SigningKey,
     hash_payload,
+    public_key_from_b64,
 )
 
 
@@ -71,11 +84,30 @@ class Settings(BaseSettings):
     opa_data_path: str = "mcc/decision"
     opa_timeout_seconds: float = 1.5
 
+    # --- Multi-Context Consensus + gateway challenge (governance layer) ---
+    # Path to the evaluator trust config (same JSON shape as the gateway trust
+    # set: issuers -> keys -> {kid, public_key_b64}). When set AND a policy
+    # bundle is loaded, the full governance pipeline is ACTIVE on /evaluate:
+    # challenge issuance -> policy decision -> N-of-M quorum -> ExecutionGate
+    # (+ nonce consume) -> challenge consume -> hash-chain audit. Unset = the
+    # base policy-decision runtime (governance reported as disabled in /health).
+    consensus_trust_config: str = ""
+    consensus_threshold: int = 3
+    challenge_ttl_seconds: int = 120
+    # When true, refuse to start without a usable governance configuration —
+    # no fail-open: a deployment that asked for governance must not silently
+    # run in base mode.
+    require_governance: bool = False
+
     class Config:
         env_prefix = "MCC_"
 
 
 settings = Settings()
+
+
+# Canonical runtime release version comes from mcc_core.version (single source
+# of truth: the repo-root VERSION file). Imported above as RUNTIME_VERSION.
 
 
 # ---------- Logging ----------
@@ -89,6 +121,14 @@ logger = logging.getLogger("mcc")
 DECISIONS = Counter("mcc_decisions_total", "MCC decisions", ["decision"])
 OPA_ERRORS = Counter("mcc_opa_errors_total", "OPA evaluation errors", ["reason"])
 LATENCY = Histogram("mcc_latency_seconds", "MCC evaluation latency")
+
+# Governance-layer metrics (Phase 1 wiring).
+QUORUM = Counter("mcc_quorum_total", "N-of-M quorum verification outcomes", ["result"])
+CHALLENGE = Counter("mcc_challenge_total", "Consensus challenge outcomes", ["result"])
+NONCE_REPLAY = Counter("mcc_nonce_replay_total", "Replayed / unusable nonce at the gate")
+EVALUATOR_REJECTED = Counter(
+    "mcc_evaluator_rejected_total", "Evaluator votes rejected during quorum", ["reason"]
+)
 
 
 # ---------- Redis ----------
@@ -117,6 +157,14 @@ class EvaluateRequest(BaseModel):
     intent: str = Field(..., min_length=1)
     args: Dict[str, Any] = Field(default_factory=dict)
     idempotency_key: Optional[str] = None
+    # --- governance (Phase B) ---
+    resource: Optional[str] = None
+    # The challenge issued by POST /evaluate/challenge for this exact operation.
+    challenge_id: Optional[str] = None
+    # Cryptographically signed evaluator votes (each a signed token), bound to
+    # the challenge nonce. Quorum is N-of-M over DISTINCT TRUSTED evaluator
+    # identities. (Verified votes are NOT a guarantee of evaluator independence.)
+    votes: Optional[List[Dict[str, Any]]] = None
 
 
 class EvaluateResponse(BaseModel):
@@ -127,6 +175,27 @@ class EvaluateResponse(BaseModel):
     policy_engine: str = "opa"
     policy_ref: Optional[str] = None
     decision_token: Optional[Dict[str, Any]] = None
+    # Governance evidence echoed back when the full pipeline ran.
+    quorum: Optional[Dict[str, Any]] = None
+
+
+class ChallengeRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    intent: str = Field(..., min_length=1)
+    args: Dict[str, Any] = Field(default_factory=dict)
+    resource: Optional[str] = None
+
+
+class ChallengeResponse(BaseModel):
+    challenge_id: str
+    nonce: str
+    action: str
+    actor: str
+    resource: Optional[str] = None
+    payload_hash: str
+    policy_hash: Optional[str] = None
+    issued_at: int
+    expires_at: int
 
 
 class PolicyDecision(BaseModel):
@@ -281,6 +350,156 @@ class LocalFallbackPolicy:
         )
 
 
+# ---------- Governance pipeline (Multi-Context Consensus + challenge) ----------
+
+def _load_evaluator_keys(path: str) -> Dict[str, Any]:
+    """Load ``{kid: Ed25519PublicKey}`` from an evaluator trust config (same JSON
+    shape as the gateway trust set: ``issuers -> keys -> {kid, public_key_b64,
+    not_after}``). Disabled issuers and expired keys are skipped. Returns ``{}``
+    when no path / unreadable — governance simply stays disabled (fail-closed:
+    no trusted evaluators means no quorum can ever be reached, so no ALLOW)."""
+    path = (path or "").strip()
+    if not path:
+        return {}
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        logger.error("evaluator trust config unreadable at %s; governance disabled", path)
+        return {}
+    now = int(time.time())
+    keys: Dict[str, Any] = {}
+    for issuer in data.get("issuers", []):
+        if not issuer.get("enabled", True):
+            continue
+        for k in issuer.get("keys", []):
+            na = k.get("not_after")
+            if na is not None and now >= int(na):
+                continue
+            try:
+                keys[k["kid"]] = public_key_from_b64(k["public_key_b64"])
+            except Exception:
+                continue
+    return keys
+
+
+def _quorum_reason(low: str) -> str:
+    for key in ("veto", "expired", "duplicate", "untrusted", "forged",
+                "mismatch", "below", "malformed", "no_consensus", "no consensus"):
+        if key in low:
+            return key.replace(" ", "_")
+    return "rejected"
+
+
+class GovernancePipeline:
+    """Wires the in-tree governance modules into the public ``/evaluate``
+    entrypoint: gateway-issued **challenge** → N-of-M **quorum**
+    (``ConsensusVerifier``) → **ExecutionGate** (signature + binding + one-time
+    **nonce** consume) → **challenge** single-use consume → hash-chain
+    **audit**, all orchestrated by the ``EnforcementCoordinator``. Fail-closed
+    at every boundary.
+
+    NIW honesty constraint — the runtime cryptographically verifies evaluator
+    votes from **distinct trusted evaluator identities**: signatures, evaluator
+    **identity uniqueness**, **trust membership**, **quorum (N-of-M)**, action
+    **bindings**, token **expiry**, and **veto**. It does **NOT** guarantee
+    organizational, operational, or model-level **independence** of those
+    evaluators — that is a deployment/governance property outside the software's
+    control.
+    """
+
+    def __init__(self, *, signing_key: SigningKey, engine: DecisionEngine, audit: AuditLog,
+                 trusted_evaluators: Dict[str, Any], threshold: int, audience: str,
+                 challenge_ttl: int) -> None:
+        self.engine = engine
+        self.policy_hash = engine.policy_hash
+        self.threshold = threshold
+        self.evaluator_count = len(trusted_evaluators)
+        self.verifier = ConsensusVerifier(
+            trusted_keys=trusted_evaluators, policy=ConsensusPolicy(threshold=threshold))
+        self.nonce_registry = InMemoryNonceRegistry()
+        self.gate = ExecutionGate(
+            trusted_keys={signing_key.kid: signing_key.public_key()}, audience=audience,
+            nonce_registry=self.nonce_registry, policy_hash=engine.policy_hash)
+        self.challenges = ChallengeService(
+            InMemoryChallengeRegistry(), default_ttl_seconds=challenge_ttl)
+        # require_consensus + require_challenge => no actuation without a valid
+        # quorum bound to a gateway-issued, single-use challenge.
+        self.coordinator = EnforcementCoordinator(
+            gate=self.gate, idempotency=InMemoryIdempotencyRegistry(),
+            velocity=InMemoryVelocityRegistry(), audit=audit, profiles=ProfileRegistry(),
+            consensus_verifier=self.verifier, require_consensus=True,
+            challenges=self.challenges, require_challenge=True)
+
+    async def issue_challenge(self, *, actor: str, action: str, resource: Optional[str],
+                              args: Dict[str, Any]):
+        rec = await self.challenges.issue(
+            action=action, actor=actor, resource=resource,
+            payload_hash=hash_payload(args), policy_hash=self.policy_hash)
+        CHALLENGE.labels(result="issued").inc()
+        return rec
+
+    async def decide(self, *, actor: str, action: str, resource: Optional[str],
+                     args: Dict[str, Any], verdict: str, constraints: Dict[str, Any],
+                     challenge_id: Optional[str], votes: Optional[List[Dict[str, Any]]],
+                     audit_ref: Optional[str]):
+        """Run the full pipeline for an ALLOW/CONSTRAIN policy verdict.
+        Returns ``(ok, token_or_None, reason, evidence_or_None)``. Any missing or
+        invalid challenge/quorum/gate/nonce condition fails closed → ``ok=False``."""
+        if not challenge_id or not votes:
+            QUORUM.labels(result="fail").inc()
+            EVALUATOR_REJECTED.labels(reason="no_evidence").inc()
+            return False, None, "no challenge / quorum evidence supplied; fail-closed", None
+        # Resolve + re-bind the challenge before issuing any token.
+        rec = await self.challenges.get(challenge_id)
+        if rec is None:
+            CHALLENGE.labels(result="unknown").inc()
+            return False, None, "challenge unknown or expired; fail-closed", None
+        if rec.state != "ISSUED":
+            CHALLENGE.labels(result="not_open").inc()
+            return False, None, f"challenge not open (state {rec.state}); fail-closed", None
+        if (rec.action != action or rec.actor != actor or rec.resource != resource
+                or rec.payload_hash != hash_payload(args) or rec.policy_hash != self.policy_hash):
+            CHALLENGE.labels(result="mismatch").inc()
+            return False, None, "challenge binding mismatch; fail-closed", None
+
+        token = self.engine.issue_token(
+            verdict=verdict, subject=actor, action=action, payload=args,
+            constraints=constraints, nonce=rec.nonce, actor_id=actor, resource_id=resource,
+            auth_claims={"challenge_id": challenge_id}, audit_ref=audit_ref)
+
+        async def grant():
+            return "authorized"
+
+        result = await self.coordinator.enforce(
+            token=token, action=action, payload=args, executor=grant,
+            request_binding={"actor_id": actor, "resource_id": resource},
+            consensus_votes=votes)
+
+        if result.status == ActuationStatus.EXECUTED:
+            QUORUM.labels(result="pass").inc()
+            CHALLENGE.labels(result="consumed").inc()
+            evidence = {
+                "threshold": self.threshold,
+                "evaluator_pool": self.evaluator_count,
+                "verified": True,
+                "claim": ("cryptographically verified evaluator votes from distinct "
+                          "trusted evaluator identities; NOT a guarantee of evaluator "
+                          "independence"),
+            }
+            return True, token, "governance verified", evidence
+
+        reason = result.reason or "governance denied"
+        low = reason.lower()
+        if "nonce" in low or "replay" in low:
+            NONCE_REPLAY.inc()
+        if any(t in low for t in ("consensus", "quorum", "evaluator", "veto", "no_consensus")):
+            QUORUM.labels(result="fail").inc()
+            EVALUATOR_REJECTED.labels(reason=_quorum_reason(low)).inc()
+        if "challenge" in low:
+            CHALLENGE.labels(result="reject").inc()
+        return False, None, reason, None
+
+
 # ---------- MCC Core ----------
 
 IDEM_CACHE_MAX_ENTRIES = 10_000
@@ -331,6 +550,34 @@ class MCC:
                 "policy bundle unavailable at %s; decision tokens will not be "
                 "issued (fail-closed)",
                 settings.policy_bundle_path,
+            )
+
+        # --- governance pipeline (Multi-Context Consensus + challenge) ---
+        # Active only when a usable evaluator trust set AND a policy bundle (for
+        # the policy_hash binding) are present. Otherwise the runtime serves the
+        # base policy-decision layer and reports governance as disabled.
+        self.governance: Optional[GovernancePipeline] = None
+        trusted = _load_evaluator_keys(settings.consensus_trust_config)
+        if trusted and self.engine is not None:
+            self.governance = GovernancePipeline(
+                signing_key=self.signing_key, engine=self.engine, audit=self.audit,
+                trusted_evaluators=trusted, threshold=settings.consensus_threshold,
+                audience=settings.token_audience, challenge_ttl=settings.challenge_ttl_seconds,
+            )
+            logger.info(
+                "governance ACTIVE | evaluators=%d | threshold=%d",
+                len(trusted), settings.consensus_threshold,
+            )
+        elif settings.require_governance:
+            raise RuntimeError(
+                "MCC_REQUIRE_GOVERNANCE is set but no usable governance config "
+                "(MCC_CONSENSUS_TRUST_CONFIG + a loadable policy bundle); refusing "
+                "fail-open startup"
+            )
+        else:
+            logger.warning(
+                "governance layer disabled (no evaluator trust set / policy bundle); "
+                "/evaluate runs base policy-decision mode"
             )
 
     def _trace(self, session_id: str) -> str:
@@ -401,42 +648,84 @@ class MCC:
             audit_entry = None
 
         decision_token: Optional[Dict[str, Any]] = None
+        quorum_evidence: Optional[Dict[str, Any]] = None
         if policy_decision.decision in (Decision.ALLOW, Decision.CONSTRAIN):
-            try:
-                if self.engine is None:
-                    raise RuntimeError("decision engine unavailable")
-                decision_token = self.engine.issue_token(
-                    verdict=policy_decision.decision.value,
-                    subject=f"agent/{req.session_id}",
+            if self.governance is not None:
+                # FULL pipeline: a policy ALLOW/CONSTRAIN is only authority if it
+                # also passes challenge + N-of-M quorum + gate (nonce) + audit.
+                # Any failure fails closed -> DENY (no verified decision, no
+                # execution).
+                ok, token, gov_reason, quorum_evidence = await self.governance.decide(
+                    actor=f"agent/{req.session_id}",
                     action=req.intent,
-                    payload=req.args,
+                    resource=req.resource,
+                    args=req.args,
+                    verdict=policy_decision.decision.value,
                     constraints=policy_decision.constraints,
+                    challenge_id=req.challenge_id,
+                    votes=req.votes,
                     audit_ref=audit_entry["hash"] if audit_entry else None,
                 )
-            except Exception:
-                logger.error(
-                    "decision token issuance failed; fail closed | trace=%s", trace_id
-                )
-                decision_token = None
-                policy_decision = PolicyDecision(
-                    decision=Decision.DENY,
-                    reason="decision token unavailable; fail closed",
-                    constraints={},
-                    policy_ref="fail-closed",
-                )
+                if ok:
+                    decision_token = token
+                else:
+                    decision_token = None
+                    policy_decision = PolicyDecision(
+                        decision=Decision.DENY,
+                        reason=gov_reason,
+                        constraints={},
+                        policy_ref="fail-closed",
+                    )
+                    try:
+                        async with self._lock:
+                            self.audit.append(
+                                {
+                                    "tenant": tenant,
+                                    "intent": req.intent,
+                                    "decision": Decision.DENY.value,
+                                    "reason": f"governance denied: {gov_reason}",
+                                    "trace_id": trace_id,
+                                }
+                            )
+                    except Exception:
+                        logger.error("audit write failed on governance downgrade | trace=%s", trace_id)
+            else:
+                # Base mode (governance not configured): policy decision + token.
                 try:
-                    async with self._lock:
-                        self.audit.append(
-                            {
-                                "tenant": tenant,
-                                "intent": req.intent,
-                                "decision": Decision.DENY.value,
-                                "reason": "token issuance failed; downgraded to DENY",
-                                "trace_id": trace_id,
-                            }
-                        )
+                    if self.engine is None:
+                        raise RuntimeError("decision engine unavailable")
+                    decision_token = self.engine.issue_token(
+                        verdict=policy_decision.decision.value,
+                        subject=f"agent/{req.session_id}",
+                        action=req.intent,
+                        payload=req.args,
+                        constraints=policy_decision.constraints,
+                        audit_ref=audit_entry["hash"] if audit_entry else None,
+                    )
                 except Exception:
-                    logger.error("audit write failed on downgrade | trace=%s", trace_id)
+                    logger.error(
+                        "decision token issuance failed; fail closed | trace=%s", trace_id
+                    )
+                    decision_token = None
+                    policy_decision = PolicyDecision(
+                        decision=Decision.DENY,
+                        reason="decision token unavailable; fail closed",
+                        constraints={},
+                        policy_ref="fail-closed",
+                    )
+                    try:
+                        async with self._lock:
+                            self.audit.append(
+                                {
+                                    "tenant": tenant,
+                                    "intent": req.intent,
+                                    "decision": Decision.DENY.value,
+                                    "reason": "token issuance failed; downgraded to DENY",
+                                    "trace_id": trace_id,
+                                }
+                            )
+                    except Exception:
+                        logger.error("audit write failed on downgrade | trace=%s", trace_id)
 
         result = EvaluateResponse(
             decision=policy_decision.decision,
@@ -446,6 +735,7 @@ class MCC:
             policy_engine=policy_engine,
             policy_ref=policy_decision.policy_ref,
             decision_token=decision_token,
+            quorum=quorum_evidence,
         )
 
         if req.idempotency_key:
@@ -464,6 +754,20 @@ class MCC:
 
         return result
 
+    async def issue_challenge(self, tenant: str, req: ChallengeRequest) -> ChallengeResponse:
+        if self.governance is None:
+            raise HTTPException(
+                status_code=409,
+                detail="governance layer not configured; challenge unavailable",
+            )
+        rec = await self.governance.issue_challenge(
+            actor=f"agent/{req.session_id}", action=req.intent,
+            resource=req.resource, args=req.args,
+        )
+        view = rec.public_view()
+        logger.info("challenge issued | id=%s | intent=%s", view["challenge_id"], req.intent)
+        return ChallengeResponse(**view)
+
 
 mcc = MCC()
 
@@ -472,10 +776,12 @@ mcc = MCC()
 
 app = FastAPI(
     title="MCC-Core Execution Governance Runtime",
-    version="1.2.0-ed25519",
+    version=RUNTIME_VERSION,
     description=(
         "MCC-Core runtime with real OPA/Rego policy adapter, fail-closed "
-        "evaluation, and Ed25519-signed decision tokens."
+        "evaluation, Ed25519-signed decision tokens, and the full governance "
+        "pipeline (challenge -> N-of-M quorum -> gate -> nonce -> audit) on "
+        "/evaluate when an evaluator trust set is configured."
     ),
 )
 
@@ -493,8 +799,20 @@ app.add_middleware(
 # response body (ALLOW / CONSTRAIN only). There is no transport-level
 # symmetric signature: verification happens at the execution gate.
 
+@app.post("/evaluate/challenge", response_model=ChallengeResponse)
+async def evaluate_challenge(req: ChallengeRequest, tenant_ctx: Dict[str, str] = Depends(get_tenant)):
+    # Phase A — Propose / Challenge: the gateway issues the one-time, nonce-bound
+    # challenge for this exact (actor, action, resource, payload, policy). The
+    # client gathers evaluator votes bound to it, then calls POST /evaluate.
+    return await mcc.issue_challenge(tenant_ctx["tenant"], req)
+
+
 @app.post("/evaluate", response_model=EvaluateResponse)
 async def evaluate(req: EvaluateRequest, tenant_ctx: Dict[str, str] = Depends(get_tenant)):
+    # Phase B — Verify / Decide: policy decision AND (when governance is active)
+    # N-of-M quorum over cryptographically verified evaluator votes from distinct
+    # trusted evaluator identities -> ExecutionGate -> nonce consume -> challenge
+    # consume -> hash-chain audit. Fail-closed throughout.
     with LATENCY.time():
         return await mcc.evaluate(tenant_ctx["tenant"], req)
 
@@ -512,6 +830,7 @@ async def health():
 
     return {
         "status": "ok",
+        "version": RUNTIME_VERSION,
         "policy_engine": "opa" if settings.use_opa else "local-fallback",
         "opa_status": opa_status,
         "fail_closed": True,
@@ -528,6 +847,19 @@ async def health():
             }
             if mcc.policy_bundle
             else "unavailable (tokens not issued; fail-closed)"
+        ),
+        "governance": (
+            {
+                "active": True,
+                "evaluator_pool": mcc.governance.evaluator_count,
+                "threshold": mcc.governance.threshold,
+                "pipeline": "challenge -> quorum -> gate -> nonce -> audit",
+                "claim": "cryptographically verified evaluator votes from distinct "
+                         "trusted evaluator identities; not a guarantee of evaluator "
+                         "independence",
+            }
+            if mcc.governance is not None
+            else {"active": False, "mode": "base policy-decision (no evaluator trust set)"}
         ),
     }
 

@@ -73,6 +73,7 @@ from .consensus import (
     issue_vote,
 )
 from .policy import PolicyBundle, PolicyBundleError
+from .version import RUNTIME_VERSION, runtime_version
 from .profiles import (
     ActionProfile,
     InfraProfile,
@@ -171,6 +172,8 @@ __all__ = [
     "velocity_registry_from_env",
     "PolicyBundle",
     "PolicyBundleError",
+    "RUNTIME_VERSION",
+    "runtime_version",
     "SigningKey",
     "TokenNotIssuable",
     "Verdict",

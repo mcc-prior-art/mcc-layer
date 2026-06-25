@@ -38,6 +38,7 @@ from fastapi.responses import JSONResponse, Response
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mcc_core import (  # noqa: E402
+    RUNTIME_VERSION,
     AuditLog,
     EnforcementCoordinator,
     ExecutionGate,
@@ -381,7 +382,7 @@ def build_proxy_app(
     record, and idempotency finalize — wrapping the upstream call as the
     executor. Without one, the proxy uses the gate-only path (token + nonce).
     """
-    app = FastAPI(title="MCC-Core Egress Proxy", version="1.0.0-mvp")
+    app = FastAPI(title="MCC-Core Egress Proxy", version=RUNTIME_VERSION)
 
     def _resolve_target(request: Request, path: str) -> Optional[str]:
         raw = request.url.path
