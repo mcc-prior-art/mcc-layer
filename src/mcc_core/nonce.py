@@ -179,14 +179,17 @@ def nonce_registry_from_env(env: Optional[Mapping[str, str]] = None):
         return InMemoryNonceRegistry()
 
     if backend == "redis":
-        url = env.get("MCC_REDIS_URL", "").strip()
-        if not url:
+        from . import redis_keys
+        from .redis_client import RedisConfigError, redis_client_from_env
+
+        try:
+            client = redis_client_from_env(env)
+        except RedisConfigError as exc:
             raise NonceConfigError(
                 "MCC_NONCE_BACKEND=redis requires MCC_REDIS_URL; refusing to "
-                "fall back to in-memory replay protection in an enforcement "
-                "deployment"
+                f"fall back to in-memory replay protection ({exc})"
             )
-        return RedisNonceRegistry.from_url(url)
+        return RedisNonceRegistry(client, namespace=redis_keys.prefix("nonce", env))
 
     raise NonceConfigError(
         f"unknown MCC_NONCE_BACKEND={backend!r}; expected 'memory' or 'redis'"

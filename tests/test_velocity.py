@@ -25,6 +25,7 @@ class VelFakeRedis:
     def __init__(self):
         self.kv = {}
         self.sets = {}
+        self.ttls = {}
 
     async def incr(self, key):
         self.kv[key] = int(self.kv.get(key, 0)) + 1
@@ -56,7 +57,53 @@ class VelFakeRedis:
         return 0
 
     async def expire(self, key, ttl):
+        self.ttls[key] = ttl
         return True
+
+    async def ttl(self, key):
+        return self.ttls.get(key, -1)
+
+    async def eval(self, script, numkeys, *args):
+        # Faithful Python equivalent of velocity._RESERVE_LUA (atomic by virtue
+        # of running without awaiting). Lets the unit tests exercise the same
+        # atomic reserve semantics the real Redis runs as a Lua script.
+        keys = list(args[:numkeys])
+        a = list(args[numkeys:])
+        count_key, sum_key, dest_key = keys
+        window = int(a[8])
+        breaches = []
+        did_count = did_amount = added_dest = False
+        if a[0] == "1":
+            c = await self.incr(count_key)
+            if c == 1:
+                self.ttls[count_key] = window
+            did_count = True
+            if float(a[1]) >= 0 and c > float(a[1]):
+                breaches.append(f"count {c} > max {a[1]}")
+        if a[2] == "1" and not breaches:
+            s = await self.incrbyfloat(sum_key, float(a[3]))
+            if self.ttls.get(sum_key, -1) < 0:
+                self.ttls[sum_key] = window
+            did_amount = True
+            if float(a[4]) >= 0 and float(s) > float(a[4]):
+                breaches.append(f"amount {s} > max {a[4]}")
+        if a[5] == "1" and not breaches:
+            added = await self.sadd(dest_key, a[6])
+            if self.ttls.get(dest_key, -1) < 0:
+                self.ttls[dest_key] = window
+            added_dest = added == 1
+            card = await self.scard(dest_key)
+            if float(a[7]) >= 0 and card > float(a[7]):
+                breaches.append(f"new destinations {card} > max {a[7]}")
+        if breaches:
+            if did_count:
+                await self.decr(count_key)
+            if did_amount:
+                await self.incrbyfloat(sum_key, -float(a[3]))
+            if added_dest:
+                await self.srem(dest_key, a[6])
+            return [0, "; ".join(breaches)]
+        return [1, "ok"]
 
 
 class DownRedis:
@@ -182,3 +229,40 @@ def test_velocity_registry_outage_fails_closed():
     out = run(reg.reserve(limit, desc(amount=100), now=1000.0))
     assert out.verdict == Verdict.DENY
     assert not out.reserved
+
+
+# ---- Input validation hardening (malformed / hostile amounts fail closed) ----
+
+@pytest.mark.parametrize("reg", [InMemoryVelocityRegistry(), RedisVelocityRegistry(VelFakeRedis())])
+def test_negative_amount_fails_closed(reg):
+    limit = VelocityLimit(name="amt", window_seconds=3600, max_amount=1000.0)
+    desc = VelocityDescriptor(dimensions={"actor": "a"}, amount=-500.0)
+    out = run(reg.reserve(limit, desc))
+    assert out.verdict == Verdict.DENY and not out.reserved
+
+
+@pytest.mark.parametrize("reg", [InMemoryVelocityRegistry(), RedisVelocityRegistry(VelFakeRedis())])
+def test_nan_amount_fails_closed(reg):
+    limit = VelocityLimit(name="amt", window_seconds=3600, max_amount=1000.0)
+    out = run(reg.reserve(limit, VelocityDescriptor(dimensions={"actor": "a"}, amount=float("nan"))))
+    assert out.verdict == Verdict.DENY and not out.reserved
+
+
+@pytest.mark.parametrize("reg", [InMemoryVelocityRegistry(), RedisVelocityRegistry(VelFakeRedis())])
+def test_inf_amount_fails_closed(reg):
+    limit = VelocityLimit(name="amt", window_seconds=3600, max_amount=1000.0)
+    out = run(reg.reserve(limit, VelocityDescriptor(dimensions={"actor": "a"}, amount=float("inf"))))
+    assert out.verdict == Verdict.DENY and not out.reserved
+
+
+def test_negative_amount_cannot_reduce_aggregate():
+    # A hostile negative amount must not decrement a shared counter to make room.
+    shared = VelFakeRedis()
+    reg = RedisVelocityRegistry(shared)
+    limit = VelocityLimit(name="amt", window_seconds=3600, max_amount=100.0)
+    desc_ok = VelocityDescriptor(dimensions={"actor": "a"}, amount=90.0)
+    desc_bad = VelocityDescriptor(dimensions={"actor": "a"}, amount=-50.0)
+    assert run(reg.reserve(limit, desc_ok)).ok            # sum=90
+    assert not run(reg.reserve(limit, desc_bad)).ok        # rejected, sum unchanged
+    # A legitimate 20 would still cross 100 (proves the -50 did not apply).
+    assert not run(reg.reserve(limit, VelocityDescriptor(dimensions={"actor": "a"}, amount=20.0))).ok

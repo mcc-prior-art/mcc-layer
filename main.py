@@ -23,12 +23,14 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import sys
 import time
 import uuid
 from pathlib import Path
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List, Mapping, Optional
 
 import httpx
 import redis.asyncio as redis
@@ -56,10 +58,17 @@ from mcc_core import (
     PolicyBundle,
     ProfileRegistry,
     RUNTIME_VERSION,
+    RedisChallengeRegistry,
+    RedisConfigError,
+    RedisIdempotencyRegistry,
+    RedisNonceRegistry,
+    RedisVelocityRegistry,
     SigningKey,
     hash_payload,
     public_key_from_b64,
+    redis_client_from_env,
 )
+from mcc_core import redis_keys
 
 
 # ---------- Settings ----------
@@ -94,6 +103,14 @@ class Settings(BaseSettings):
     consensus_trust_config: str = ""
     consensus_threshold: int = 3
     challenge_ttl_seconds: int = 120
+    # Shared governance state backend for the wired /evaluate pipeline:
+    #   "memory" (default) -> process-local in-memory registries (single
+    #                         instance only; replay/idempotency/velocity are NOT
+    #                         shared across processes).
+    #   "redis"            -> Redis-backed shared registries (multi-instance
+    #                         enforcement). Requires MCC_REDIS_URL; refuses to
+    #                         fall back to memory (fail-closed startup).
+    governance_backend: str = "memory"
     # When true, refuse to start without a usable governance configuration —
     # no fail-open: a deployment that asked for governance must not silently
     # run in base mode.
@@ -390,6 +407,51 @@ def _quorum_reason(low: str) -> str:
     return "rejected"
 
 
+@dataclass
+class GovernanceRegistries:
+    """The four shared-state registries the wired pipeline depends on, plus the
+    replay scope they provide (``process-local`` for in-memory, ``shared-redis``
+    for Redis-backed)."""
+    nonce: Any
+    challenge: Any
+    idempotency: Any
+    velocity: Any
+    replay_scope: str
+
+
+def _build_governance_registries(backend: str, env: Mapping[str, str]) -> GovernanceRegistries:
+    """Build the governance registries for the selected backend.
+
+    * ``memory`` -> in-memory, **process-local** (single instance only).
+    * ``redis``  -> Redis-backed, **shared across instances**. Requires
+      ``MCC_REDIS_URL``; a missing/invalid URL raises (fail-closed startup) —
+      there is NO silent fallback to in-memory in an enforcement deployment.
+    """
+    backend = (backend or "memory").strip().lower()
+    if backend in ("memory", "inmemory", "in-memory"):
+        return GovernanceRegistries(
+            nonce=InMemoryNonceRegistry(),
+            challenge=InMemoryChallengeRegistry(),
+            idempotency=InMemoryIdempotencyRegistry(),
+            velocity=InMemoryVelocityRegistry(),
+            replay_scope="process-local",
+        )
+    if backend == "redis":
+        # redis_client_from_env raises RedisConfigError when MCC_REDIS_URL is
+        # absent; we surface that as a startup failure (no fallback).
+        client = redis_client_from_env(env)
+        return GovernanceRegistries(
+            nonce=RedisNonceRegistry(client, namespace=redis_keys.prefix("nonce", env)),
+            challenge=RedisChallengeRegistry(client, namespace=redis_keys.prefix("chal", env)),
+            idempotency=RedisIdempotencyRegistry(client, namespace=redis_keys.prefix("idem", env)),
+            velocity=RedisVelocityRegistry(client, namespace=redis_keys.prefix("vel", env)),
+            replay_scope="shared-redis",
+        )
+    raise RuntimeError(
+        f"unknown MCC_GOVERNANCE_BACKEND={backend!r}; expected 'memory' or 'redis'"
+    )
+
+
 class GovernancePipeline:
     """Wires the in-tree governance modules into the public ``/evaluate``
     entrypoint: gateway-issued **challenge** → N-of-M **quorum**
@@ -397,6 +459,11 @@ class GovernancePipeline:
     **nonce** consume) → **challenge** single-use consume → hash-chain
     **audit**, all orchestrated by the ``EnforcementCoordinator``. Fail-closed
     at every boundary.
+
+    The shared-state registries (nonce / challenge / idempotency / velocity) are
+    injected via ``GovernanceRegistries`` so the pipeline is single-instance
+    (in-memory) or multi-instance (Redis-backed) depending on configuration —
+    with no code path difference and no silent fallback.
 
     NIW honesty constraint — the runtime cryptographically verifies evaluator
     votes from **distinct trusted evaluator identities**: signatures, evaluator
@@ -409,34 +476,25 @@ class GovernancePipeline:
 
     def __init__(self, *, signing_key: SigningKey, engine: DecisionEngine, audit: AuditLog,
                  trusted_evaluators: Dict[str, Any], threshold: int, audience: str,
-                 challenge_ttl: int) -> None:
+                 challenge_ttl: int, registries: GovernanceRegistries) -> None:
         self.engine = engine
         self.policy_hash = engine.policy_hash
         self.threshold = threshold
         self.evaluator_count = len(trusted_evaluators)
+        self.replay_scope = registries.replay_scope
         self.verifier = ConsensusVerifier(
             trusted_keys=trusted_evaluators, policy=ConsensusPolicy(threshold=threshold))
-        # REPLAY-PROTECTION SCOPE (important): the nonce, challenge, idempotency,
-        # and velocity registries below are IN-MEMORY and therefore
-        # **process-local / single-instance**. Replay protection (one-time nonce,
-        # single-use challenge) holds within ONE running process only — it is NOT
-        # shared across processes or hosts. For a multi-instance deployment these
-        # must be swapped for the Redis-backed registries already in the tree
-        # (RedisNonceRegistry / RedisChallengeRegistry / RedisIdempotencyRegistry
-        # / RedisVelocityRegistry). This build makes NO multi-instance guarantee;
-        # /health reports `governance.replay_scope = "process-local"`.
-        self.replay_scope = "process-local"
-        self.nonce_registry = InMemoryNonceRegistry()
+        self.nonce_registry = registries.nonce
         self.gate = ExecutionGate(
             trusted_keys={signing_key.kid: signing_key.public_key()}, audience=audience,
             nonce_registry=self.nonce_registry, policy_hash=engine.policy_hash)
         self.challenges = ChallengeService(
-            InMemoryChallengeRegistry(), default_ttl_seconds=challenge_ttl)
+            registries.challenge, default_ttl_seconds=challenge_ttl)
         # require_consensus + require_challenge => no actuation without a valid
         # quorum bound to a gateway-issued, single-use challenge.
         self.coordinator = EnforcementCoordinator(
-            gate=self.gate, idempotency=InMemoryIdempotencyRegistry(),
-            velocity=InMemoryVelocityRegistry(), audit=audit, profiles=ProfileRegistry(),
+            gate=self.gate, idempotency=registries.idempotency,
+            velocity=registries.velocity, audit=audit, profiles=ProfileRegistry(),
             consensus_verifier=self.verifier, require_consensus=True,
             challenges=self.challenges, require_challenge=True)
 
@@ -569,14 +627,20 @@ class MCC:
         self.governance: Optional[GovernancePipeline] = None
         trusted = _load_evaluator_keys(settings.consensus_trust_config)
         if trusted and self.engine is not None:
+            # Build the shared-state registries for the configured backend.
+            # MCC_GOVERNANCE_BACKEND=redis requires MCC_REDIS_URL and fails
+            # closed at startup if absent (no silent in-memory fallback).
+            registries = _build_governance_registries(settings.governance_backend, os.environ)
             self.governance = GovernancePipeline(
                 signing_key=self.signing_key, engine=self.engine, audit=self.audit,
                 trusted_evaluators=trusted, threshold=settings.consensus_threshold,
                 audience=settings.token_audience, challenge_ttl=settings.challenge_ttl_seconds,
+                registries=registries,
             )
             logger.info(
-                "governance ACTIVE | evaluators=%d | threshold=%d",
+                "governance ACTIVE | evaluators=%d | threshold=%d | backend=%s | replay_scope=%s",
                 len(trusted), settings.consensus_threshold,
+                settings.governance_backend, registries.replay_scope,
             )
         elif settings.require_governance:
             raise RuntimeError(
@@ -865,10 +929,15 @@ async def health():
                 "threshold": mcc.governance.threshold,
                 "pipeline": "challenge -> quorum -> gate -> nonce -> audit",
                 "replay_scope": mcc.governance.replay_scope,
-                "replay_scope_note": "in-memory nonce/challenge/idempotency/velocity "
-                                     "registries: replay protection is single-instance, "
-                                     "not shared across processes/hosts (use the "
-                                     "Redis-backed registries for multi-instance)",
+                "replay_scope_note": (
+                    "shared-redis: nonce/challenge/idempotency/velocity state is "
+                    "shared across instances (multi-instance enforcement)"
+                    if mcc.governance.replay_scope == "shared-redis"
+                    else "process-local: in-memory registries; replay/idempotency/"
+                         "velocity are single-instance only, not shared across "
+                         "processes/hosts (set MCC_GOVERNANCE_BACKEND=redis + "
+                         "MCC_REDIS_URL for multi-instance)"
+                ),
                 "claim": "cryptographically verified evaluator votes from distinct "
                          "trusted evaluator identities; not a guarantee of evaluator "
                          "independence",

@@ -212,6 +212,17 @@ jobs:
           # replayed on the other — through the full coordinator+gate path.
           python scripts/redis_governance_http_smoke.py
 
+      - name: Hardened shared Redis governance state against a real Redis
+        env:
+          MCC_REDIS_URL: redis://127.0.0.1:6379/0
+        run: |
+          # Canonical namespaced keys; nonce single-use cross-instance; idempotency
+          # conflict + single concurrent winner; velocity aggregate enforced across
+          # instances with the ATOMIC LUA reserve under real concurrency; negative
+          # amount rejected. Proves the Lua actually runs in Redis. Exits non-zero
+          # on any miss.
+          python scripts/redis_runtime_smoke.py
+
   invariants:
     runs-on: ubuntu-latest
     steps:

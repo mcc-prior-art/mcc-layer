@@ -336,13 +336,17 @@ def revocation_registry_from_env(env: Optional[Mapping[str, str]] = None):
     if backend in ("memory", "inmemory", "in-memory"):
         return InMemoryRevocationRegistry()
     if backend == "redis":
-        url = env.get("MCC_REDIS_URL", "").strip()
-        if not url:
+        from . import redis_keys
+        from .redis_client import RedisConfigError, redis_client_from_env
+
+        try:
+            client = redis_client_from_env(env)
+        except RedisConfigError as exc:
             raise RevocationConfigError(
                 "MCC_REVOCATION_BACKEND=redis requires MCC_REDIS_URL; refusing to "
-                "fall back to in-memory revocation in an enforcement deployment"
+                f"fall back to in-memory revocation ({exc})"
             )
-        return RedisRevocationRegistry.from_url(url)
+        return RedisRevocationRegistry(client, key=redis_keys.singleton_key("revoked", env))
     raise RevocationConfigError(
         f"unknown MCC_REVOCATION_BACKEND={backend!r}; expected 'memory' or 'redis'"
     )
