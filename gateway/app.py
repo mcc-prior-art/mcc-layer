@@ -50,6 +50,7 @@ from pydantic_settings import BaseSettings
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mcc_core import (  # noqa: E402
+    RUNTIME_VERSION,
     AuditLog,
     AuthorityModel,
     DecisionEngine,
@@ -337,7 +338,7 @@ gateway = Gateway()
 
 app = FastAPI(
     title="MCC-Core Gateway",
-    version="1.0.0-mvp",
+    version=RUNTIME_VERSION,
     description=(
         "Gate-as-a-service: authority-driven verdicts, Ed25519 decision "
         "tokens, append-only signed audit. The interceptor calls /evaluate "

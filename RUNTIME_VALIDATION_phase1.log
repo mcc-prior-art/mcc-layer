@@ -1,0 +1,54 @@
+### MCC-Core v1.11.0 — Phase 1 wired-runtime validation
+### date: 2026-06-25T15:36:40Z | python: Python 3.11.15
+
+===== A. End-to-end governance pipeline through main.py:/evaluate (TestClient) =====
+governance active: True | version: 1.11.0
+
+--- 1. valid 3-of-3 ---
+decision: ALLOW | token: True | quorum: True
+
+--- 2. insufficient quorum (2 votes) ---
+decision: DENY | reason: consensus required: NO_CONSENSUS: 2/3 agreed
+
+--- 3. veto (1 DENY) ---
+decision: DENY | reason: consensus required: VETO: eval-2 voted DENY
+
+--- 4. no votes / no challenge ---
+decision: DENY | reason: no challenge / quorum evidence supplied; fail-closed
+
+--- 5. replayed challenge/nonce (reuse same challenge) ---
+first: ALLOW | replay: DENY | reason: challenge not open (state CONSUMED); fail-closed
+
+--- 6. duplicate evaluator (eval-0 x3) ---
+decision: DENY | reason: consensus required: NO_CONSENSUS: 1/3 agreed
+
+--- 7. non-member evaluator (untrusted key) ---
+decision: DENY | reason: consensus required: NO_CONSENSUS: 2/3 agreed
+
+--- 8. challenge/payload mismatch (votes bound to different payload) ---
+decision: DENY | reason: consensus required: NO_CONSENSUS: 0/3 agreed
+
+ALL GOVERNANCE PIPELINE CHECKS PASSED
+
+===== B. Committed fail-closed test suite (tests/test_runtime_wired.py) =====
+tests/test_runtime_wired.py::test_valid_quorum_allows_with_token PASSED  [  6%]
+tests/test_runtime_wired.py::test_challenge_endpoint_binds_the_operation PASSED [ 13%]
+tests/test_runtime_wired.py::test_insufficient_quorum_denies PASSED      [ 20%]
+tests/test_runtime_wired.py::test_veto_denies PASSED                     [ 26%]
+tests/test_runtime_wired.py::test_no_challenge_or_votes_denies PASSED    [ 33%]
+tests/test_runtime_wired.py::test_replayed_nonce_denies PASSED           [ 40%]
+tests/test_runtime_wired.py::test_duplicate_evaluator_identity_denies PASSED [ 46%]
+tests/test_runtime_wired.py::test_non_member_evaluator_denies PASSED     [ 53%]
+tests/test_runtime_wired.py::test_forged_signature_denies PASSED         [ 60%]
+tests/test_runtime_wired.py::test_challenge_payload_mismatch_denies PASSED [ 66%]
+tests/test_runtime_wired.py::test_unknown_challenge_denies PASSED        [ 73%]
+tests/test_runtime_wired.py::test_expired_challenge_denies PASSED        [ 80%]
+tests/test_runtime_wired.py::test_expired_token_denies PASSED            [ 86%]
+tests/test_runtime_wired.py::test_base_mode_unchanged_without_trust_set PASSED [ 93%]
+tests/test_runtime_wired.py::test_require_governance_without_trust_refuses_startup PASSED [100%]
+======================== 15 passed, 1 warning in 0.49s =========================
+
+===== C. Runtime version drift-guard =====
+DRIFT GUARD OK: runtime version is canonical = 1.11.0
+  runtime entrypoints derive from VERSION: main.py, gateway/app.py, interceptors/egress_proxy.py
+  (frozen/historical v1.10.1, schema, doctrine, and README strings are intentionally NOT inspected)

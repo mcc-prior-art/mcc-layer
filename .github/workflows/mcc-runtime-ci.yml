@@ -245,6 +245,30 @@ jobs:
           grep -q "fsync" src/mcc_core/audit.py
           echo "OK: fsync present in audit log"
 
+      - name: Runtime version drift-guard (canonical VERSION = 1.11.0)
+        run: |
+          # Every product/runtime entrypoint must derive its version from the
+          # single canonical VERSION file (no hardcoded literal). Fails on drift.
+          # Frozen historical (v1.10.1), schema, doctrine, and README strings are
+          # intentionally NOT inspected.
+          python scripts/check_version_drift.py
+          # Negative control: a deliberate hardcoded runtime literal must be caught.
+          cp gateway/app.py /tmp/app.bak
+          sed -i 's/version=RUNTIME_VERSION,/version="9.9.9-drift",/' gateway/app.py
+          if python scripts/check_version_drift.py; then
+            echo "STOP: drift-guard failed to catch a hardcoded runtime version"; cp /tmp/app.bak gateway/app.py; exit 1
+          fi
+          cp /tmp/app.bak gateway/app.py
+          python scripts/check_version_drift.py
+          echo "OK: drift-guard catches runtime drift and passes when canonical"
+
+      - name: Frozen historical version untouched (v1.10.1)
+        run: |
+          # v1.10.1 is frozen historical/exhibit evidence. The runtime
+          # reconciliation must never rewrite it. Confirm it is still present.
+          grep -q "v1.10.1" CLAUDE.md && echo "OK: v1.10.1 frozen reference intact" \
+            || { echo "STOP: frozen v1.10.1 reference was modified"; exit 1; }
+
       - name: No fail-open exception handlers in gate
         run: |
           if grep -rn "except.*ALLOW\|except.*allow" src/mcc_core/gate.py main.py; then
