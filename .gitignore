@@ -14,5 +14,15 @@ htmlcov/
 .venv/
 venv/
 
+# Secrets / private keys — never commit signing-key material.
+# Narrowly scoped to private-key file types and the filenames this repo
+# generates (scripts/generate_signing_key.py -> mcc_signing_key.pem). Public
+# keys are distributed as base64 in JSON/printed output, not as .pem, so these
+# do not hide any legitimate public-key artifact or source file.
+*.pem
+*.key
+id_ed25519
+mcc_signing_key.pem
+
 # OS
 .DS_Store
