@@ -35,6 +35,64 @@ from .profiles import VelocityDescriptor
 DEFAULT_OP_TIMEOUT_SECONDS = 0.5
 
 
+def _finite_nonneg(value: Any) -> bool:
+    """A usable aggregate amount: a real, finite, non-negative number (and not a
+    bool). NaN, infinity, negatives, and non-numerics are rejected so a malformed
+    or hostile amount cannot decrement an aggregate or poison the counter."""
+    import math
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value) and value >= 0
+
+
+# Atomic velocity reservation. The whole check-increment-(refund) decision runs
+# as ONE Redis Lua script, so concurrent callers cannot observe the same old
+# counter and both bypass a ceiling, no partial multi-field state is visible,
+# and a breach refund happens inside the same atomic step (no refund-window
+# race). TTL is set only on first touch of each key (never extended).
+#   KEYS: 1=count 2=sum 3=dests
+#   ARGV: 1=has_count 2=max_count 3=has_amount 4=amount 5=max_amount
+#         6=has_dest 7=destination 8=max_new_dest 9=window_seconds
+_RESERVE_LUA = """
+local window = tonumber(ARGV[9])
+local breaches = {}
+local did_count, did_amount, added_dest = false, false, false
+if ARGV[1] == '1' then
+  local c = redis.call('INCR', KEYS[1])
+  if c == 1 then redis.call('EXPIRE', KEYS[1], window) end
+  did_count = true
+  if tonumber(ARGV[2]) >= 0 and c > tonumber(ARGV[2]) then
+    breaches[#breaches+1] = 'count ' .. c .. ' > max ' .. ARGV[2]
+  end
+end
+if ARGV[3] == '1' and #breaches == 0 then
+  local s = redis.call('INCRBYFLOAT', KEYS[2], ARGV[4])
+  if redis.call('TTL', KEYS[2]) < 0 then redis.call('EXPIRE', KEYS[2], window) end
+  did_amount = true
+  if tonumber(ARGV[5]) >= 0 and tonumber(s) > tonumber(ARGV[5]) then
+    breaches[#breaches+1] = 'amount ' .. s .. ' > max ' .. ARGV[5]
+  end
+end
+if ARGV[6] == '1' and #breaches == 0 then
+  local added = redis.call('SADD', KEYS[3], ARGV[7])
+  if redis.call('TTL', KEYS[3]) < 0 then redis.call('EXPIRE', KEYS[3], window) end
+  added_dest = (added == 1)
+  local card = redis.call('SCARD', KEYS[3])
+  if tonumber(ARGV[8]) >= 0 and card > tonumber(ARGV[8]) then
+    breaches[#breaches+1] = 'new destinations ' .. card .. ' > max ' .. ARGV[8]
+  end
+end
+if #breaches > 0 then
+  if did_count then redis.call('DECR', KEYS[1]) end
+  if did_amount then redis.call('INCRBYFLOAT', KEYS[2], '-' .. ARGV[4]) end
+  if added_dest then redis.call('SREM', KEYS[3], ARGV[7]) end
+  return {0, table.concat(breaches, '; ')}
+end
+return {1, 'ok'}
+"""
+
+
 @dataclass(frozen=True)
 class VelocityLimit:
     """A single aggregate ceiling over a window, scoped by ``aggregate_by``."""
@@ -48,8 +106,17 @@ class VelocityLimit:
     on_exceed: Verdict = Verdict.DENY
 
     def scope_key(self, descriptor: VelocityDescriptor, now: float) -> str:
+        from . import redis_keys
+
         bucket = int(now // self.window_seconds)
-        dims = ":".join(f"{d}={descriptor.dimensions.get(d)}" for d in self.aggregate_by)
+        # Hash each (attacker-controlled) dimension value so raw actor / resource
+        # / beneficiary identifiers are never embedded in a Redis key, and ``:``
+        # injection cannot forge a collision. Distinct values still map to
+        # distinct, stable scopes (isolation preserved).
+        dims = ":".join(
+            f"{d}={redis_keys.hash_component(descriptor.dimensions.get(d))}"
+            for d in self.aggregate_by
+        )
         return f"{self.name}|{dims}|w{bucket}"
 
     @classmethod
@@ -98,6 +165,13 @@ class InMemoryVelocityRegistry:
         self, limit: VelocityLimit, descriptor: VelocityDescriptor, *, now: Optional[float] = None
     ) -> VelocityOutcome:
         now = time.monotonic() if now is None else now
+        use_amount = limit.max_amount is not None and descriptor.amount is not None
+        if use_amount and not _finite_nonneg(descriptor.amount):
+            return VelocityOutcome(
+                Verdict.DENY,
+                f"velocity limit '{limit.name}': invalid amount {descriptor.amount!r}; fail-closed",
+                reserved=False,
+            )
         scope = limit.scope_key(descriptor, now)
         entry = self._bucket(scope, limit.window_seconds, now)
 
@@ -198,59 +272,65 @@ class RedisVelocityRegistry:
         self, limit: VelocityLimit, descriptor: VelocityDescriptor, *, now: Optional[float] = None
     ) -> VelocityOutcome:
         now = time.time() if now is None else now
+
+        # Validate the amount BEFORE any Redis op: a malformed, NaN, infinite,
+        # negative, or non-numeric amount must never reach an INCRBYFLOAT (which
+        # could otherwise decrement the aggregate and bypass the ceiling).
+        use_amount = limit.max_amount is not None and descriptor.amount is not None
+        if use_amount and not _finite_nonneg(descriptor.amount):
+            return VelocityOutcome(
+                Verdict.DENY,
+                f"velocity limit '{limit.name}': invalid amount {descriptor.amount!r}; fail-closed",
+                reserved=False,
+            )
+
+        from . import redis_keys
+
         scope = self._namespace + limit.scope_key(descriptor, now)
         count_key, sum_key, dest_key = scope + ":count", scope + ":sum", scope + ":dests"
-        breaches: List[str] = []
-        did_count = did_amount = False
-        added_dest = False
+        # Hash the destination set member too (no raw beneficiary in Redis).
+        dest = redis_keys.hash_component(descriptor.destination) if descriptor.destination is not None else ""
+        argv = [
+            "1" if limit.max_count is not None else "0",
+            str(limit.max_count if limit.max_count is not None else -1),
+            "1" if use_amount else "0",
+            repr(float(descriptor.amount)) if use_amount else "0",
+            repr(float(limit.max_amount)) if limit.max_amount is not None else "-1",
+            "1" if (limit.max_new_destinations is not None and descriptor.destination is not None) else "0",
+            dest,
+            str(limit.max_new_destinations if limit.max_new_destinations is not None else -1),
+            str(int(limit.window_seconds)),
+        ]
         try:
-            if limit.max_count is not None:
-                post = int(await self._c(self._redis.incr(count_key)))
-                await self._c(self._redis.expire(count_key, limit.window_seconds))
-                did_count = True
-                if post > limit.max_count:
-                    breaches.append(f"count {post} > max {limit.max_count}")
-
-            if limit.max_amount is not None and descriptor.amount is not None and not breaches:
-                post_sum = float(await self._c(self._redis.incrbyfloat(sum_key, descriptor.amount)))
-                await self._c(self._redis.expire(sum_key, limit.window_seconds))
-                did_amount = True
-                if post_sum > limit.max_amount:
-                    breaches.append(f"amount {post_sum} > max {limit.max_amount}")
-
-            if (
-                limit.max_new_destinations is not None
-                and descriptor.destination is not None
-                and not breaches
-            ):
-                added = int(await self._c(self._redis.sadd(dest_key, descriptor.destination)))
-                await self._c(self._redis.expire(dest_key, limit.window_seconds))
-                added_dest = added == 1
-                card = int(await self._c(self._redis.scard(dest_key)))
-                if card > limit.max_new_destinations:
-                    breaches.append(f"new destinations {card} > max {limit.max_new_destinations}")
-
-            if breaches:
-                # Refund anything we reserved before denying.
-                if did_count:
-                    await self._c(self._redis.decr(count_key))
-                if did_amount:
-                    await self._c(self._redis.incrbyfloat(sum_key, -descriptor.amount))
-                if added_dest:
-                    await self._c(self._redis.srem(dest_key, descriptor.destination))
-                return VelocityOutcome(
-                    limit.on_exceed,
-                    f"velocity limit '{limit.name}' exceeded: {'; '.join(breaches)}",
-                    reserved=False,
-                    breaches=breaches,
-                )
+            res = await self._c(self._redis.eval(_RESERVE_LUA, 3, count_key, sum_key, dest_key, *argv))
         except Exception:
             return VelocityOutcome(
                 Verdict.DENY,
                 f"velocity registry unavailable for '{limit.name}'; fail-closed",
                 reserved=False,
             )
-        return VelocityOutcome(Verdict.ALLOW, f"within velocity limit '{limit.name}'", True)
+        # Script returns {1,'ok'} or {0,'breach; breach'}. Anything else is
+        # indeterminate -> fail closed.
+        try:
+            ok = int(res[0]) == 1
+            detail = res[1] if len(res) > 1 else ""
+            if isinstance(detail, bytes):
+                detail = detail.decode("utf-8", "replace")
+        except (TypeError, IndexError, ValueError):
+            return VelocityOutcome(
+                Verdict.DENY,
+                f"velocity limit '{limit.name}': malformed registry response; fail-closed",
+                reserved=False,
+            )
+        if ok:
+            return VelocityOutcome(Verdict.ALLOW, f"within velocity limit '{limit.name}'", True)
+        breaches = [b for b in str(detail).split("; ") if b]
+        return VelocityOutcome(
+            limit.on_exceed,
+            f"velocity limit '{limit.name}' exceeded: {detail}",
+            reserved=False,
+            breaches=breaches,
+        )
 
     async def release(
         self, limit: VelocityLimit, descriptor: VelocityDescriptor, *, now: Optional[float] = None
@@ -280,13 +360,17 @@ def velocity_registry_from_env(env: Optional[Mapping[str, str]] = None):
     if backend in ("memory", "inmemory", "in-memory"):
         return InMemoryVelocityRegistry()
     if backend == "redis":
-        url = env.get("MCC_REDIS_URL", "").strip()
-        if not url:
+        from . import redis_keys
+        from .redis_client import RedisConfigError, redis_client_from_env
+
+        try:
+            client = redis_client_from_env(env)
+        except RedisConfigError as exc:
             raise VelocityConfigError(
                 "MCC_VELOCITY_BACKEND=redis requires MCC_REDIS_URL; refusing to "
-                "fall back to in-memory velocity in an enforcement deployment"
+                f"fall back to in-memory velocity ({exc})"
             )
-        return RedisVelocityRegistry.from_url(url)
+        return RedisVelocityRegistry(client, namespace=redis_keys.prefix("vel", env))
     raise VelocityConfigError(
         f"unknown MCC_VELOCITY_BACKEND={backend!r}; expected 'memory' or 'redis'"
     )
