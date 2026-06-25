@@ -62,6 +62,30 @@ and must survive into sworn NIW documentation.
 | OPA unreachable (pre-existing) | DENY |
 | audit write unconfirmable | DENY |
 
+## 3a. Replay-protection scope (process-local — explicit, no hidden multi-instance claim)
+
+The wired `/evaluate` pipeline (`GovernancePipeline`) uses **in-memory**
+registries:
+
+| Registry | Class | Scope |
+|---|---|---|
+| Nonce (one-time) | `InMemoryNonceRegistry` | **process-local** |
+| Challenge (single-use) | `InMemoryChallengeRegistry` | **process-local** |
+| Idempotency | `InMemoryIdempotencyRegistry` | **process-local** |
+| Velocity | `InMemoryVelocityRegistry` | **process-local** |
+
+Replay protection (one-time nonce, single-use challenge) therefore holds
+**within a single running process only**. It is **not** shared across processes
+or hosts. This build makes **no multi-instance guarantee**, and none is implied
+anywhere in the runtime or docs. `/health` reports
+`governance.replay_scope = "process-local"` with an explicit note.
+
+**Multi-instance deployment** requires swapping in the Redis-backed registries
+already present in the tree (`RedisNonceRegistry`, `RedisChallengeRegistry`,
+`RedisIdempotencyRegistry`, `RedisVelocityRegistry`) so the single-use guarantees
+hold across instances (atomic `SET NX`). That is a follow-up, explicitly out of
+scope for this PR.
+
 ## 4. Acceptance criteria — status
 
 - [x] Import graph: `/evaluate` reaches quorum + challenge + gate + nonce + coordinator (no dead imports).

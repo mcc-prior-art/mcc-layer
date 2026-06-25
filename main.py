@@ -416,6 +416,16 @@ class GovernancePipeline:
         self.evaluator_count = len(trusted_evaluators)
         self.verifier = ConsensusVerifier(
             trusted_keys=trusted_evaluators, policy=ConsensusPolicy(threshold=threshold))
+        # REPLAY-PROTECTION SCOPE (important): the nonce, challenge, idempotency,
+        # and velocity registries below are IN-MEMORY and therefore
+        # **process-local / single-instance**. Replay protection (one-time nonce,
+        # single-use challenge) holds within ONE running process only — it is NOT
+        # shared across processes or hosts. For a multi-instance deployment these
+        # must be swapped for the Redis-backed registries already in the tree
+        # (RedisNonceRegistry / RedisChallengeRegistry / RedisIdempotencyRegistry
+        # / RedisVelocityRegistry). This build makes NO multi-instance guarantee;
+        # /health reports `governance.replay_scope = "process-local"`.
+        self.replay_scope = "process-local"
         self.nonce_registry = InMemoryNonceRegistry()
         self.gate = ExecutionGate(
             trusted_keys={signing_key.kid: signing_key.public_key()}, audience=audience,
@@ -854,6 +864,11 @@ async def health():
                 "evaluator_pool": mcc.governance.evaluator_count,
                 "threshold": mcc.governance.threshold,
                 "pipeline": "challenge -> quorum -> gate -> nonce -> audit",
+                "replay_scope": mcc.governance.replay_scope,
+                "replay_scope_note": "in-memory nonce/challenge/idempotency/velocity "
+                                     "registries: replay protection is single-instance, "
+                                     "not shared across processes/hosts (use the "
+                                     "Redis-backed registries for multi-instance)",
                 "claim": "cryptographically verified evaluator votes from distinct "
                          "trusted evaluator identities; not a guarantee of evaluator "
                          "independence",
