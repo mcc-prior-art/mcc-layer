@@ -225,13 +225,17 @@ def approval_registry_from_env(env: Optional[Mapping[str, str]] = None):
     if backend in ("memory", "inmemory", "in-memory"):
         return InMemoryApprovalRegistry()
     if backend == "redis":
-        url = env.get("MCC_REDIS_URL", "").strip()
-        if not url:
+        from . import redis_keys
+        from .redis_client import RedisConfigError, redis_client_from_env
+
+        try:
+            client = redis_client_from_env(env)
+        except RedisConfigError as exc:
             raise ApprovalConfigError(
                 "MCC_APPROVAL_BACKEND=redis requires MCC_REDIS_URL; refusing to "
-                "fall back to in-memory approvals in an enforcement deployment"
+                f"fall back to in-memory approvals ({exc})"
             )
-        return RedisApprovalRegistry.from_url(url)
+        return RedisApprovalRegistry(client, namespace=redis_keys.prefix("appr", env))
     raise ApprovalConfigError(
         f"unknown MCC_APPROVAL_BACKEND={backend!r}; expected 'memory' or 'redis'"
     )

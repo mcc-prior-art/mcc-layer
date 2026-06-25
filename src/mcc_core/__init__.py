@@ -73,6 +73,11 @@ from .consensus import (
     issue_vote,
 )
 from .policy import PolicyBundle, PolicyBundleError
+from .redis_client import (
+    RedisConfigError,
+    build_redis_client,
+    redis_client_from_env,
+)
 from .version import RUNTIME_VERSION, runtime_version
 from .profiles import (
     ActionProfile,
@@ -172,6 +177,9 @@ __all__ = [
     "velocity_registry_from_env",
     "PolicyBundle",
     "PolicyBundleError",
+    "RedisConfigError",
+    "build_redis_client",
+    "redis_client_from_env",
     "RUNTIME_VERSION",
     "runtime_version",
     "SigningKey",

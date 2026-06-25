@@ -252,13 +252,17 @@ def idempotency_registry_from_env(env: Optional[Mapping[str, str]] = None):
     if backend in ("memory", "inmemory", "in-memory"):
         return InMemoryIdempotencyRegistry()
     if backend == "redis":
-        url = env.get("MCC_REDIS_URL", "").strip()
-        if not url:
+        from . import redis_keys
+        from .redis_client import RedisConfigError, redis_client_from_env
+
+        try:
+            client = redis_client_from_env(env)
+        except RedisConfigError as exc:
             raise IdempotencyConfigError(
                 "MCC_IDEMPOTENCY_BACKEND=redis requires MCC_REDIS_URL; refusing to "
-                "fall back to in-memory idempotency in an enforcement deployment"
+                f"fall back to in-memory idempotency ({exc})"
             )
-        return RedisIdempotencyRegistry.from_url(url)
+        return RedisIdempotencyRegistry(client, namespace=redis_keys.prefix("idem", env))
     raise IdempotencyConfigError(
         f"unknown MCC_IDEMPOTENCY_BACKEND={backend!r}; expected 'memory' or 'redis'"
     )
