@@ -260,6 +260,86 @@ async def scenario_consensus():
     print(f"  executor calls: {ex.count()} (want 1)\n")
 
 
+async def scenario_consensus_escalate():
+    print("== 12. Combined: Consensus + ESCALATE (both predicates required) ==")
+    pool = EvaluatorPool(n=3)
+    ex = MockExecutor()
+    c = _client(ex, consensus_required=True, consensus_threshold=3,
+                trusted_evaluators=pool.trusted_keys())
+    a = Agent("agent/intern")  # no standing mandate -> ESCALATE
+
+    def votes(p, ch, **kw):
+        return pool.unanimous(ch, action=p.action, payload=p.payload, actor=p.actor,
+                              resource=p.resource, policy_hash=c.policy_hash, **kw)
+
+    p = a.propose("transfer_resource", resource="acct-1", payload={"amount": 1000})
+    ch = await c.issue_challenge(p)
+    v = votes(p, ch)
+    # Round 1: a valid 3-of-3 does NOT execute an ESCALATE.
+    r1 = await c.submit(p, challenge=ch, votes=v)
+    print(f"  challenge {ch.challenge_id} issued; 3-of-3 signed")
+    print(f"  Round 1 (consensus only): {r1.verdict}/{'COMPLETED' if r1.executed else 'BLOCKED'} "
+          f"(consensus does NOT turn ESCALATE into ALLOW)")
+    # Operator approves; final execution carries approval AND the same consensus.
+    aid = await c.request_approval(p)
+    await c.approve(aid)
+    print("  Operator approval verified (single-use)")
+    # Approval alone (no consensus) still fails closed.
+    no_consensus = await c.execute_with_approval(p, aid)
+    print(f"  approval WITHOUT consensus -> {no_consensus.verdict}/"
+          f"{'COMPLETED' if no_consensus.executed else 'BLOCKED'} (approval cannot bypass consensus)")
+    r2 = await c.execute_with_approval(p, aid, challenge=ch, votes=v)
+    print(f"  approval AND consensus -> {r2.verdict}/{'COMPLETED' if r2.executed else 'BLOCKED'}")
+    # Replay: approval is single-use even with fresh consensus.
+    ch_r = await c.issue_challenge(p)
+    replay = await c.execute_with_approval(p, aid, challenge=ch_r, votes=votes(p, ch_r))
+    print(f"  replayed approval -> {'COMPLETED' if replay.executed else 'BLOCKED'}")
+    print(f"  executor calls: {ex.count()} (want 1)\n")
+
+
+async def scenario_consensus_constrain():
+    print("== 13. Combined: Consensus + CONSTRAIN (fresh consensus on the clamped body) ==")
+    pool = EvaluatorPool(n=3)
+    ex = MockExecutor()
+    c = _client(ex, consensus_required=True, consensus_threshold=3,
+                trusted_evaluators=pool.trusted_keys())
+    a = Agent("agent/ops")  # transfer mandate, max_amount=5000
+
+    def unanimous(p, ch, payload):
+        return pool.unanimous(ch, action=p.action, payload=payload, actor=p.actor,
+                              resource=p.resource, policy_hash=c.policy_hash)
+
+    # --- happy path: 10000 -> CONSTRAIN to 5000 -> fresh consensus executes 5000 ---
+    p = a.propose("transfer_resource", resource="acct-1", payload={"amount": 10000})
+    ch1 = await c.issue_challenge(p)
+    r1 = await c.submit(p, challenge=ch1, votes=unanimous(p, ch1, p.payload))
+    print(f"  Round 1: proposed amount=10000 -> {r1.verdict}/{r1.status}")
+    print(f"  authority-constrained body: {r1.authorized_payload} "
+          f"(original consensus does NOT authorize it)")
+    constrained = r1.authorized_payload
+    ch2 = await c.issue_challenge(p, payload=constrained)
+    r2 = await c.execute_constrained(p, constrained, challenge=ch2,
+                                     votes=unanimous(p, ch2, constrained))
+    print(f"  Round 2 (fresh challenge + re-consensus on {constrained}): "
+          f"{r2.verdict}/{'COMPLETED' if r2.executed else 'BLOCKED'}")
+    rec = ex.last()
+    print(f"  executor received: {rec.authorized_payload} (clamped; original 10000 never executed)")
+
+    # --- negative (independent proposal): the ORIGINAL votes cannot execute the
+    # clamped body. A fresh proposal keeps its own one-time nonce / idempotency. ---
+    pn = a.propose("transfer_resource", resource="acct-1", payload={"amount": 10000})
+    chn1 = await c.issue_challenge(pn)
+    rn1 = await c.submit(pn, challenge=chn1, votes=unanimous(pn, chn1, pn.payload))
+    clamped = rn1.authorized_payload
+    chn2 = await c.issue_challenge(pn, payload=clamped)
+    # supply the ORIGINAL (10000-bound) votes against the constrained token
+    bad = await c.execute_constrained(pn, clamped, challenge=chn2,
+                                      votes=unanimous(pn, chn1, pn.payload))
+    print(f"  constrained body w/ ORIGINAL votes -> "
+          f"{'COMPLETED' if bad.executed else 'BLOCKED'} (votes bind to the original body)")
+    print(f"  executor calls: {ex.count()} (want 1)\n")
+
+
 async def run_all():
     print("\n" + "=" * 64)
     print("GOVERNED AGENT DEMO — MCC-Core sits between agent and executor")
@@ -277,6 +357,8 @@ async def run_all():
     await scenario_malformed()
     await scenario_direct_bypass()
     await scenario_consensus()
+    await scenario_consensus_escalate()
+    await scenario_consensus_constrain()
     print("Done. No verified decision — no execution.")
 
 

@@ -18,11 +18,15 @@ single-use approval consume), `ApprovalService` (the ESCALATE loop), and the
 nonce / idempotency / velocity / approval registries (in-memory or Redis-backed).
 No governance logic is re-implemented in the example.
 
-There are two governed paths:
+There are three governed paths:
 
 ```
 Basic:               Agent → MCC → Gate → Executor
 Consensus-required:  Agent → Challenge → N-of-M Consensus → MCC → Gate → Executor
+Combined:            Agent → Challenge → N-of-M Consensus → MCC →
+                       ├─ ESCALATE  → +single-use approval → Gate → Executor
+                       └─ CONSTRAIN → +fresh challenge + fresh N-of-M on the
+                                       clamped body → Gate → Executor
 ```
 
 The consensus-required path uses the real `ChallengeService`, `ConsensusVerifier`,
@@ -30,6 +34,12 @@ and the coordinator's `require_consensus` / `require_challenge` gates — there 
 **no demo-only verifier or second consensus engine**. Consensus is an
 *additional required predicate*: it does **not** replace mandate authority,
 approvals, nonce, idempotency, velocity, the gate, or audit.
+
+The **combined** path composes consensus with the two verdicts that need a
+second authorization step. Each predicate is **independent and additive** —
+consensus never turns `ESCALATE` into `ALLOW`, an approval never bypasses
+consensus, and consensus over the *original* body never authorizes a
+`CONSTRAIN`-clamped body. See [Combined consensus flows](#combined-consensus-flows-escalate--constrain).
 
 ## What this proves
 
@@ -136,12 +146,13 @@ sole route to the executor is: propose → decide → enforce → execute.
 # the demo (prints a human-readable trace; memory mode, no services needed)
 python examples/governed_agent/scenarios.py
 
-# the tests
-python -m pytest tests/examples/test_governed_agent.py -q
+# the tests (basic + consensus + combined)
+python -m pytest tests/examples/ -q
 
-# multi-instance against a REAL Redis (the @skipif real-Redis test then runs)
+# multi-instance against a REAL Redis (the @skipif real-Redis tests then run,
+# incl. cross-instance single-use of the consensus challenge)
 redis-server --port 6399 --save "" &
-MCC_REDIS_URL=redis://127.0.0.1:6399/0 python -m pytest tests/examples/test_governed_agent.py -q
+MCC_REDIS_URL=redis://127.0.0.1:6399/0 python -m pytest tests/examples/ -q
 ```
 
 ## Environment variables
@@ -181,6 +192,8 @@ audit-write failure, and Redis-required-but-unavailable.
 | 9 | **Redis required & down** | execution fails closed; no in-memory fallback |
 | 10 | **Malformed/unknown verdict** | never executes |
 | 11 | **Consensus-required** | valid N-of-M → continues to authority/gate/executor; below-threshold / forged / untrusted / duplicate / wrong-challenge / wrong-action / wrong-payload / wrong-actor / expired / veto / replayed-challenge → DENY; valid consensus on a DENY/ESCALATE action still blocks (consensus ≠ bypass) |
+| 12 | **Combined: Consensus + ESCALATE** | valid 3-of-3 does not execute the ESCALATE; approval alone (no consensus) blocked; approval **and** consensus → executes once; replayed approval blocked |
+| 13 | **Combined: Consensus + CONSTRAIN** | original consensus → `RECONSENSUS_REQUIRED` (clamped body exposed, not executed); fresh challenge + fresh consensus on the clamped body → executes the clamped amount once; original votes against the clamped body blocked; original 10000 never executed |
 
 ### Configuration (consensus mode) — explicit and fail-closed
 
@@ -206,20 +219,96 @@ The example drives the **real** runtime end to end, in both modes:
   coordinator's `require_consensus`) → single-use challenge consume
   (`require_challenge`) → the same authority/gate/nonce/idempotency/velocity/
   audit path → executor.
+- **Combined paths (now wired):** consensus composed with the single-use
+  `ApprovalService` (ESCALATE) and with a second challenge + re-consensus over the
+  authority-clamped body (CONSTRAIN). Both predicates are verified independently
+  by the coordinator for the exact executed body — no predicate replaces another,
+  no executor bypass. See [Combined consensus flows](#combined-consensus-flows-escalate--constrain).
+
+## Combined consensus flows (ESCALATE + CONSTRAIN)
+
+When `consensus_required=True`, the two verdicts that demand a *second*
+authorization compose with consensus as **independent, additive predicates** —
+neither replaces the other, and the executor is reached only when **all** of them
+hold for the **exact** body being executed.
+
+### Path A — Consensus + ESCALATE (`execute_with_approval(p, approval_id, challenge=, votes=)`)
+
+```
+propose → gateway challenge → N-of-M votes → submit ⇒ ESCALATE (no execution)
+        → operator approves (single-use, bound to action/txn/payload)
+        → execute_with_approval carries BOTH the approval AND the challenge+votes
+        → coordinator: gate → consensus verify → challenge consume → approval consume
+          → idempotency → velocity → audit-before-actuation → executor
+```
+
+- A valid N-of-M does **not** execute an ESCALATE — `submit` returns `ESCALATE`
+  before any token is issued. Consensus alone cannot stand in for the human grant.
+- The final execution token names **both** `approval_id` **and** `challenge_id`;
+  the coordinator consumes the consensus challenge and the approval independently.
+  Drop either predicate and it fails closed:
+  - approval **without** consensus → blocked (`consensus required …`),
+  - consensus **without** a valid approval → stays `ESCALATE` (approval consume fails),
+  - changed payload, expired/reused approval, replayed challenge, forged /
+    below-threshold votes → blocked.
+- **Which body each predicate binds to:** the challenge, the votes, and the
+  approval are all bound to the **proposed** payload (an ESCALATE is not
+  rewritten), so the token's payload-hash matches all three.
+
+### Path B — Consensus + CONSTRAIN (`execute_constrained(p, constrained_payload, challenge=, votes=)`)
+
+```
+propose(amount=10000) → challenge#1(orig) → N-of-M#1(orig) → submit
+   ⇒ CONSTRAIN, status=RECONSENSUS_REQUIRED, authorized_payload={amount:5000}  (NOT executed)
+gateway challenge#2(clamped) → N-of-M#2(clamped) → execute_constrained
+   → re-evaluate authority on the clamped body (must be a clean ALLOW, no further rewrite)
+   → token over the CLAMPED body → coordinator: gate → consensus verify → challenge
+     consume → idempotency → velocity → audit → executor(amount=5000)
+```
+
+- **Consensus over the original body never authorizes the clamped body.** The
+  first-round challenge/votes bind to `payload_hash(10000)`; a token over
+  `payload_hash(5000)` would mismatch at the consensus verify *and* the challenge
+  consume. Rather than silently fail closed, `submit` surfaces the
+  authority-clamped body with `status="RECONSENSUS_REQUIRED"` and executes
+  nothing — the runtime explicitly distinguishes original vs constrained
+  payload/hash, original vs replacement challenge, original vs replacement votes.
+- **Why a fresh challenge is required:** the gateway issues a **new** one-time
+  challenge bound to the clamped `payload_hash`; evaluators sign **new** votes
+  over the clamped body. Only that re-consensus authorizes the clamped amount.
+- **The original amount is never executed.** `execute_constrained` re-runs
+  authority on `constrained_payload` and requires a clean `ALLOW` with no further
+  rewrite — so resubmitting the original (over-cap) body re-constrains
+  (`forward != input`) and is refused.
+- Negative paths all fail closed: original votes against the clamped token,
+  original/reused challenge, a second challenge bound to the wrong payload, a
+  tampered constrained body, below-threshold / forged / duplicate / expired /
+  vetoed / replayed re-consensus, and re-consensus that nonetheless trips
+  idempotency or velocity.
+
+### Registries: in-memory vs Redis-backed (honest scope)
+
+| State | In-memory (default) | Redis-backed | Multi-instance replay-safe |
+|---|---|---|---|
+| One-time **nonce** (gate) | `InMemoryNonceRegistry` | `RedisNonceRegistry` | ✅ in Redis mode |
+| **Idempotency** | `InMemoryIdempotencyRegistry` | `RedisIdempotencyRegistry` | ✅ in Redis mode |
+| **Velocity** | `InMemoryVelocityRegistry` | `RedisVelocityRegistry` | ✅ in Redis mode |
+| **Approval** consume | `InMemoryApprovalRegistry` | `RedisApprovalRegistry` | ✅ in Redis mode |
+| **Consensus challenge** consume | `InMemoryChallengeRegistry` | `RedisChallengeRegistry` (pass `challenge_registry=`) | ✅ in Redis mode |
+| Consensus **votes** | stateless verify (no stored state) | — | n/a (single-use comes from the one-time challenge nonce) |
+
+The consensus **challenge** consume is Redis-capable: pass a
+`RedisChallengeRegistry` as `challenge_registry=` and the single-use consume holds
+across instances (atomic `SET NX`, fail-closed on backend error). This is
+exercised cross-instance with FakeRedis and against a **real** Redis in
+`tests/examples/test_governed_agent_combined.py`. The consensus **votes**
+themselves carry no server state — their non-replayability comes from the
+one-time challenge nonce, so Redis-backing the challenge is what makes the whole
+consensus evidence package single-use across instances. We do **not** claim any
+multi-instance replay protection beyond the registries marked ✅ above.
 
 ## Current limitations
 
-- **Consensus + `CONSTRAIN`:** consensus is verified over the *proposed* body.
-  If MCC `CONSTRAIN`s (rewrites) the payload, the executed body differs from
-  what the evaluators approved, so the binding no longer matches and it **fails
-  closed** — a *safe* outcome (evaluators never consented to the clamped body),
-  not a silent rewrite. A "re-consent after constraint" flow is a possible
-  follow-up. The consensus demo therefore exercises the `ALLOW` path.
-- **Consensus + ESCALATE approval execution:** with `consensus_required=True`,
-  `execute_with_approval` must also carry challenge + votes (otherwise the
-  coordinator fails closed for missing consensus). The demo shows that valid
-  consensus does **not** turn an ESCALATE into an ALLOW; it does not wire the
-  combined approval+consensus execution (left explicit for the next PR).
 - `ESCALATE` here means "no standing mandate → human approval required." The
   approval is consumed single-use and bound to action/transaction/payload by the
   coordinator; the example relies on that binding rather than re-verifying the

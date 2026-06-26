@@ -217,15 +217,22 @@ class GovernedMCCClient:
 
     # ---- consensus: the gateway issues the challenge (agent never controls it) ----
 
-    async def issue_challenge(self, proposed: ProposedAction):
+    async def issue_challenge(self, proposed: ProposedAction, *,
+                              payload: Optional[Dict[str, Any]] = None):
         """Gateway-issued, one-time, nonce-bound challenge for this proposal.
         Bound to action/actor/resource/payload_hash/policy_hash. The agent does
-        not call this and cannot forge it. Only available in consensus mode."""
+        not call this and cannot forge it. Only available in consensus mode.
+
+        ``payload`` defaults to the proposal's payload. The CONSTRAIN re-consensus
+        path (Path B) passes the *authority-constrained* body here, so the second
+        challenge binds to the clamped payload — a challenge issued for the
+        original (over-cap) body can never authorize the constrained execution."""
         if self.challenges is None:
             raise RuntimeError("challenge service not configured (consensus_required=False)")
+        body = proposed.payload if payload is None else payload
         return await self.challenges.issue(
             action=proposed.action, actor=proposed.actor, resource=proposed.resource,
-            payload_hash=hash_payload(proposed.payload), policy_hash=self.policy_hash)
+            payload_hash=hash_payload(body), policy_hash=self.policy_hash)
 
     # ---- the public submit path ----
 
@@ -273,6 +280,23 @@ class GovernedMCCClient:
                     return self._blocked(
                         "DENY", proposed,
                         "consensus required: missing gateway challenge or evaluator votes; fail-closed")
+                if verdict_value == "CONSTRAIN":
+                    # Path B: the consensus we hold was taken over the ORIGINAL
+                    # (over-cap) body. It does NOT authorize the clamped body, and
+                    # the runtime must not let it: the challenge/votes bind to the
+                    # original payload_hash while the token would carry the
+                    # constrained one — the coordinator would reject the mismatch
+                    # anyway. Rather than silently fail closed, surface the
+                    # authority-constrained body and require a FRESH challenge +
+                    # fresh consensus bound to it (see execute_constrained). The
+                    # original payload is never executed.
+                    return GovernedResult(
+                        verdict="CONSTRAIN", executed=False, status="RECONSENSUS_REQUIRED",
+                        reason=("authority constrained the request; the original consensus does "
+                                "not authorize the constrained body — fresh consensus required"),
+                        proposed_payload=dict(proposed.payload), action=proposed.action,
+                        authorized_payload=dict(forward), applied_changes=list(decision.applied_changes or []),
+                        correlation_id=proposed.correlation_id, transaction_id=proposed.transaction_id)
                 token = self._issue_token(proposed, verdict, forward, decision.constraints,
                                           nonce=challenge.nonce, challenge_id=challenge.challenge_id)
                 result = await self._enforce(token, proposed.action, forward, proposed,
@@ -301,17 +325,42 @@ class GovernedMCCClient:
     async def deny_approval(self, approval_id: str) -> bool:
         return await self.approvals.deny(approval_id)
 
-    async def execute_with_approval(self, proposed: ProposedAction, approval_id: str) -> GovernedResult:
+    async def execute_with_approval(self, proposed: ProposedAction, approval_id: str, *,
+                                    challenge: Optional[Any] = None,
+                                    votes: Optional[Any] = None) -> GovernedResult:
         """Execute an ESCALATEd action against a granted approval. The coordinator
         consumes the approval **single-use**, bound to action/transaction/payload;
-        forged, expired, mismatched, or replayed approvals fail closed here."""
+        forged, expired, mismatched, or replayed approvals fail closed here.
+
+        Path A (consensus + ESCALATE): when consensus is required, the final
+        execution must carry BOTH a valid single-use approval AND a valid N-of-M
+        consensus bound to a gateway-issued ``challenge``. The two predicates are
+        independent and additive — the approval does not bypass consensus, the
+        consensus does not bypass the approval, and the token names both. Missing
+        consensus evidence fails closed here (the approval alone cannot execute)."""
         try:
             forward = dict(proposed.payload)
-            token = self._issue_token(proposed, Verdict.ALLOW, forward, {}, approval_id=approval_id)
-            result = await self._enforce(token, proposed.action, forward, proposed)
+            if self.consensus_required:
+                if challenge is None or not votes:
+                    # An approved ESCALATE still cannot execute without consensus.
+                    return GovernedResult(
+                        verdict="ESCALATE", executed=False, status="BLOCKED",
+                        reason=("consensus required: approved ESCALATE still needs a gateway "
+                                "challenge and N-of-M votes; fail-closed"),
+                        proposed_payload=dict(proposed.payload), action=proposed.action,
+                        correlation_id=proposed.correlation_id,
+                        transaction_id=proposed.transaction_id, approval_request_id=approval_id)
+                token = self._issue_token(
+                    proposed, Verdict.ALLOW, forward, {}, approval_id=approval_id,
+                    nonce=challenge.nonce, challenge_id=challenge.challenge_id)
+                result = await self._enforce(token, proposed.action, forward, proposed,
+                                             consensus_votes=votes)
+            else:
+                token = self._issue_token(proposed, Verdict.ALLOW, forward, {}, approval_id=approval_id)
+                result = await self._enforce(token, proposed.action, forward, proposed)
             out = self._from_actuation("ALLOW", proposed, forward, [], result)
             if not out.executed:
-                # Surface the approval rejection reason explicitly.
+                # Surface the approval/consensus rejection reason explicitly.
                 return GovernedResult(
                     verdict="ESCALATE", executed=False, status="BLOCKED", reason=out.reason,
                     proposed_payload=dict(proposed.payload), action=proposed.action,
@@ -320,6 +369,71 @@ class GovernedMCCClient:
             return out
         except Exception as exc:  # noqa: BLE001
             return self._blocked("ERROR", proposed, f"approval execution error; fail-closed: {type(exc).__name__}")
+
+    # ---- CONSTRAIN re-consensus (Path B) ----
+
+    async def execute_constrained(self, proposed: ProposedAction,
+                                  constrained_payload: Dict[str, Any], *,
+                                  challenge: Optional[Any] = None,
+                                  votes: Optional[Any] = None) -> GovernedResult:
+        """Execute the authority-constrained body against FRESH consensus.
+
+        Path B (consensus + CONSTRAIN): the first round produced a CONSTRAIN over
+        the original (over-cap) request; ``submit`` exposed the clamped body but
+        refused to execute it on the strength of the original consensus. Here the
+        gateway has issued a NEW challenge bound to the constrained body and the
+        evaluators have signed NEW votes over it; this method re-evaluates
+        authority on the constrained body and runs the one governed path.
+
+        Fail-closed guards specific to this path:
+
+        * Authority is re-run on ``constrained_payload``. It must resolve to a
+          clean ALLOW with the SAME body (no further rewrite). That is what
+          forbids passing the original over-cap body here: it would re-constrain
+          (forward != input) and be refused — the original amount never executes.
+        * The token is signed over the constrained body, so its payload-hash binds
+          the challenge consume and the consensus verify to exactly that body.
+          Original votes / the original challenge bind to the original payload-hash
+          and are rejected by the coordinator's mismatch checks.
+        """
+        try:
+            if not self.consensus_required:
+                return self._blocked(
+                    "ERROR", proposed,
+                    "execute_constrained is a consensus-mode path; fail-closed")
+            if challenge is None or not votes:
+                return self._blocked(
+                    "DENY", proposed,
+                    "consensus required: missing gateway challenge or evaluator votes; fail-closed")
+
+            decision = self.authority.evaluate(
+                identity=proposed.actor, action=proposed.action,
+                context=constrained_payload, now=self._now())
+            verdict = getattr(decision, "verdict", None)
+            verdict_value = getattr(verdict, "value", None)
+            if verdict_value not in VERDICTS:
+                return self._blocked("ERROR", proposed, f"unknown verdict {verdict_value!r}; fail-closed")
+            if verdict_value != "ALLOW":
+                # The constrained body must already be within bounds. A residual
+                # CONSTRAIN/DENY/ESCALATE here means the caller did not supply the
+                # authority-clamped body (e.g. resubmitted the original) -> refuse.
+                return self._blocked(
+                    verdict_value, proposed,
+                    f"constrained body is not already compliant (verdict={verdict_value}); fail-closed")
+            forward = dict(decision.forward_context or {})
+            if forward != dict(constrained_payload) or decision.applied_changes:
+                return self._blocked(
+                    "DENY", proposed,
+                    "constrained body would be rewritten again; not the authorized constrained body; fail-closed")
+
+            token = self._issue_token(
+                proposed, Verdict.CONSTRAIN, forward, decision.constraints,
+                nonce=challenge.nonce, challenge_id=challenge.challenge_id)
+            result = await self._enforce(token, proposed.action, forward, proposed,
+                                         consensus_votes=votes)
+            return self._from_actuation("CONSTRAIN", proposed, forward, [], result)
+        except Exception as exc:  # noqa: BLE001
+            return self._blocked("ERROR", proposed, f"constrained execution error; fail-closed: {type(exc).__name__}")
 
     # ---- result mapping ----
 
