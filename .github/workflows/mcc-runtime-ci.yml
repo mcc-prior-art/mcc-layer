@@ -227,11 +227,13 @@ jobs:
         env:
           MCC_REDIS_URL: redis://127.0.0.1:6379/0
         run: |
-          # The end-to-end governed-agent demo: a nonce consumed by one MCC
-          # instance is rejected by a second instance sharing the same real Redis
-          # (the @skipif real-Redis test runs here). pytest is a dev dependency.
+          # The end-to-end governed-agent demo against a real Redis: a nonce
+          # consumed by one MCC instance is rejected by a second instance sharing
+          # the same Redis, and a gateway-issued consensus challenge is single-use
+          # across instances (the @skipif real-Redis tests run here). pytest is a
+          # dev dependency.
           pip install -r requirements-dev.txt
-          pytest tests/examples/test_governed_agent.py -q
+          pytest tests/examples/ -q
 
   invariants:
     runs-on: ubuntu-latest
