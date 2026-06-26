@@ -223,6 +223,16 @@ jobs:
           # on any miss.
           python scripts/redis_runtime_smoke.py
 
+      - name: Governed-agent example multi-instance against a real Redis
+        env:
+          MCC_REDIS_URL: redis://127.0.0.1:6379/0
+        run: |
+          # The end-to-end governed-agent demo: a nonce consumed by one MCC
+          # instance is rejected by a second instance sharing the same real Redis
+          # (the @skipif real-Redis test runs here). pytest is a dev dependency.
+          pip install -r requirements-dev.txt
+          pytest tests/examples/test_governed_agent.py -q
+
   invariants:
     runs-on: ubuntu-latest
     steps:
