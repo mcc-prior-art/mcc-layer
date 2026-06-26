@@ -18,9 +18,23 @@ single-use approval consume), `ApprovalService` (the ESCALATE loop), and the
 nonce / idempotency / velocity / approval registries (in-memory or Redis-backed).
 No governance logic is re-implemented in the example.
 
+There are two governed paths:
+
+```
+Basic:               Agent → MCC → Gate → Executor
+Consensus-required:  Agent → Challenge → N-of-M Consensus → MCC → Gate → Executor
+```
+
+The consensus-required path uses the real `ChallengeService`, `ConsensusVerifier`,
+and the coordinator's `require_consensus` / `require_challenge` gates — there is
+**no demo-only verifier or second consensus engine**. Consensus is an
+*additional required predicate*: it does **not** replace mandate authority,
+approvals, nonce, idempotency, velocity, the gate, or audit.
+
 ## What this proves
 
 - An agent cannot execute on its own authority — **no verified decision, no execution**.
+- The agent never issues its own challenge and never signs evaluator votes — it **cannot self-authorize consensus**. The gateway issues the challenge; an independent `EvaluatorPool` (separate keys) signs votes.
 - There is **no agent→executor path**: the executor is only reachable via the gate/coordinator, and it refuses any call without a verified decision token.
 - All four verdicts behave correctly, including `CONSTRAIN` rewriting the body so the executor receives only the **authorized** payload (never the original unsafe one).
 - Replay (one-time nonce), idempotency (exactly-once + conflicting binding), velocity, and single-use approvals all **fail closed**.
@@ -74,6 +88,38 @@ sequenceDiagram
         Client-->>Agent: COMPLETED (+ audit correlation)
     end
 ```
+
+### Consensus-required path (Mermaid)
+
+```mermaid
+sequenceDiagram
+    actor Agent
+    participant Client as GovernedMCCClient (gateway)
+    participant Pool as EvaluatorPool (independent)
+    participant MCC as ConsensusVerifier + AuthorityModel
+    participant Gate as Gate + Coordinator
+    participant Exec as Mock Executor
+
+    Agent->>Client: propose(action, payload)
+    Client->>Client: issue_challenge (gateway-issued, nonce-bound)
+    Client-->>Pool: challenge (action/actor/resource/payload_hash/policy_hash)
+    Pool-->>Client: N independent signed votes (bound to the challenge nonce)
+    Client->>MCC: enforce(token, votes)
+    MCC->>MCC: verify N-of-M (signatures, identity uniqueness, trust, bindings, expiry, veto)
+    alt below threshold / forged / duplicate / mismatch / expired / veto
+        MCC-->>Agent: BLOCKED (no execution)
+    else valid threshold
+        MCC->>Gate: authority + nonce + challenge consume + idempotency + velocity + audit
+        Gate->>Exec: execute(action, authorized payload, token)
+        MCC-->>Agent: COMPLETED
+    end
+```
+
+What MCC verifies for each vote (the real `ConsensusVerifier` semantics):
+signatures, **evaluator identity uniqueness**, **trust membership**, **N-of-M
+threshold**, binding to **action / payload / actor / resource / policy_hash /
+nonce(challenge)**, the **validity window**, and **veto** (any trusted DENY is
+decisive). The one-time challenge nonce makes the evidence non-replayable.
 
 ## Why the agent cannot execute directly
 
@@ -134,13 +180,46 @@ audit-write failure, and Redis-required-but-unavailable.
 | 8 | **Multi-instance** (shared Redis) | nonce consumed on A → rejected on B |
 | 9 | **Redis required & down** | execution fails closed; no in-memory fallback |
 | 10 | **Malformed/unknown verdict** | never executes |
+| 11 | **Consensus-required** | valid N-of-M → continues to authority/gate/executor; below-threshold / forged / untrusted / duplicate / wrong-challenge / wrong-action / wrong-payload / wrong-actor / expired / veto / replayed-challenge → DENY; valid consensus on a DENY/ESCALATE action still blocks (consensus ≠ bypass) |
+
+### Configuration (consensus mode) — explicit and fail-closed
+
+| Setting | Effect |
+|---|---|
+| `consensus_required=True` | the coordinator runs with `require_consensus` + `require_challenge`: no actuation without a valid N-of-M bound to a gateway-issued, single-use challenge. |
+| `trusted_evaluators` (kid → Ed25519 public key) | the evaluator trust set. **Required** when `consensus_required=True` — absent/empty → startup refused (no silent non-consensus fallback). |
+| `consensus_threshold` (N) | distinct trusted ALLOW votes required; `N > len(trusted_evaluators)` → startup refused. |
+
+The agent does not receive or control any of these; the gateway/runtime owns the
+challenge service and the trust set.
+
+## What is executed in the live runtime path now
+
+The example drives the **real** runtime end to end, in both modes:
+
+- **Basic path:** AuthorityModel verdict → Ed25519 token → ExecutionGate
+  (signature/audience/expiry/payload-hash/one-time nonce) → idempotency →
+  velocity → audit-before-actuation → executor; ESCALATE via the single-use
+  ApprovalService.
+- **Consensus path (now wired):** gateway `ChallengeService.issue` →
+  independent evaluator votes → real `ConsensusVerifier` N-of-M (inside the
+  coordinator's `require_consensus`) → single-use challenge consume
+  (`require_challenge`) → the same authority/gate/nonce/idempotency/velocity/
+  audit path → executor.
 
 ## Current limitations
 
-- The example exercises the **mandate-authority + approval + gate + registries**
-  path. It does **not** drive the N-of-M **consensus / challenge** layer (also
-  in the runtime) — that is left for a focused follow-up; the consensus path has
-  its own tests and evidence (`tests/test_consensus*`, `evidence/consensus_3of3/`).
+- **Consensus + `CONSTRAIN`:** consensus is verified over the *proposed* body.
+  If MCC `CONSTRAIN`s (rewrites) the payload, the executed body differs from
+  what the evaluators approved, so the binding no longer matches and it **fails
+  closed** — a *safe* outcome (evaluators never consented to the clamped body),
+  not a silent rewrite. A "re-consent after constraint" flow is a possible
+  follow-up. The consensus demo therefore exercises the `ALLOW` path.
+- **Consensus + ESCALATE approval execution:** with `consensus_required=True`,
+  `execute_with_approval` must also carry challenge + votes (otherwise the
+  coordinator fails closed for missing consensus). The demo shows that valid
+  consensus does **not** turn an ESCALATE into an ALLOW; it does not wire the
+  combined approval+consensus execution (left explicit for the next PR).
 - `ESCALATE` here means "no standing mandate → human approval required." The
   approval is consumed single-use and bound to action/transaction/payload by the
   coordinator; the example relies on that binding rather than re-verifying the
@@ -150,14 +229,28 @@ audit-write failure, and Redis-required-but-unavailable.
   authority would be a verifiable/signed mandate store (the lookup contract is
   identical).
 
+## Trust / configuration assumptions (consensus mode)
+
+- The runtime verifies **cryptographically signed votes from distinct trusted
+  evaluator identities** — signatures, identity uniqueness, trust membership,
+  threshold, bindings, expiry, veto. It does **not** guarantee organizational,
+  operational, or model-level **independence** of the evaluators; that is a
+  deployment/governance property, not a software guarantee.
+- The evaluator **trust set** (public keys) and the **challenge service** are
+  owned by the gateway/runtime, never the agent. Their integrity is a deployment
+  responsibility; a compromised evaluator key set weakens consensus to the
+  number of honest distinct keys.
+- The decision-token signing key, evaluator keys, and (in Redis mode) Redis must
+  be deployed securely.
+
 ## Residual risks
 
 - Memory mode is single-instance only; multi-instance enforcement **requires**
   Redis mode (and a securely deployed Redis — auth/TLS/network/HA).
 - This demo proves runtime governance behavior; it does **not** claim production
-  certification or that the surrounding deployment is secure.
-- A compromised signing key or Redis would compromise the guarantees — key and
-  state management are deployment responsibilities.
+  certification or that the surrounding deployment is secure. **Not** production-certified.
+- A compromised signing key, evaluator trust set, or Redis would compromise the
+  guarantees — key and state management are deployment responsibilities.
 
 ## Mapping to domains (without making the core domain-specific)
 

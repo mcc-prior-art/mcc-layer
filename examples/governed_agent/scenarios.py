@@ -32,6 +32,7 @@ from mcc_core import (  # noqa: E402
 )
 
 from examples.governed_agent.agent import Agent  # noqa: E402
+from examples.governed_agent.consensus_support import EvaluatorPool  # noqa: E402
 from examples.governed_agent.mcc_client import GovernedMCCClient  # noqa: E402
 from examples.governed_agent.mock_executor import MockExecutor, UnauthorizedExecution  # noqa: E402
 
@@ -213,6 +214,52 @@ async def scenario_direct_bypass():
     print(f"  executor calls: {ex.count()} (want 0)\n")
 
 
+async def scenario_consensus():
+    print("== 11. Consensus-required path (Challenge -> N-of-M -> MCC -> Gate -> Executor) ==")
+    pool = EvaluatorPool(n=3)
+    ex = MockExecutor()
+    c = _client(ex, consensus_required=True, consensus_threshold=3,
+                trusted_evaluators=pool.trusted_keys())
+    a = Agent("agent/ops")
+
+    def votes(p, ch, **kw):
+        return pool.unanimous(ch, action=p.action, payload=p.payload, actor=p.actor,
+                              resource=p.resource, policy_hash=c.policy_hash, **kw)
+
+    # positive: gateway issues the challenge; 3 independent evaluators sign; MCC executes
+    p = a.propose("transfer_resource", resource="acct-1", payload={"amount": 1000})
+    ch = await c.issue_challenge(p)
+    print(f"  Gateway issued challenge: {ch.challenge_id} (nonce withheld from log)")
+    print("  3 independent evaluators signed votes bound to the challenge")
+    r = await c.submit(p, challenge=ch, votes=votes(p, ch))
+    print(f"  MCC verdict: {r.verdict}  Consensus: 3-of-3  Execution: {'COMPLETED' if r.executed else 'BLOCKED'}")
+
+    # below threshold
+    p2 = a.propose("transfer_resource", resource="acct-1", payload={"amount": 1000})
+    ch2 = await c.issue_challenge(p2)
+    r2 = await c.submit(p2, challenge=ch2, votes=votes(p2, ch2, count=2))
+    print(f"  2-of-3 -> Execution: {'COMPLETED' if r2.executed else 'BLOCKED'} ({r2.reason})")
+
+    # veto
+    p3 = a.propose("transfer_resource", resource="acct-1", payload={"amount": 1000})
+    ch3 = await c.issue_challenge(p3)
+    v = votes(p3, ch3)
+    v[2] = pool.sign(pool.evaluators[2], ch3, action=p3.action, payload=p3.payload, actor=p3.actor,
+                     resource=p3.resource, policy_hash=c.policy_hash, verdict="DENY")
+    r3 = await c.submit(p3, challenge=ch3, votes=v)
+    print(f"  veto -> Execution: {'COMPLETED' if r3.executed else 'BLOCKED'}")
+
+    # consensus does not bypass authority
+    pd = a.propose("delete_resource", resource="acct-1", payload={})
+    chd = await c.issue_challenge(pd)
+    rd = await c.submit(pd, challenge=chd, votes=pool.unanimous(
+        chd, action=pd.action, payload=pd.payload, actor=pd.actor, resource=pd.resource,
+        policy_hash=c.policy_hash))
+    print(f"  valid 3-of-3 on a DENY action -> {rd.verdict}/{'COMPLETED' if rd.executed else 'BLOCKED'} "
+          f"(consensus does not bypass authority)")
+    print(f"  executor calls: {ex.count()} (want 1)\n")
+
+
 async def run_all():
     print("\n" + "=" * 64)
     print("GOVERNED AGENT DEMO — MCC-Core sits between agent and executor")
@@ -229,6 +276,7 @@ async def run_all():
     await scenario_redis_failure()
     await scenario_malformed()
     await scenario_direct_bypass()
+    await scenario_consensus()
     print("Done. No verified decision — no execution.")
 
 
