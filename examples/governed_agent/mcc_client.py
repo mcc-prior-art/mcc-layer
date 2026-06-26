@@ -37,10 +37,14 @@ from mcc_core import (
     ApprovalService,
     AuditLog,
     AuthorityModel,
+    ChallengeService,
+    ConsensusPolicy,
+    ConsensusVerifier,
     DecisionEngine,
     EnforcementCoordinator,
     ExecutionGate,
     InMemoryApprovalRegistry,
+    InMemoryChallengeRegistry,
     InMemoryIdempotencyRegistry,
     InMemoryNonceRegistry,
     InMemoryVelocityRegistry,
@@ -111,11 +115,18 @@ class GovernedMCCClient:
         velocity_limits: Optional[List[VelocityLimit]] = None,
         audit_path: Optional[str] = None,
         op_timeout_seconds: float = 2.0,
+        # --- consensus-required mode (Multi-Context Consensus + challenge) ---
+        consensus_required: bool = False,
+        consensus_threshold: int = 3,
+        trusted_evaluators: Optional[Dict[str, Any]] = None,
+        challenge_registry: Optional[Any] = None,
+        challenge_ttl_seconds: int = 120,
     ) -> None:
         self.executor = executor
         self.authority = authority or default_demo_authority()
         self.policy_hash = policy_hash
         self._op_timeout = op_timeout_seconds
+        self.consensus_required = consensus_required
         signing_key = signing_key or SigningKey.generate("mcc-demo-signer")
         self.engine = DecisionEngine(
             signing_key=signing_key, issuer="mcc/demo", audience=audience,
@@ -127,13 +138,37 @@ class GovernedMCCClient:
         self._velocity_limits = list(velocity_limits or [])
         self.approvals = ApprovalService(
             approval_registry or InMemoryApprovalRegistry(), SigningKey.generate("mcc-demo-approver"))
+
+        # Consensus wiring — fail closed if required but unconfigured (no silent
+        # fallback to a non-consensus path).
+        self.challenges: Optional[ChallengeService] = None
+        consensus_verifier = None
+        if consensus_required:
+            if not trusted_evaluators:
+                raise ValueError(
+                    "consensus_required=True but no trusted_evaluators were configured; "
+                    "refusing to start a consensus runtime without a trust set (fail-closed)")
+            if consensus_threshold < 1 or consensus_threshold > len(trusted_evaluators):
+                raise ValueError(
+                    f"consensus_threshold={consensus_threshold} is not satisfiable by "
+                    f"{len(trusted_evaluators)} trusted evaluators; fail-closed")
+            consensus_verifier = ConsensusVerifier(
+                trusted_keys=dict(trusted_evaluators),
+                policy=ConsensusPolicy(threshold=consensus_threshold))
+            self.challenges = ChallengeService(
+                challenge_registry or InMemoryChallengeRegistry(),
+                default_ttl_seconds=challenge_ttl_seconds)
+            self.consensus_threshold = consensus_threshold
+
         self.coordinator = EnforcementCoordinator(
             gate=self.gate,
             idempotency=idempotency_registry or InMemoryIdempotencyRegistry(),
             velocity=velocity_registry or InMemoryVelocityRegistry(),
             audit=self.audit, profiles=ProfileRegistry(),
             velocity_limits_for=lambda action: self._velocity_limits,
-            approvals=self.approvals)
+            approvals=self.approvals,
+            consensus_verifier=consensus_verifier, require_consensus=consensus_required,
+            challenges=self.challenges, require_challenge=consensus_required)
 
     # ---- helpers ----
 
@@ -146,9 +181,13 @@ class GovernedMCCClient:
         return [f for f in REQUIRED_FIELDS if not d.get(f)]
 
     async def _enforce(self, token: Dict[str, Any], action: str, payload: Dict[str, Any],
-                       proposed: ProposedAction):
-        """The single governed execution path: gate -> (approval consume) ->
-        idempotency -> velocity -> audit-before-actuation -> executor."""
+                       proposed: ProposedAction, *, consensus_votes: Optional[Any] = None):
+        """The single governed execution path: gate -> [require_consensus] ->
+        [challenge consume] -> (approval consume) -> idempotency -> velocity ->
+        audit-before-actuation -> executor. When consensus is required the
+        coordinator verifies the N-of-M votes and consumes the challenge before
+        anything else runs — consensus is an *additional* predicate, never a
+        replacement for the rest of the path."""
         async def executor():
             return await self.executor.execute(
                 action, payload, authorization=token, correlation_id=proposed.correlation_id)
@@ -156,27 +195,50 @@ class GovernedMCCClient:
         return await self.coordinator.enforce(
             token=token, action=action, payload=payload, executor=executor,
             request_binding={"actor_id": proposed.actor, "resource_id": proposed.resource,
-                             "transaction_id": proposed.transaction_id})
+                             "transaction_id": proposed.transaction_id},
+            consensus_votes=consensus_votes)
 
     def _issue_token(self, proposed: ProposedAction, verdict: Verdict,
                      forward_context: Dict[str, Any], constraints: Dict[str, Any],
-                     *, audit_ref: Optional[str] = None, approval_id: Optional[str] = None):
+                     *, audit_ref: Optional[str] = None, approval_id: Optional[str] = None,
+                     nonce: Optional[str] = None, challenge_id: Optional[str] = None):
         auth_claims = {"correlation_id": proposed.correlation_id}
         if approval_id:
             auth_claims["approval_id"] = approval_id
+        if challenge_id:
+            auth_claims["challenge_id"] = challenge_id
         return self.engine.issue_token(
             verdict=verdict.value, subject=proposed.actor, action=proposed.action,
-            payload=forward_context, constraints=constraints, nonce=proposed.nonce,
+            payload=forward_context, constraints=constraints,
+            nonce=nonce if nonce is not None else proposed.nonce,
             transaction_id=proposed.transaction_id, idempotency_key=proposed.idempotency_key,
             actor_id=proposed.actor, resource_id=proposed.resource,
             auth_claims=auth_claims, audit_ref=audit_ref)
 
+    # ---- consensus: the gateway issues the challenge (agent never controls it) ----
+
+    async def issue_challenge(self, proposed: ProposedAction):
+        """Gateway-issued, one-time, nonce-bound challenge for this proposal.
+        Bound to action/actor/resource/payload_hash/policy_hash. The agent does
+        not call this and cannot forge it. Only available in consensus mode."""
+        if self.challenges is None:
+            raise RuntimeError("challenge service not configured (consensus_required=False)")
+        return await self.challenges.issue(
+            action=proposed.action, actor=proposed.actor, resource=proposed.resource,
+            payload_hash=hash_payload(proposed.payload), policy_hash=self.policy_hash)
+
     # ---- the public submit path ----
 
-    async def submit(self, proposed: ProposedAction) -> GovernedResult:
+    async def submit(self, proposed: ProposedAction, *, challenge: Optional[Any] = None,
+                     votes: Optional[Any] = None) -> GovernedResult:
         """Submit a proposed action. Returns a non-executing result for DENY /
         ESCALATE / any fail-closed condition; executes once (through the gate)
-        for ALLOW / CONSTRAIN."""
+        for ALLOW / CONSTRAIN.
+
+        In consensus mode a gateway-issued ``challenge`` and N-of-M evaluator
+        ``votes`` are required: the coordinator verifies the consensus and
+        consumes the challenge as part of the same governed path. Missing
+        challenge/votes fail closed."""
         try:
             missing = self._missing_fields(proposed)
             if missing:
@@ -202,10 +264,22 @@ class GovernedMCCClient:
                     correlation_id=proposed.correlation_id, transaction_id=proposed.transaction_id)
 
             # ALLOW or CONSTRAIN -> issue token over the AUTHORIZED body and run
-            # the one governed path.
+            # the one governed path. Consensus, when required, is enforced inside
+            # that same path (it does not bypass authority, gate, nonce, idem,
+            # velocity, or audit).
             forward = dict(decision.forward_context or proposed.payload)
-            token = self._issue_token(proposed, verdict, forward, decision.constraints)
-            result = await self._enforce(token, proposed.action, forward, proposed)
+            if self.consensus_required:
+                if challenge is None or not votes:
+                    return self._blocked(
+                        "DENY", proposed,
+                        "consensus required: missing gateway challenge or evaluator votes; fail-closed")
+                token = self._issue_token(proposed, verdict, forward, decision.constraints,
+                                          nonce=challenge.nonce, challenge_id=challenge.challenge_id)
+                result = await self._enforce(token, proposed.action, forward, proposed,
+                                             consensus_votes=votes)
+            else:
+                token = self._issue_token(proposed, verdict, forward, decision.constraints)
+                result = await self._enforce(token, proposed.action, forward, proposed)
             return self._from_actuation(verdict_value, proposed, forward, decision.applied_changes, result)
         except Exception as exc:  # noqa: BLE001 — any failure is fail-closed
             return self._blocked("ERROR", proposed, f"runtime error; fail-closed: {type(exc).__name__}")
