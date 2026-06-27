@@ -200,6 +200,13 @@ mcc-layer/
 ├── pilot/                     ← supported pilot runtime package (thin surface; no governance logic)
 │   ├── client.py              ← MCCGatewayClient: typed HTTP SDK (propose→verdict, approvals, consensus; governed /…/execute only)
 │   └── outbound_executor.py   ← OutboundHTTPExecutor: the governed side effect (real POST; refuses unsigned/ungoverned)
+├── egress_proxy/              ← enforced outbound HTTP egress proxy (enforcement adapter; embeds the runtime, no parallel engine)
+│   ├── app.py                 ← POST /v1/http/execute + /v1/approvals/* + /health + /ready; build_app(settings) factory; four outcomes
+│   ├── canonical_action.py    ← flat canonical HTTP action + hash_payload binding; reconstruct; clamp-stable (no stale body hash)
+│   ├── ssrf.py                ← destination safety: scheme/creds/port + loopback/link-local/multicast/private rejection + IP pinning
+│   ├── executor.py            ← HTTPEgressExecutor: the ONLY outbound call (verified token required; SSRF re-check; size/timeout limits)
+│   ├── runtime.py             ← embeds GovernedMCCClient (egress AuthorityModel + registries-from-env); no decision logic
+│   ├── config.py / models.py  ← EgressSettings (trusted config) + strict request/response schemas
 ├── deploy/
 │   └── pilot/                 ← pilot Docker Compose deployment (gateway + Redis + echo upstream)
 │       ├── Dockerfile / docker-compose.yml ← fail-closed startup; health + /ready readiness gate
@@ -207,6 +214,8 @@ mcc-layer/
 │       ├── generate_pilot_config.py ← generate signing/evaluator keys + trust configs (public keys only)
 │       ├── pilot_driver.py    ← runbook driver: four verdicts + consensus execute over HTTP via the SDK
 │       ├── echo_upstream.py   ← governed-but-external echo service for the demo
+│       ├── Dockerfile.egress  ← egress proxy image (src+gateway+egress_proxy+examples)
+│       ├── egress_agent.py    ← compose reference agent: proves direct egress blocked, governed egress works
 │       └── RUNBOOK.md         ← deterministic: startup, config, each path, audit inspection, teardown
 ├── config/
 │   └── trust.pilot.example.json ← pilot multi-issuer trust config example (public keys only)
@@ -220,7 +229,8 @@ mcc-layer/
 │   ├── egress_proxy_demo.py   ← live E2E: agent → proxy → upstream (ALLOW reaches, DENY blocked)
 │   ├── transaction_governance_demo.py ← live E2E: idempotency dedup + cumulative ceiling through gateway+coordinator proxy
 │   ├── governance_http_demo.py ← live E2E HTTP: mandate execute/revoke + ESCALATE approve→single-use over the real gateway
-│   └── pilot_reference_integration.py ← reference: agent outbound HTTP via real runtime; ALLOW/DENY/ESCALATE/CONSTRAIN-re-consensus; no bypass
+│   ├── pilot_reference_integration.py ← reference: agent outbound HTTP via real runtime; ALLOW/DENY/ESCALATE/CONSTRAIN-re-consensus; no bypass
+│   └── enforced_egress_agent.py ← reference: outbound HTTP only via the egress proxy; four outcomes + replay/tamper/no-bypass over HTTP
 ├── scripts/
 │   ├── generate_signing_key.py ← Ed25519 key generator (PKCS8 PEM, mode 0600)
 │   ├── redis_nonce_smoke.py    ← E2E: two gates share one Redis → cross-instance replay rejected
@@ -241,6 +251,7 @@ mcc-layer/
 │   ├── MULTI_CONTEXT_CONSENSUS.md ← N-of-M signed evaluator consensus: votes, policy, /consensus HTTP, deployment
 │   ├── CONSENSUS_CHALLENGE.md ← gateway-issued one-time nonce: challenge handshake, single-use consume, binding/rejection table, MCC_REQUIRE_CHALLENGE
 │   ├── unified-governance-runtime.md ← one runtime: architecture + state-machine + 3 sequence diagrams, path table, modified-payload→new-consensus invariant
+│   ├── enforced-http-egress-proxy.md ← egress proxy: architecture/lifecycle/4 sequences, canonicalization+hash binding, SSRF, Docker network model + honest limits
 │   ├── MIGRATION_NOTES.md     ← backward-compatibility + migration notes for the governance layers
 │   └── exhibits/              ← NIW exhibits (protected)
 ├── proof/
@@ -276,6 +287,10 @@ mcc-layer/
     ├── test_pilot_startup.py  ← pilot fail-closed startup (no trust / no verifier refused) + /ready Redis-required helpers
     ├── test_pilot_driver.py   ← runbook driver: consensus execute over the SDK reaches upstream; votes bind to nonce + policy hash
     ├── examples/test_pilot_reference_integration.py ← outbound-HTTP reference: four paths + re-consensus + no-bypass + Redis fail-closed
+    ├── _egress_harness.py     ← egress test harness: live upstream + evaluator pool + build_app driver
+    ├── test_egress_canonical.py ← canonicalization/hash binding: equivalence-stable, tamper-sensitive, clamp re-canonicalizes
+    ├── test_egress_ssrf.py    ← SSRF: loopback/private/link-local/multicast/IPv6/rebinding/creds/scheme/port fail-closed
+    ├── examples/test_enforced_egress.py ← E2E egress: ALLOW/DENY/ESCALATE+approval/CONSTRAIN-re-consensus, replay, tamper, no-bypass, Redis fail-closed
     └── opa_test_vectors.json
 ```
 
