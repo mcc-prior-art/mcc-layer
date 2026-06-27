@@ -1,0 +1,104 @@
+# MCC-Core pilot deployment: the unified governance runtime (gateway) + Redis.
+#
+# Fail-closed by construction:
+#   * MCC_ENV=pilot requires a valid mandate trust set (MCC_TRUST_CONFIG) — a
+#     missing/empty/malformed config refuses startup.
+#   * MCC_REQUIRE_CONSENSUS=1 requires a consensus verifier (MCC_CONSENSUS_TRUST_CONFIG)
+#     — set but unconfigured refuses startup (no fail-open).
+#   * The Redis-backed registries require MCC_REDIS_URL — absent refuses startup,
+#     and an unreachable Redis makes /ready report not-ready (no in-memory fallback).
+#   * The gateway reaches "ready" only once Redis is reachable and the trust /
+#     verifier / signing material is loaded.
+#
+# Secrets (signing keys) and trust configs are generated locally and mounted
+# read-only; nothing secret is committed. Run first:
+#   python deploy/pilot/generate_pilot_config.py
+#   cp deploy/pilot/.env.example deploy/pilot/.env   # then set the API keys
+#
+# Then:
+#   docker compose -f deploy/pilot/docker-compose.yml up --build
+
+services:
+  redis:
+    image: redis:7-alpine
+    # Persistence off for a pilot; the audit chain (not Redis) is the system of record.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # The external service the agent ultimately calls. It only sees traffic MCC
+  # has authorized and forwarded through the one governed path.
+  upstream-echo:
+    build:
+      context: ../..
+      dockerfile: deploy/pilot/Dockerfile
+    command: ["uvicorn", "echo_upstream:app", "--host", "0.0.0.0", "--port", "9100"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9100/healthz').status==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mcc-gateway:
+    build:
+      # Build from the repository root so src/ + gateway/ are in the context.
+      context: ../..
+      dockerfile: deploy/pilot/Dockerfile
+    env_file:
+      - .env
+    environment:
+      # --- runtime mode ---
+      MCC_ENV: "pilot"
+      MCC_GATEWAY_MODE: "inline"
+      MCC_GATEWAY_AUDIT_LOG_PATH: "/data/audit.jsonl"
+
+      # --- signing (mounted; not committed) ---
+      MCC_GATEWAY_SIGNING_KEY_PATH: "/secrets/gateway_signing.pem"
+      MCC_GATEWAY_SIGNING_KEY_ID: "gateway_signing"
+      MCC_APPROVER_SIGNING_KEY_PATH: "/secrets/approver_signing.pem"
+      MCC_APPROVER_KEY_ID: "approver_signing"
+
+      # --- mandate trust set (public keys; required in pilot) ---
+      MCC_TRUST_CONFIG: "/secrets/trust.pilot.json"
+
+      # --- mandatory Multi-Context Consensus + gateway-issued challenge ---
+      MCC_REQUIRE_CONSENSUS: "1"
+      MCC_REQUIRE_CHALLENGE: "1"
+      MCC_CONSENSUS_TRUST_CONFIG: "/secrets/consensus_trust.json"
+      MCC_CONSENSUS_THRESHOLD: "3"
+
+      # --- shared, multi-instance state on Redis (no in-memory fallback) ---
+      MCC_REDIS_URL: "redis://redis:6379/0"
+      MCC_NONCE_BACKEND: "redis"
+      MCC_IDEMPOTENCY_BACKEND: "redis"
+      MCC_VELOCITY_BACKEND: "redis"
+      MCC_APPROVAL_BACKEND: "redis"
+      MCC_CHALLENGE_BACKEND: "redis"
+      MCC_REVOCATION_BACKEND: "redis"
+
+      # --- the external service governed execution forwards to ---
+      MCC_UPSTREAM_BASE: "http://upstream-echo:9100"
+    volumes:
+      - ./secrets:/secrets:ro
+      - mcc-audit:/data
+    ports:
+      - "8001:8001"
+    depends_on:
+      redis:
+        condition: service_healthy
+      upstream-echo:
+        condition: service_healthy
+    healthcheck:
+      # Readiness gate: 200 only when Redis is reachable and trust/verifier/signing
+      # are loaded. Until then the container is "starting", not "healthy".
+      test: ["CMD", "python", "-c", "import sys,urllib.request;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/ready').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  mcc-audit:

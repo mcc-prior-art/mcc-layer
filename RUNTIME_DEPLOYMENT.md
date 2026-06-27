@@ -4,6 +4,14 @@ Operational notes for running the MCC-Core runtime (`main.py` + `src/mcc_core/`)
 outside of development. The runtime is fail-closed by design: every condition
 listed below resolves to denial, never to silent permission.
 
+> **Pilot quick start:** for a ready-to-run gateway + Redis deployment with
+> fail-closed startup, health/readiness, and a deterministic walkthrough of every
+> governance path, see **`deploy/pilot/`** and **`deploy/pilot/RUNBOOK.md`**. For
+> the architecture (one runtime; ALLOW/DENY/ESCALATE/CONSTRAIN; the
+> modified-payload→new-consensus invariant) see
+> **`docs/unified-governance-runtime.md`**. The supported Python client is
+> **`pilot.client.MCCGatewayClient`**.
+
 ---
 
 ## Ed25519 signing key (required for production)
