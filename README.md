@@ -352,6 +352,16 @@ WITH MCC:
 BLOCKED: Destructive action blocked
 ```
 
+**Enforced outbound HTTP egress proxy.** MCC-Core can be the enforced execution
+boundary for outbound HTTP: an application's external request is canonicalized,
+governed by the unified runtime, and executed only after a verified decision. See
+[docs/enforced-http-egress-proxy.md](docs/enforced-http-egress-proxy.md). Run the
+pilot (gateway + Redis + egress proxy + upstream + reference agent):
+
+```bash
+docker compose -f deploy/pilot/docker-compose.yml up --build
+```
+
 ## Without MCC / With MCC
 
 Mobile-safe comparison:

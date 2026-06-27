@@ -18,11 +18,28 @@
 # Then:
 #   docker compose -f deploy/pilot/docker-compose.yml up --build
 
+# Networks model the enforced boundary (see deploy/pilot/RUNBOOK.md and
+# docs/enforced-http-egress-proxy.md for what this does and does NOT guarantee):
+#   * app_frontend   — the reference agent and the egress proxy ONLY. The agent
+#                      has no route to the upstream or to Redis.
+#   * egress_external — the egress proxy, the gateway, and the upstream. Only the
+#                      proxy/gateway can reach the upstream.
+#   * mcc_internal    — Redis + the governed runtimes (proxy/gateway). Internal.
+# Docker Compose demonstrates the boundary; production isolation also requires
+# orchestrator/network policy (Kubernetes NetworkPolicy, a service mesh, or a
+# firewalled egress subnet).
+networks:
+  app_frontend:
+  egress_external:
+  mcc_internal:
+    internal: true
+
 services:
   redis:
     image: redis:7-alpine
     # Persistence off for a pilot; the audit chain (not Redis) is the system of record.
     command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks: [mcc_internal]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -30,12 +47,14 @@ services:
       retries: 10
 
   # The external service the agent ultimately calls. It only sees traffic MCC
-  # has authorized and forwarded through the one governed path.
+  # has authorized and forwarded through the one governed path. It is NOT on
+  # app_frontend, so the reference agent has no direct route to it.
   upstream-echo:
     build:
       context: ../..
       dockerfile: deploy/pilot/Dockerfile
     command: ["uvicorn", "echo_upstream:app", "--host", "0.0.0.0", "--port", "9100"]
+    networks: [egress_external]
     healthcheck:
       test: ["CMD", "python", "-c", "import sys,urllib.request;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9100/healthz').status==200 else 1)"]
       interval: 5s
@@ -81,6 +100,7 @@ services:
 
       # --- the external service governed execution forwards to ---
       MCC_UPSTREAM_BASE: "http://upstream-echo:9100"
+    networks: [mcc_internal, egress_external]
     volumes:
       - ./secrets:/secrets:ro
       - mcc-audit:/data
@@ -100,5 +120,67 @@ services:
       retries: 12
       start_period: 10s
 
+  # The enforced outbound HTTP egress proxy. It bridges app_frontend (the agent)
+  # and egress_external (the upstream): the ONLY path from the agent to the
+  # upstream. Runs in non-consensus authority mode for a one-shot demo; the full
+  # consensus + re-consensus path is in the test suite + examples/enforced_egress_agent.py.
+  mcc-egress-proxy:
+    build:
+      context: ../..
+      dockerfile: deploy/pilot/Dockerfile.egress
+    env_file:
+      - .env
+    environment:
+      MCC_EGRESS_MCC_ENV: "pilot"
+      MCC_EGRESS_ALLOWED_HOSTS: "upstream-echo"
+      MCC_EGRESS_ALLOWED_METHODS: "get,post"
+      MCC_EGRESS_MAX_AMOUNT: "5000"
+      # Container networking uses private IPs; the host allow-list still pins the
+      # destination. Production with public upstreams keeps this off.
+      MCC_EGRESS_ALLOW_PRIVATE: "true"
+      MCC_EGRESS_REQUIRE_CONSENSUS: "false"
+      MCC_EGRESS_AUDIT_LOG_PATH: "/data/egress-audit.jsonl"
+      MCC_REDIS_URL: "redis://redis:6379/0"
+      MCC_NONCE_BACKEND: "redis"
+      MCC_IDEMPOTENCY_BACKEND: "redis"
+      MCC_VELOCITY_BACKEND: "redis"
+      MCC_APPROVAL_BACKEND: "redis"
+      MCC_CHALLENGE_BACKEND: "redis"
+    networks: [app_frontend, egress_external, mcc_internal]
+    volumes:
+      - mcc-egress-audit:/data
+    ports:
+      - "8090:8090"
+    depends_on:
+      redis:
+        condition: service_healthy
+      upstream-echo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/ready').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # Reference agent: on app_frontend ONLY -> no route to the upstream except via
+  # the proxy. Proves direct egress is blocked and governed egress works.
+  reference-egress-agent:
+    build:
+      context: ../..
+      dockerfile: deploy/pilot/Dockerfile.egress
+    command: ["python", "/app/egress_agent.py"]
+    env_file:
+      - .env
+    environment:
+      MCC_EGRESS_PROXY_URL: "http://mcc-egress-proxy:8090"
+      MCC_UPSTREAM_DIRECT: "http://upstream-echo:9100/charge"
+      MCC_UPSTREAM_VIA_PROXY: "http://upstream-echo:9100/charge"
+    networks: [app_frontend]
+    depends_on:
+      mcc-egress-proxy:
+        condition: service_healthy
+
 volumes:
   mcc-audit:
+  mcc-egress-audit:

@@ -66,6 +66,22 @@ jobs:
           # sent and a direct executor call is refused. Exits non-zero on any miss.
           python examples/pilot_reference_integration.py
 
+      - name: Enforced egress proxy smoke (consensus + re-consensus, no bypass)
+        run: |
+          # Drives the enforced egress proxy over HTTP: ALLOW / DENY /
+          # ESCALATE->approve / CONSTRAIN->new-hash->re-consensus / replay /
+          # tamper / no-bypass. Asserts the upstream receives ONLY authorized
+          # actions and never the original over-cap body. Exits non-zero on any miss.
+          python examples/enforced_egress_agent.py
+
+      - name: Validate the pilot Docker Compose configuration
+        run: |
+          # The pilot compose now includes the egress proxy + isolated networks.
+          # Validate it parses/interpolates without standing the stack up.
+          cp deploy/pilot/.env.example deploy/pilot/.env
+          docker compose -f deploy/pilot/docker-compose.yml config -q
+          echo "compose config OK"
+
   consensus-evidence:
     runs-on: ubuntu-latest
     steps:

@@ -1,0 +1,26 @@
+# MCC-Core enforced egress proxy image — the embedded unified runtime as an
+# outbound HTTP enforcement boundary.
+#
+# Build context is the repository root (the compose file sets it).
+FROM python:3.11-slim
+
+RUN useradd --create-home --uid 10002 mcc
+WORKDIR /app
+
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# The runtime, the gateway adapters it reuses, the embedded governed client, and
+# the egress proxy. No keys/secrets are copied in; mounted at runtime.
+COPY src /app/src
+COPY gateway /app/gateway
+COPY egress_proxy /app/egress_proxy
+COPY examples /app/examples
+COPY deploy/pilot/egress_agent.py /app/egress_agent.py
+
+RUN mkdir -p /data && chown -R mcc:mcc /data /app
+USER mcc
+
+EXPOSE 8090
+
+CMD ["uvicorn", "egress_proxy.app:app", "--host", "0.0.0.0", "--port", "8090"]
