@@ -155,9 +155,13 @@ DNS-rebinding window):
 
 - only `http`/`https`; embedded credentials rejected; malformed/ambiguous URLs
   rejected; hostnames normalized; ports validated;
-- loopback, link-local, multicast, unspecified, reserved, and private addresses
-  rejected **by default** (every resolved IP must pass — one bad IP rejects the
-  host); IPv4-mapped IPv6 classified by the embedded v4;
+- **only globally routable public destinations are allowed by default.** Loopback,
+  link-local, multicast, unspecified, reserved, private, and **CGNAT / shared
+  address space (RFC 6598, `100.64.0.0/10`)** are rejected — and a final
+  `is_global` gate catches any non-public range the individual predicates miss
+  (we do not rely on `is_private` alone, which varies by Python version). Every
+  resolved IP must pass (one bad IP rejects the host); IPv4-mapped IPv6 is
+  classified by the embedded v4;
 - redirects disabled by default;
 - restrictions configurable only through trusted deployment config
   (`allowed_hosts`, `allowed_ports`, and explicit `allow_loopback`/`allow_private`

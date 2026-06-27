@@ -23,6 +23,10 @@ from typing import Callable, List, Optional, Tuple
 # logic is deterministically testable without real DNS.
 Resolver = Callable[[str, int], List[Tuple[int, str]]]
 
+# RFC 6598 carrier-grade NAT / shared address space. Not flagged private by every
+# Python ``ipaddress`` version, so we deny it explicitly (not just via is_private).
+SHARED_ADDRESS_SPACE_V4 = ipaddress.ip_network("100.64.0.0/10")
+
 
 class SSRFError(ValueError):
     """A destination was rejected by the SSRF / destination-safety checks."""
@@ -30,7 +34,11 @@ class SSRFError(ValueError):
 
 @dataclass(frozen=True)
 class DestinationPolicy:
-    """Trusted deployment configuration for allowed destinations (fail-closed)."""
+    """Trusted deployment configuration for allowed destinations (fail-closed).
+
+    Default posture: only globally routable public destinations are allowed. The
+    overrides below re-admit specific non-public classes for dev/containers
+    (``allow_private`` also re-admits CGNAT / RFC 6598 shared address space)."""
 
     allow_loopback: bool = False
     allow_link_local: bool = False
@@ -59,23 +67,37 @@ def _default_resolver(host: str, port: int) -> List[Tuple[int, str]]:
 
 
 def _classify_reject(ip: ipaddress._BaseAddress, policy: DestinationPolicy) -> Optional[str]:
-    """Return a rejection reason for an IP under the policy, or None if allowed."""
+    """Return a rejection reason for an IP under the policy, or None if allowed.
+
+    Default posture: **only globally routable public destinations are allowed.**
+    Every non-global class (loopback, link-local, multicast, unspecified, reserved,
+    private, CGNAT/shared, documentation, benchmarking, 6to4 relay anycast, …) is
+    denied unless an explicit trusted override permits that class. We do not rely
+    on ``is_private`` alone — the final ``is_global`` gate catches ranges that
+    individual predicates miss (and varies by Python version)."""
+    # IPv4-mapped IPv6 (::ffff:a.b.c.d) — classify the embedded v4.
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return _classify_reject(ip.ipv4_mapped, policy)
     if ip.is_unspecified:
         return "unspecified address rejected"
     if ip.is_multicast:
         return "multicast address rejected"
-    if ip.is_loopback and not policy.allow_loopback:
-        return "loopback address rejected"
-    if ip.is_link_local and not policy.allow_link_local:
-        return "link-local address rejected"
+    if ip.is_loopback:
+        return None if policy.allow_loopback else "loopback address rejected"
+    if ip.is_link_local:
+        return None if policy.allow_link_local else "link-local address rejected"
+    # CGNAT / shared address space (RFC 6598). Deny by default; overridable only
+    # via the explicit private override (it is non-public, shared infrastructure).
+    if isinstance(ip, ipaddress.IPv4Address) and ip in SHARED_ADDRESS_SPACE_V4:
+        return None if policy.allow_private else "shared/CGNAT (100.64.0.0/10) address rejected"
+    if ip.is_private:
+        return None if policy.allow_private else "private address rejected"
     if getattr(ip, "is_reserved", False):
         return "reserved address rejected"
-    # is_private in Python includes loopback/link-local; we've handled those.
-    if ip.is_private and not (ip.is_loopback or ip.is_link_local) and not policy.allow_private:
-        return "private address rejected"
-    # IPv4-mapped IPv6 (::ffff:a.b.c.d) — classify the embedded v4.
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        return _classify_reject(ip.ipv4_mapped, policy)
+    # Default-deny: anything not globally routable is refused even if no specific
+    # predicate above matched it.
+    if not ip.is_global:
+        return "non-global (not publicly routable) address rejected"
     return None
 
 

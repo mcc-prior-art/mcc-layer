@@ -12,10 +12,41 @@ def _resolver(ip):
 @pytest.mark.parametrize("ip", [
     "127.0.0.1", "169.254.169.254", "0.0.0.0", "10.1.2.3", "192.168.1.1",
     "172.16.0.1", "224.0.0.1", "::1", "fe80::1",
+    # CGNAT / shared address space (RFC 6598).
+    "100.64.0.1", "100.127.255.255",
+    # Non-global / special-use that must not be reachable by default.
+    "192.0.2.1", "198.18.0.1", "240.0.0.1",
 ])
 def test_dangerous_literals_rejected_by_default(ip):
     with pytest.raises(SSRFError):
         validate_destination(ip, 80)
+
+
+@pytest.mark.parametrize("ip", ["100.64.0.1", "100.64.10.10", "100.127.255.254"])
+def test_cgnat_denied_by_default(ip):
+    # Default posture denies carrier-grade NAT / shared address space, regardless
+    # of how Python's ipaddress.is_private classifies it.
+    with pytest.raises(SSRFError, match="CGNAT"):
+        validate_destination(ip, 80)
+
+
+def test_cgnat_allowed_only_with_explicit_override():
+    d = validate_destination("100.64.0.1", 80, policy=DestinationPolicy(allow_private=True))
+    assert d.pinned_ip == "100.64.0.1"
+
+
+def test_cgnat_hostname_resolution_denied_by_default():
+    with pytest.raises(SSRFError):
+        validate_destination("cgnat.example", 80, resolver=_resolver("100.64.5.5"))
+
+
+def test_only_globally_routable_public_allowed_by_default():
+    # Public, globally routable -> allowed; documentation/benchmark ranges -> denied.
+    assert validate_destination("93.184.216.34", 443).pinned_ip == "93.184.216.34"
+    assert validate_destination("8.8.8.8", 443).pinned_ip == "8.8.8.8"
+    for special in ("192.0.2.5", "198.51.100.7", "203.0.113.9", "198.18.0.1"):
+        with pytest.raises(SSRFError):
+            validate_destination(special, 80)
 
 
 def test_public_literal_allowed():
