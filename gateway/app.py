@@ -439,6 +439,75 @@ mount_consensus_routes(app, governance, api_key=settings.api_key,
                        operator_key=settings.operator_api_key)
 
 
+# ---------- Readiness ----------
+#
+# Liveness is /health (the process is up). Readiness additionally proves the
+# dependencies a deployment *requires* are reachable/configured, so an
+# orchestrator only routes traffic once the runtime can actually fail closed
+# with shared state. The check itself is fail-closed: any unreachable required
+# dependency, or any error, yields ready=false (HTTP 503).
+
+_REDIS_BACKEND_VARS = (
+    "MCC_NONCE_BACKEND", "MCC_IDEMPOTENCY_BACKEND", "MCC_VELOCITY_BACKEND",
+    "MCC_APPROVAL_BACKEND", "MCC_CHALLENGE_BACKEND", "MCC_REVOCATION_BACKEND",
+)
+
+
+def _redis_required(env) -> bool:
+    return any(env.get(v, "").strip().lower() == "redis" for v in _REDIS_BACKEND_VARS)
+
+
+async def _redis_ok(env) -> bool:
+    from mcc_core.redis_client import RedisConfigError, redis_client_from_env
+
+    try:
+        client = redis_client_from_env(env)
+    except RedisConfigError:
+        return False
+    try:
+        return bool(await client.ping())
+    except Exception:  # noqa: BLE001 — unreachable Redis is not-ready, fail-closed
+        return False
+    finally:
+        try:
+            await client.aclose()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@app.get("/ready")
+async def ready(response: Response) -> Dict[str, Any]:
+    import os
+
+    env = os.environ
+    checks: Dict[str, Any] = {
+        "signing_key": True,
+        "ephemeral_signing_key": gateway.ephemeral_key,
+        "trust_issuers": len(governance.trust_set.summary()),
+    }
+
+    consensus_required = env.get("MCC_REQUIRE_CONSENSUS", "").strip().lower() in (
+        "1", "true", "yes", "on")
+    if consensus_required:
+        checks["consensus_verifier"] = governance.consensus_verifier is not None
+    challenge_required = env.get("MCC_REQUIRE_CHALLENGE", "").strip().lower() in (
+        "1", "true", "yes", "on")
+    if challenge_required:
+        checks["challenge_service"] = governance.challenge_service is not None
+
+    redis_required = _redis_required(env)
+    checks["redis_required"] = redis_required
+    if redis_required:
+        checks["redis"] = await _redis_ok(env)
+
+    required_flags = [v for k, v in checks.items()
+                      if k in ("signing_key", "consensus_verifier", "challenge_service", "redis")]
+    ready_now = all(required_flags)
+    if not ready_now:
+        response.status_code = 503
+    return {"ready": ready_now, "checks": checks}
+
+
 if __name__ == "__main__":
     import uvicorn
 
