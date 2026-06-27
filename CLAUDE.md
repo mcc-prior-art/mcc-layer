@@ -196,6 +196,18 @@ mcc-layer/
 │   ├── trust.py               ← multi-issuer trust set: Ed25519 public keys, rotation, disable/revoke, fail-closed startup
 │   ├── governance_service.py  ← wiring (no decision logic): trust→authority→token→coordinator→audit→upstream
 │   └── governance_api.py      ← thin HTTP: /mandates/*, /approvals/*, /trust/*; agent vs operator auth; strict schemas
+│   └── app.py /ready          ← readiness probe: Redis reachable + trust/verifier/signing loaded (fail-closed 503)
+├── pilot/                     ← supported pilot runtime package (thin surface; no governance logic)
+│   ├── client.py              ← MCCGatewayClient: typed HTTP SDK (propose→verdict, approvals, consensus; governed /…/execute only)
+│   └── outbound_executor.py   ← OutboundHTTPExecutor: the governed side effect (real POST; refuses unsigned/ungoverned)
+├── deploy/
+│   └── pilot/                 ← pilot Docker Compose deployment (gateway + Redis + echo upstream)
+│       ├── Dockerfile / docker-compose.yml ← fail-closed startup; health + /ready readiness gate
+│       ├── .env.example / .gitignore ← API keys only; secrets/ + .env git-ignored
+│       ├── generate_pilot_config.py ← generate signing/evaluator keys + trust configs (public keys only)
+│       ├── pilot_driver.py    ← runbook driver: four verdicts + consensus execute over HTTP via the SDK
+│       ├── echo_upstream.py   ← governed-but-external echo service for the demo
+│       └── RUNBOOK.md         ← deterministic: startup, config, each path, audit inspection, teardown
 ├── config/
 │   └── trust.pilot.example.json ← pilot multi-issuer trust config example (public keys only)
 ├── interceptors/              ← MVP: where an action physically passes through the gate
@@ -207,7 +219,8 @@ mcc-layer/
 ├── examples/                  ← demo scripts and execution profiles
 │   ├── egress_proxy_demo.py   ← live E2E: agent → proxy → upstream (ALLOW reaches, DENY blocked)
 │   ├── transaction_governance_demo.py ← live E2E: idempotency dedup + cumulative ceiling through gateway+coordinator proxy
-│   └── governance_http_demo.py ← live E2E HTTP: mandate execute/revoke + ESCALATE approve→single-use over the real gateway
+│   ├── governance_http_demo.py ← live E2E HTTP: mandate execute/revoke + ESCALATE approve→single-use over the real gateway
+│   └── pilot_reference_integration.py ← reference: agent outbound HTTP via real runtime; ALLOW/DENY/ESCALATE/CONSTRAIN-re-consensus; no bypass
 ├── scripts/
 │   ├── generate_signing_key.py ← Ed25519 key generator (PKCS8 PEM, mode 0600)
 │   ├── redis_nonce_smoke.py    ← E2E: two gates share one Redis → cross-instance replay rejected
@@ -227,6 +240,7 @@ mcc-layer/
 │   ├── GOVERNANCE_HTTP_API.md ← HTTP API reference, trust config, rotation/revocation, auth boundary, threat model
 │   ├── MULTI_CONTEXT_CONSENSUS.md ← N-of-M signed evaluator consensus: votes, policy, /consensus HTTP, deployment
 │   ├── CONSENSUS_CHALLENGE.md ← gateway-issued one-time nonce: challenge handshake, single-use consume, binding/rejection table, MCC_REQUIRE_CHALLENGE
+│   ├── unified-governance-runtime.md ← one runtime: architecture + state-machine + 3 sequence diagrams, path table, modified-payload→new-consensus invariant
 │   ├── MIGRATION_NOTES.md     ← backward-compatibility + migration notes for the governance layers
 │   └── exhibits/              ← NIW exhibits (protected)
 ├── proof/
@@ -258,6 +272,10 @@ mcc-layer/
     ├── test_challenge_coordinator.py ← coordinator consumes the challenge once before actuation; challenge_consumed before pre_actuation; unknown/expired/nonce/actor/resource mismatch BLOCKED
     ├── test_challenge_http.py ← challenge E2E HTTP: gateway-issued nonce; valid flow reaches downstream once; reused/expired/unknown + every binding mismatch denied; client-supplied nonce w/o challenge denied
     ├── test_challenge_redis.py ← multi-instance challenge: cross-instance visibility + single-use consume (no double-spend), TTL expiry, backend-down fail-closed
+    ├── test_pilot_client.py   ← pilot HTTP SDK: four verdicts, /ready, audit verify, approvals, consensus challenge/verify/execute; no direct-execute method
+    ├── test_pilot_startup.py  ← pilot fail-closed startup (no trust / no verifier refused) + /ready Redis-required helpers
+    ├── test_pilot_driver.py   ← runbook driver: consensus execute over the SDK reaches upstream; votes bind to nonce + policy hash
+    ├── examples/test_pilot_reference_integration.py ← outbound-HTTP reference: four paths + re-consensus + no-bypass + Redis fail-closed
     └── opa_test_vectors.json
 ```
 

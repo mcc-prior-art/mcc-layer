@@ -58,6 +58,14 @@ jobs:
           # upstream (no bypass). Exits non-zero on any miss.
           python examples/governance_http_demo.py
 
+      - name: Pilot reference integration smoke (outbound HTTP, four paths, no bypass)
+        run: |
+          # An agent's outbound HTTP action governed by the real runtime
+          # (consensus-required): ALLOW / DENY / approved-ESCALATE /
+          # re-consensused-CONSTRAIN. Proves the original over-cap body is never
+          # sent and a direct executor call is refused. Exits non-zero on any miss.
+          python examples/pilot_reference_integration.py
+
   consensus-evidence:
     runs-on: ubuntu-latest
     steps:
