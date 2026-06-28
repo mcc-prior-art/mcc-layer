@@ -12,6 +12,8 @@ def _resolver(ip):
 @pytest.mark.parametrize("ip", [
     "127.0.0.1", "169.254.169.254", "0.0.0.0", "10.1.2.3", "192.168.1.1",
     "172.16.0.1", "224.0.0.1", "::1", "fe80::1",
+    # IPv6 unique-local (fc00::/7) and IPv4-mapped loopback.
+    "fd00::1", "fc00::1234", "::ffff:127.0.0.1", "::ffff:169.254.169.254",
     # CGNAT / shared address space (RFC 6598).
     "100.64.0.1", "100.127.255.255",
     # Non-global / special-use that must not be reachable by default.
@@ -20,6 +22,20 @@ def _resolver(ip):
 def test_dangerous_literals_rejected_by_default(ip):
     with pytest.raises(SSRFError):
         validate_destination(ip, 80)
+
+
+def test_localhost_hostname_rejected_by_default():
+    # "localhost" resolving to loopback is rejected unless loopback is allowed.
+    with pytest.raises(SSRFError):
+        validate_destination("localhost", 80, resolver=_resolver("127.0.0.1"))
+
+
+def test_metadata_endpoint_rejected():
+    # 169.254.169.254 is link-local (cloud metadata) -> rejected by default.
+    with pytest.raises(SSRFError):
+        validate_destination("169.254.169.254", 80)
+    with pytest.raises(SSRFError):
+        validate_destination("metadata.internal", 80, resolver=_resolver("169.254.169.254"))
 
 
 @pytest.mark.parametrize("ip", ["100.64.0.1", "100.64.10.10", "100.127.255.254"])
