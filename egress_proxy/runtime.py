@@ -108,6 +108,22 @@ def _load_trusted_evaluators(path: str) -> Dict[str, Any]:
     return trust.active_trusted_keys(now=int(time.time()))
 
 
+def _build_credential_provider(settings: EgressSettings):
+    """Build the credential provider from a secret-free config (fail-closed: a
+    selected provider with a missing/invalid config refuses startup)."""
+    from .credentials import build_provider_from_config
+
+    provider = (settings.credential_provider or "none").strip().lower()
+    if provider in ("", "none"):
+        return None
+    if not settings.credential_config:
+        raise RuntimeError(
+            f"MCC_EGRESS_CREDENTIAL_PROVIDER={provider} requires MCC_EGRESS_CREDENTIAL_CONFIG; "
+            "refusing fail-open startup")
+    config = json.loads(Path(settings.credential_config).read_text(encoding="utf-8"))
+    return build_provider_from_config(provider, config)
+
+
 class EgressRuntime:
     """The embedded runtime + the egress-specific executor and policy."""
 
@@ -153,6 +169,10 @@ class EgressRuntime:
         # execution metadata to the SAME hash chain (post-actuation; the durable
         # pre-actuation record remains the coordinator's responsibility).
         self.executor.audit = self.client.audit
+        # Credential references: build the provider (fail-closed startup if a
+        # provider is selected but misconfigured) and bind the environment scope.
+        self.executor.credential_provider = _build_credential_provider(settings)
+        self.executor.env_name = settings.mcc_env
 
     @property
     def policy_hash(self) -> str:

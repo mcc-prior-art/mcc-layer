@@ -31,6 +31,12 @@ class HTTPExecuteRequest(_Strict):
     idempotency_key: Optional[str] = None
     correlation_id: Optional[str] = None
 
+    # Governed credential REFERENCES (identifiers only — never raw secrets). The
+    # secret material is resolved inside the executor after authorization.
+    credential_ref: Optional[str] = None
+    client_identity_ref: Optional[str] = None
+    ca_bundle_ref: Optional[str] = None
+
     # Continuation / governance material (optional).
     challenge_id: Optional[str] = None
     votes: Optional[List[Dict[str, Any]]] = None
@@ -75,3 +81,9 @@ class HTTPExecuteResponse(_Strict):
     upstream_headers: Optional[Dict[str, str]] = None
     upstream_body: Any = None
     truncated: Optional[bool] = None
+
+    # Safe credential metadata (never the secret value).
+    credential_ref: Optional[str] = None
+    credential_resolved: Optional[bool] = None
+    mtls_requested: Optional[bool] = None
+    client_identity_loaded: Optional[bool] = None

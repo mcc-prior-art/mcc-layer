@@ -43,6 +43,13 @@ class EgressSettings(BaseSettings):
     # positive cap follows redirects with per-hop re-validation + header stripping.
     max_redirects: int = 0
 
+    # Credential references. The provider resolves secrets ONLY inside the executor
+    # after authorization. "none" disables credentials; "env"/"memory" load a
+    # secret-free config mapping refs->scope/type, with raw values from env vars.
+    # External secret managers (Vault/AWS/GCP/Azure/k8s) are future adapters.
+    credential_provider: str = "none"         # none | env | memory
+    credential_config: str = ""               # path to a secret-free JSON config
+
     # Mandatory Multi-Context Consensus (reuses the runtime's verifier/challenge).
     require_consensus: bool = False
     consensus_threshold: int = 3

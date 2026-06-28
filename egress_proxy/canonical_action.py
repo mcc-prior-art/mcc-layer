@@ -128,6 +128,15 @@ def _encode_body(body: Any) -> Dict[str, Any]:
     }
 
 
+# Secret-bearing headers a caller may never supply directly — credentials are
+# resolved from references and injected inside the executor. A proposal carrying
+# one of these fails closed (the agent proposes references, never raw secrets).
+SECRET_BEARING_HEADERS = frozenset({
+    "authorization", "proxy-authorization", "cookie",
+    "x-api-key", "x-operator-key", "api-key",
+})
+
+
 def build_canonical_action(
     *,
     method: str,
@@ -135,6 +144,9 @@ def build_canonical_action(
     headers: Optional[Dict[str, str]] = None,
     body: Any = None,
     governed_headers: Tuple[str, ...] = DEFAULT_GOVERNED_HEADERS,
+    credential_ref: Optional[str] = None,
+    client_identity_ref: Optional[str] = None,
+    ca_bundle_ref: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the flat, deterministic canonical action for an outbound request.
 
@@ -142,12 +154,22 @@ def build_canonical_action(
     actor/transaction ids (those bind via the token's own claims), so two
     materially-identical requests produce the same action hash and two different
     ones differ.
+
+    Credential **references** (never raw secrets) are bound here too, so the
+    reference a request will use is governed and audited like every other field.
+    A request whose headers carry a secret-bearing header is rejected — secrets
+    come only from governed references resolved inside the executor.
     """
     if not isinstance(method, str) or not method.strip():
         raise CanonicalActionError("method is required")
     m = method.strip().upper()
     if m not in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"):
         raise CanonicalActionError(f"unsupported method {m!r}")
+    for name in (headers or {}):
+        if str(name).lower() in SECRET_BEARING_HEADERS:
+            raise CanonicalActionError(
+                f"secret-bearing header {str(name).lower()!r} not allowed in a proposal; "
+                "use a credential reference")
     scheme, host, port, path, query = _normalize_url(url)
     action: Dict[str, Any] = {
         "action_type": ACTION_TYPE,
@@ -160,6 +182,13 @@ def build_canonical_action(
         "headers": _governed_headers(headers, governed_headers),
         "destination_id": f"{host}:{port}",
     }
+    # Bound credential references (identifiers only — no secret material).
+    if credential_ref:
+        action["cred_ref"] = str(credential_ref)
+    if client_identity_ref:
+        action["client_identity_ref"] = str(client_identity_ref)
+    if ca_bundle_ref:
+        action["ca_bundle_ref"] = str(ca_bundle_ref)
     action.update(_encode_body(body))
     return action
 
