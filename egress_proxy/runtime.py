@@ -82,6 +82,10 @@ def build_destination_policy(settings: EgressSettings) -> DestinationPolicy:
 
 
 def build_executor(settings: EgressSettings, *, resolver: Optional[Resolver] = None) -> HTTPEgressExecutor:
+    import ssl
+
+    tls_min = ssl.TLSVersion.TLSv1_3 if settings.tls_min_version.strip() == "1.3" \
+        else ssl.TLSVersion.TLSv1_2
     return HTTPEgressExecutor(
         policy=build_destination_policy(settings),
         connect_timeout=settings.connect_timeout_seconds,
@@ -89,6 +93,11 @@ def build_executor(settings: EgressSettings, *, resolver: Optional[Resolver] = N
         total_timeout=settings.total_timeout_seconds,
         max_response_bytes=settings.max_response_bytes,
         resolver=resolver,
+        require_https=settings.require_https,
+        allow_http=settings.allow_http,
+        tls_ca_file=settings.tls_ca_file or None,
+        tls_min_version=tls_min,
+        max_redirects=settings.max_redirects,
     )
 
 
@@ -140,6 +149,10 @@ class EgressRuntime:
             consensus_threshold=settings.consensus_threshold,
             trusted_evaluators=trusted_evaluators,
         )
+        # Share the runtime's audit chain so the executor can append safe egress
+        # execution metadata to the SAME hash chain (post-actuation; the durable
+        # pre-actuation record remains the coordinator's responsibility).
+        self.executor.audit = self.client.audit
 
     @property
     def policy_hash(self) -> str:

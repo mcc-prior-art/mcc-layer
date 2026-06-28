@@ -34,6 +34,15 @@ class EgressSettings(BaseSettings):
     allow_private: bool = False
     allow_link_local: bool = False
 
+    # TLS / scheme posture. Production is HTTPS-only with strict TLS verification.
+    require_https: bool = True
+    allow_http: bool = False                  # test/dev override; never in production
+    tls_ca_file: str = ""                     # trust exactly this CA (tests); else system roots
+    tls_min_version: str = "1.2"              # "1.2" or "1.3"
+    # Redirects disabled by default (the governed action is one request). A
+    # positive cap follows redirects with per-hop re-validation + header stripping.
+    max_redirects: int = 0
+
     # Mandatory Multi-Context Consensus (reuses the runtime's verifier/challenge).
     require_consensus: bool = False
     consensus_threshold: int = 3
