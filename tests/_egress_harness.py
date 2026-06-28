@@ -85,7 +85,10 @@ class EgressHarness:
                 body = {}
             if request.method != "GET":
                 seen.append({"method": request.method, "path": path, "body": body})
-            return {"upstream_reached": True, "path": path, "received": body}
+            # Echo received headers in the RESPONSE only (not in ``seen``), so
+            # credential-injection tests can observe what the executor sent.
+            return {"upstream_reached": True, "path": path, "received": body,
+                    "headers": {k.lower(): v for k, v in request.headers.items()}}
 
         threading.Thread(
             target=lambda: uvicorn.run(up, host="127.0.0.1", port=self.upstream_port,

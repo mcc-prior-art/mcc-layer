@@ -32,9 +32,11 @@ def _now() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-def make_ca() -> Tuple[ec.EllipticCurvePrivateKey, x509.Certificate]:
+def make_ca(common_name: Optional[str] = None) -> Tuple[ec.EllipticCurvePrivateKey, x509.Certificate]:
+    import uuid
     key = ec.generate_private_key(ec.SECP256R1())
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "mcc-egress-test-ca")])
+    cn = common_name or f"mcc-egress-test-ca-{uuid.uuid4().hex[:8]}"  # unique DN per CA
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
     cert = (
         x509.CertificateBuilder()
         .subject_name(name).issuer_name(name).public_key(key.public_key())
@@ -102,6 +104,34 @@ def serve_https(app, certfile: str, keyfile: str, *, timeout: float = 10.0) -> i
         except Exception:
             time.sleep(0.05)
     raise RuntimeError("HTTPS server did not come up")
+
+
+def serve_mtls(server_cert: str, server_key: str, client_ca_file: str) -> int:
+    """Run a local HTTPS server that REQUIRES a client certificate signed by
+    ``client_ca_file`` (mutual TLS). Uses a stdlib http.server with a precisely
+    controlled SSLContext (so only the server leaf is sent — no chain pollution)."""
+    import http.server
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok": true}')
+
+        def log_message(self, *args):  # silence
+            pass
+
+    sctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    sctx.load_cert_chain(server_cert, server_key)
+    sctx.load_verify_locations(cafile=client_ca_file)
+    sctx.verify_mode = ssl.CERT_REQUIRED
+    port = _free_port()
+    httpd = http.server.HTTPServer(("127.0.0.1", port), _Handler)
+    httpd.socket = sctx.wrap_socket(httpd.socket, server_side=True)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    time.sleep(0.2)
+    return port
 
 
 def host_resolver(mapping):
