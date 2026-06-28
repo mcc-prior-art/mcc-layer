@@ -44,18 +44,57 @@ def _norm_ip(ip: str) -> str:
 
 
 def build_ssl_context(*, ca_file: Optional[str] = None, capath: Optional[str] = None,
+                      ca_data: Optional[bytes] = None,
+                      client_cert_pem: Optional[bytes] = None,
+                      client_key_pem: Optional[bytes] = None,
                       minimum_tls: ssl.TLSVersion = ssl.TLSVersion.TLSv1_2) -> ssl.SSLContext:
-    """A strict TLS client context. With ``ca_file`` it trusts exactly that CA
-    (deterministic test roots); otherwise the system trust store. Hostname and
-    chain verification are mandatory; TLS floor is 1.2."""
-    ctx = ssl.create_default_context(cafile=ca_file, capath=capath)
+    """A strict TLS client context. Hostname and chain verification are mandatory;
+    TLS floor is 1.2. Server trust roots: ``ca_data`` (in-memory PEM, e.g. a
+    governed ``ca_bundle_ref``) or ``ca_file`` trust exactly that CA; otherwise the
+    system store. When ``client_cert_pem``/``client_key_pem`` are given (a governed
+    client identity), mTLS is enabled — the material is loaded via a 0600 temp file
+    that is removed immediately after load (the context retains it in memory).
+
+    Fail-closed: an invalid CA bundle, a missing or malformed cert/key, or a
+    cert/key that do not match raise ``ssl.SSLError`` (no secret in the message)."""
+    cadata = ca_data.decode("ascii") if isinstance(ca_data, (bytes, bytearray)) else ca_data
+    ctx = ssl.create_default_context(cafile=ca_file, capath=capath, cadata=cadata)
     ctx.check_hostname = True
     ctx.verify_mode = ssl.CERT_REQUIRED
     try:
         ctx.minimum_version = minimum_tls
     except (ValueError, OSError):  # pragma: no cover - platform dependent
         pass
+    if client_cert_pem is not None or client_key_pem is not None:
+        if not client_cert_pem or not client_key_pem:
+            raise ssl.SSLError("client identity requires both certificate and key")
+        _load_client_identity(ctx, client_cert_pem, client_key_pem)
     return ctx
+
+
+def _load_client_identity(ctx: ssl.SSLContext, cert_pem: bytes, key_pem: bytes) -> None:
+    """Load a client cert/key into the context via short-lived 0600 temp files,
+    removed immediately after load (on success and failure)."""
+    import os
+    import tempfile
+
+    cfd, cpath = tempfile.mkstemp(prefix="mcc-mtls-", suffix=".crt")
+    kfd, kpath = tempfile.mkstemp(prefix="mcc-mtls-", suffix=".key")
+    try:
+        os.chmod(cpath, 0o600)
+        os.chmod(kpath, 0o600)
+        with os.fdopen(cfd, "wb") as fh:
+            fh.write(cert_pem)
+        with os.fdopen(kfd, "wb") as fh:
+            fh.write(key_pem)
+        # Raises ssl.SSLError on a malformed/expired cert or a cert/key mismatch.
+        ctx.load_cert_chain(certfile=cpath, keyfile=kpath)
+    finally:
+        for p in (cpath, kpath):
+            try:
+                os.remove(p)
+            except OSError:  # pragma: no cover
+                pass
 
 
 class PinnedBackend(httpcore.AsyncNetworkBackend):
