@@ -138,6 +138,9 @@ services:
       # Container networking uses private IPs; the host allow-list still pins the
       # destination. Production with public upstreams keeps this off.
       MCC_EGRESS_ALLOW_PRIVATE: "true"
+      # The demo echo upstream is plain HTTP; production egress is HTTPS-only
+      # (require_https defaults true). This override is for the pilot demo only.
+      MCC_EGRESS_ALLOW_HTTP: "true"
       MCC_EGRESS_REQUIRE_CONSENSUS: "false"
       MCC_EGRESS_AUDIT_LOG_PATH: "/data/egress-audit.jsonl"
       MCC_REDIS_URL: "redis://redis:6379/0"

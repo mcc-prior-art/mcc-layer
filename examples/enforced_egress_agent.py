@@ -94,7 +94,8 @@ def main() -> int:
     settings = EgressSettings(
         mcc_env="dev", api_key="agent-key", operator_api_key="op-key",
         allowed_hosts="127.0.0.1", allowed_methods="get,post", max_amount=5000,
-        allow_loopback=True, require_consensus=True, consensus_threshold=3,
+        allow_loopback=True, allow_http=True,  # demo upstream is plain HTTP on loopback
+        require_consensus=True, consensus_threshold=3,
         consensus_trust_config=tf.name,
         audit_log_path=os.path.join(tempfile.mkdtemp(prefix="egress-demo-"), "audit.jsonl"))
     proxy_app = build_app(settings)
