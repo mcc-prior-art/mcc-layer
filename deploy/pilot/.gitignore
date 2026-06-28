@@ -1,3 +1,5 @@
 # Pilot-local material — generated, never committed.
 secrets/
 .env
+# Real credential config (only the .example is committed).
+credentials.json

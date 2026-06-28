@@ -204,8 +204,9 @@ mcc-layer/
 │   ├── app.py                 ← POST /v1/http/execute + /v1/approvals/* + /health + /ready; build_app(settings) factory; four outcomes
 │   ├── canonical_action.py    ← flat canonical HTTP action + hash_payload binding; reconstruct; clamp-stable (no stale body hash)
 │   ├── ssrf.py                ← destination safety: scheme/creds/port + loopback/link-local/multicast/private/CGNAT rejection; global-only default
-│   ├── secure_transport.py    ← strict TLS context + IP-pinned httpcore backend (SNI preserved, peer-IP verified) + redirect validation/stripping
-│   ├── executor.py            ← HTTPEgressExecutor: the ONLY outbound call (verified token; HTTPS-only; pinned TLS; safe redirects; size/timeout; audit metadata)
+│   ├── secure_transport.py    ← strict TLS context (+ in-memory CA / mTLS client identity via 0600 temp) + IP-pinned httpcore backend (SNI, peer-IP) + redirect validation/stripping
+│   ├── credentials.py         ← governed credential references: scope binding, in-memory/env providers, typed redacted material; secrets resolved only in the executor
+│   ├── executor.py            ← HTTPEgressExecutor: the ONLY outbound call (verified token; HTTPS-only; pinned TLS; per-hop credential resolution + mTLS; safe redirects; redacted audit)
 │   ├── runtime.py             ← embeds GovernedMCCClient (egress AuthorityModel + registries-from-env); no decision logic
 │   ├── config.py / models.py  ← EgressSettings (trusted config) + strict request/response schemas
 ├── deploy/
@@ -254,6 +255,7 @@ mcc-layer/
 │   ├── unified-governance-runtime.md ← one runtime: architecture + state-machine + 3 sequence diagrams, path table, modified-payload→new-consensus invariant
 │   ├── enforced-http-egress-proxy.md ← egress proxy: architecture/lifecycle/4 sequences, canonicalization+hash binding, SSRF, Docker network model + honest limits
 │   ├── secure-https-egress.md ← HTTPS hardening: HTTPS-only mode, TLS verification, SSRF model, DNS-rebinding IP pinning, safe redirects, audit evidence
+│   ├── credential-references-mtls.md ← governed credential refs + optional mTLS: provider interface, scope binding, resolution order, redaction, redirect credential behavior
 │   ├── MIGRATION_NOTES.md     ← backward-compatibility + migration notes for the governance layers
 │   └── exhibits/              ← NIW exhibits (protected)
 ├── proof/
@@ -297,6 +299,10 @@ mcc-layer/
     ├── test_egress_redirects.py ← redirects: downgrade/private/creds/loop/max rejected; cross-origin sensitive-header stripping
     ├── examples/test_enforced_egress.py ← E2E egress: ALLOW/DENY/ESCALATE+approval/CONSTRAIN-re-consensus, replay, tamper, no-bypass, Redis fail-closed
     ├── examples/test_egress_governance_audit.py ← audit-before-execution, extended-but-verifiable chain, payload-hash binding
+    ├── _tls_harness.py        ← (extended) local CA/cert minter + HTTPS + stdlib mTLS servers
+    ├── test_egress_credentials.py ← credential scope binding, resolution, header injection, redaction, cross-origin stripping
+    ├── test_egress_mtls.py    ← optional mTLS via refs: valid; missing/mismatched cert+key; invalid CA; server-trust/SSRF still enforced; temp cleanup
+    ├── examples/test_egress_credentials_governed.py ← secrets resolved only after authorization + durable audit; never in response/audit
     └── opa_test_vectors.json
 ```
 
