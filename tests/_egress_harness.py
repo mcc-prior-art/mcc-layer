@@ -62,7 +62,8 @@ class EgressHarness:
         self.settings = EgressSettings(
             mcc_env="dev", api_key="agent-key", operator_api_key="op-key",
             allowed_hosts="127.0.0.1", allowed_methods=allowed_methods, max_amount=max_amount,
-            allow_loopback=True, require_consensus=require_consensus,
+            allow_loopback=True, allow_http=True,  # test upstream is plain HTTP on loopback
+            require_consensus=require_consensus,
             consensus_threshold=threshold, consensus_trust_config=tf.name,
             audit_log_path=os.path.join(tempfile.mkdtemp(prefix="egress-test-"), "audit.jsonl"))
         self.app = build_app(self.settings, env=env or {})

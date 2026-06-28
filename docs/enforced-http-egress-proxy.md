@@ -9,6 +9,10 @@ HTTP. An application may use the supported `MCCGatewayClient` voluntarily; the
 egress proxy is the network-level interception point so a request cannot leave
 through an ungoverned path.
 
+> **HTTPS hardening:** for the HTTPS-only production mode, TLS verification, SSRF
+> threat model, DNS-rebinding (IP pinning) defence, safe redirects, and audit
+> evidence, see **`docs/secure-https-egress.md`**.
+
 It adds no governance logic. It embeds the **same** unified runtime the gateway
 uses (`AuthorityModel` → `DecisionEngine` → `ConsensusVerifier` /
 `ChallengeService` → `EnforcementCoordinator` → `ExecutionGate` →

@@ -203,8 +203,9 @@ mcc-layer/
 ├── egress_proxy/              ← enforced outbound HTTP egress proxy (enforcement adapter; embeds the runtime, no parallel engine)
 │   ├── app.py                 ← POST /v1/http/execute + /v1/approvals/* + /health + /ready; build_app(settings) factory; four outcomes
 │   ├── canonical_action.py    ← flat canonical HTTP action + hash_payload binding; reconstruct; clamp-stable (no stale body hash)
-│   ├── ssrf.py                ← destination safety: scheme/creds/port + loopback/link-local/multicast/private rejection + IP pinning
-│   ├── executor.py            ← HTTPEgressExecutor: the ONLY outbound call (verified token required; SSRF re-check; size/timeout limits)
+│   ├── ssrf.py                ← destination safety: scheme/creds/port + loopback/link-local/multicast/private/CGNAT rejection; global-only default
+│   ├── secure_transport.py    ← strict TLS context + IP-pinned httpcore backend (SNI preserved, peer-IP verified) + redirect validation/stripping
+│   ├── executor.py            ← HTTPEgressExecutor: the ONLY outbound call (verified token; HTTPS-only; pinned TLS; safe redirects; size/timeout; audit metadata)
 │   ├── runtime.py             ← embeds GovernedMCCClient (egress AuthorityModel + registries-from-env); no decision logic
 │   ├── config.py / models.py  ← EgressSettings (trusted config) + strict request/response schemas
 ├── deploy/
@@ -252,6 +253,7 @@ mcc-layer/
 │   ├── CONSENSUS_CHALLENGE.md ← gateway-issued one-time nonce: challenge handshake, single-use consume, binding/rejection table, MCC_REQUIRE_CHALLENGE
 │   ├── unified-governance-runtime.md ← one runtime: architecture + state-machine + 3 sequence diagrams, path table, modified-payload→new-consensus invariant
 │   ├── enforced-http-egress-proxy.md ← egress proxy: architecture/lifecycle/4 sequences, canonicalization+hash binding, SSRF, Docker network model + honest limits
+│   ├── secure-https-egress.md ← HTTPS hardening: HTTPS-only mode, TLS verification, SSRF model, DNS-rebinding IP pinning, safe redirects, audit evidence
 │   ├── MIGRATION_NOTES.md     ← backward-compatibility + migration notes for the governance layers
 │   └── exhibits/              ← NIW exhibits (protected)
 ├── proof/
@@ -288,9 +290,13 @@ mcc-layer/
     ├── test_pilot_driver.py   ← runbook driver: consensus execute over the SDK reaches upstream; votes bind to nonce + policy hash
     ├── examples/test_pilot_reference_integration.py ← outbound-HTTP reference: four paths + re-consensus + no-bypass + Redis fail-closed
     ├── _egress_harness.py     ← egress test harness: live upstream + evaluator pool + build_app driver
+    ├── _tls_harness.py        ← deterministic local CA + cert minter + HTTPS server runner (offline TLS tests)
     ├── test_egress_canonical.py ← canonicalization/hash binding: equivalence-stable, tamper-sensitive, clamp re-canonicalizes
-    ├── test_egress_ssrf.py    ← SSRF: loopback/private/link-local/multicast/IPv6/rebinding/creds/scheme/port fail-closed
+    ├── test_egress_ssrf.py    ← SSRF: loopback/private/link-local/multicast/IPv6/CGNAT/metadata/rebinding/creds/scheme/port fail-closed
+    ├── test_egress_https.py   ← HTTPS: valid TLS executes; expired/self-signed/untrusted/wrong-host rejected; HTTP rejected; peer-IP pin; mixed DNS
+    ├── test_egress_redirects.py ← redirects: downgrade/private/creds/loop/max rejected; cross-origin sensitive-header stripping
     ├── examples/test_enforced_egress.py ← E2E egress: ALLOW/DENY/ESCALATE+approval/CONSTRAIN-re-consensus, replay, tamper, no-bypass, Redis fail-closed
+    ├── examples/test_egress_governance_audit.py ← audit-before-execution, extended-but-verifiable chain, payload-hash binding
     └── opa_test_vectors.json
 ```
 
