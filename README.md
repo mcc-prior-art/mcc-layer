@@ -362,6 +362,17 @@ pilot (gateway + Redis + egress proxy + upstream + reference agent):
 docker compose -f deploy/pilot/docker-compose.yml up --build
 ```
 
+**Operational readiness and observability.** The governed egress path is
+production-observable without any parallel runtime: end-to-end correlation ids, a
+stable error taxonomy, redacted structured events, bounded-cardinality Prometheus
+metrics (`GET /metrics`), distinct liveness (`GET /livez`) and readiness
+(`GET /ready`) probes, and optional OpenTelemetry hooks. Telemetry never authorizes
+or alters a decision, and observability never weakens fail-closed behavior. See
+[docs/OBSERVABILITY.md](docs/OBSERVABILITY.md), with example
+[Prometheus config](deploy/observability/prometheus.yml),
+[alert rules](deploy/observability/alerts.yml), and the
+[incident runbook](deploy/observability/INCIDENT_RUNBOOK.md).
+
 ## Without MCC / With MCC
 
 Mobile-safe comparison:

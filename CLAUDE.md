@@ -208,8 +208,11 @@ mcc-layer/
 │   ├── credentials.py         ← governed credential references: scope binding, in-memory/env providers, typed redacted material; secrets resolved only in the executor
 │   ├── executor.py            ← HTTPEgressExecutor: the ONLY outbound call (verified token; HTTPS-only; pinned TLS; per-hop credential resolution + mTLS; safe redirects; redacted audit)
 │   ├── runtime.py             ← embeds GovernedMCCClient (egress AuthorityModel + registries-from-env); no decision logic
-│   ├── config.py / models.py  ← EgressSettings (trusted config) + strict request/response schemas
+│   ├── observability.py       ← instrumentation only (never decides): correlation ids, stable ErrorCode taxonomy + safe messages, redacted structured events, bounded-cardinality Prometheus Metrics (isolated registry), optional/no-op OTel span (export failures swallowed+counted)
+│   ├── app.py /livez /metrics ← liveness (process-only) + Prometheus /metrics; /ready validates Redis+audit-durable+consensus+credential provider (fail-closed 503); X-MCC-Correlation-Id propagated
+│   ├── config.py / models.py  ← EgressSettings (trusted config) + strict request/response schemas (HTTPExecuteResponse.error_code = stable ErrorCode)
 ├── deploy/
+│   ├── observability/         ← operational assets: prometheus.yml (scrape), alerts.yml (audit/Redis/replay/consensus/credential/TLS/executor/DENY/readiness/telemetry), INCIDENT_RUNBOOK.md (detection→containment→recovery→evidence→rollback; RULE ZERO: never bypass MCC-Core)
 │   └── pilot/                 ← pilot Docker Compose deployment (gateway + Redis + echo upstream)
 │       ├── Dockerfile / docker-compose.yml ← fail-closed startup; health + /ready readiness gate
 │       ├── .env.example / .gitignore ← API keys only; secrets/ + .env git-ignored
@@ -256,6 +259,7 @@ mcc-layer/
 │   ├── enforced-http-egress-proxy.md ← egress proxy: architecture/lifecycle/4 sequences, canonicalization+hash binding, SSRF, Docker network model + honest limits
 │   ├── secure-https-egress.md ← HTTPS hardening: HTTPS-only mode, TLS verification, SSRF model, DNS-rebinding IP pinning, safe redirects, audit evidence
 │   ├── credential-references-mtls.md ← governed credential refs + optional mTLS: provider interface, scope binding, resolution order, redaction, redirect credential behavior
+│   ├── OBSERVABILITY.md       ← operational readiness: correlation model, error-code taxonomy, bounded metrics reference, liveness/readiness semantics, safe-logging rules, OTel config, alert install, incident response, evidence collection, preserved security invariants
 │   ├── MIGRATION_NOTES.md     ← backward-compatibility + migration notes for the governance layers
 │   └── exhibits/              ← NIW exhibits (protected)
 ├── proof/
@@ -302,6 +306,7 @@ mcc-layer/
     ├── _tls_harness.py        ← (extended) local CA/cert minter + HTTPS + stdlib mTLS servers
     ├── test_egress_credentials.py ← credential scope binding, resolution, header injection, redaction, cross-origin stripping
     ├── test_egress_mtls.py    ← optional mTLS via refs: valid; missing/mismatched cert+key; invalid CA; server-trust/SSRF still enforced; temp cleanup
+    ├── test_egress_observability.py ← correlation generate/validate/reject, redaction, bounded metric labels, telemetry-failure isolation, liveness≠readiness, correlation→header/audit, secret never in metrics/logs/response/ready/audit, audit-before-execution
     ├── examples/test_egress_credentials_governed.py ← secrets resolved only after authorization + durable audit; never in response/audit
     └── opa_test_vectors.json
 ```
