@@ -261,6 +261,7 @@ mcc-layer/
 │   ├── credential-references-mtls.md ← governed credential refs + optional mTLS: provider interface, scope binding, resolution order, redaction, redirect credential behavior
 │   ├── OBSERVABILITY.md       ← operational readiness: correlation model, error-code taxonomy, bounded metrics reference, liveness/readiness semantics, safe-logging rules, OTel config, alert install, incident response, evidence collection, preserved security invariants
 │   ├── MIGRATION_NOTES.md     ← backward-compatibility + migration notes for the governance layers
+│   ├── CI_MAINTENANCE.md      ← CI hygiene: GitHub Actions Node 20→24 migration, action version table, runner requirements, workflow least-privilege/persist-credentials, diagnosing deprecated-action warnings
 │   └── exhibits/              ← NIW exhibits (protected)
 ├── proof/
 └── tests/
