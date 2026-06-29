@@ -22,6 +22,7 @@ record is written. It:
 
 from __future__ import annotations
 
+import hashlib
 import ssl
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,11 +30,21 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from .canonical_action import HOP_BY_HOP, reconstruct_request
+from .canonical_action import ACTION_TYPE, HOP_BY_HOP, reconstruct_request
+from .credentials import (
+    CA_BUNDLE,
+    CLIENT_IDENTITY,
+    SECRET_BEARING_HEADERS,
+    SECRET_HEADER,
+    CredentialError,
+    CredentialProvider,
+    CredentialScope,
+)
 from .secure_transport import (
     DEFAULT_GOVERNED_API_KEY_HEADERS,
     build_pinned_transport,
     build_ssl_context,
+    same_origin,
     strip_cross_origin_headers,
     tls_info,
     validate_redirect,
@@ -91,6 +102,10 @@ class HTTPEgressExecutor:
     max_redirects: int = 0
     api_key_headers: Tuple[str, ...] = DEFAULT_GOVERNED_API_KEY_HEADERS
     audit: Optional[Any] = None              # AuditLog instance (shared with the runtime)
+    # Credential references are resolved here (inside the trusted boundary, after
+    # governance authorization + durable audit) — never by the agent.
+    credential_provider: Optional[CredentialProvider] = None
+    env_name: str = "dev"                    # the environment scope credentials bind to
 
     _records: List[EgressCall] = field(default_factory=list, init=False)
     _responses: Dict[str, Dict[str, Any]] = field(default_factory=dict, init=False)
@@ -131,23 +146,53 @@ class HTTPEgressExecutor:
 
         method, url, headers, body = reconstruct_request(authorized_payload)
         send_headers = {k: v for k, v in headers.items() if k.lower() not in HOP_BY_HOP}
+        # Defense in depth: a proposal/action must never carry a secret-bearing
+        # header — secrets come only from governed references resolved here.
+        for h in send_headers:
+            if h.lower() in SECRET_BEARING_HEADERS:
+                if correlation_id is not None:
+                    self._errors[correlation_id] = "DENY"
+                raise CredentialError(
+                    f"secret-bearing header {h.lower()!r} present in action; fail-closed")
+
+        refs = {"cred": authorized_payload.get("cred_ref"),
+                "client": authorized_payload.get("client_identity_ref"),
+                "ca": authorized_payload.get("ca_bundle_ref")}
+        actor = _g(authorization, "actor_id")
+        cred_meta: Dict[str, Any] = {
+            "credential_ref": refs["cred"], "client_identity_ref": refs["client"],
+            "ca_bundle_ref": refs["ca"], "mtls_requested": bool(refs["client"]),
+            "credential_resolved": False, "client_identity_loaded": False,
+            "credential_policy_result": "none" if not any(refs.values()) else "authorized"}
 
         try:
-            result = await self._run_with_redirects(method, url, send_headers, body)
+            result = await self._run_with_redirects(method, url, send_headers, body,
+                                                    action=action, actor=actor, refs=refs,
+                                                    cred_meta=cred_meta)
+        except CredentialError:
+            if correlation_id is not None:
+                self._errors[correlation_id] = "DENY"
+            cred_meta["credential_policy_result"] = "denied"
+            self._audit_metadata(authorization, method, url, status=0,
+                                 outcome="DENY_CREDENTIAL", cred_meta=cred_meta)
+            raise
         except (SSRFError, SchemeError):
             if correlation_id is not None:
                 self._errors[correlation_id] = "DENY"
-            self._audit_metadata(authorization, method, url, status=0, outcome="DENY_SSRF")
+            self._audit_metadata(authorization, method, url, status=0, outcome="DENY_SSRF",
+                                 cred_meta=cred_meta)
             raise
         except httpx.TimeoutException:
             if correlation_id is not None:
                 self._errors[correlation_id] = "UPSTREAM_TIMEOUT"
-            self._audit_metadata(authorization, method, url, status=0, outcome="UPSTREAM_TIMEOUT")
+            self._audit_metadata(authorization, method, url, status=0, outcome="UPSTREAM_TIMEOUT",
+                                 cred_meta=cred_meta)
             raise
         except httpx.HTTPError:
             if correlation_id is not None:
                 self._errors[correlation_id] = "UPSTREAM_ERROR"
-            self._audit_metadata(authorization, method, url, status=0, outcome="UPSTREAM_ERROR")
+            self._audit_metadata(authorization, method, url, status=0, outcome="UPSTREAM_ERROR",
+                                 cred_meta=cred_meta)
             raise
 
         self._records.append(EgressCall(
@@ -160,7 +205,7 @@ class HTTPEgressExecutor:
             authorized_action_hash=_g(authorization, "payload_hash")))
 
         self._audit_metadata(authorization, method, url, status=result["status"],
-                             outcome="EXECUTED", result=result)
+                             outcome="EXECUTED", result=result, cred_meta=cred_meta)
 
         response = {
             "executed": True,
@@ -174,13 +219,20 @@ class HTTPEgressExecutor:
             "tls_version": result.get("tls_version"),
             "redirect_chain": result["redirect_chain"],
             "final_url": result["final_url"],
+            # Safe credential metadata only (never the secret value).
+            "credential_ref": cred_meta.get("credential_ref"),
+            "credential_resolved": cred_meta.get("credential_resolved"),
+            "mtls_requested": cred_meta.get("mtls_requested"),
+            "client_identity_loaded": cred_meta.get("client_identity_loaded"),
         }
         if correlation_id is not None:
             self._responses[correlation_id] = response
         return response
 
     async def _run_with_redirects(self, method: str, url: str, headers: Dict[str, str],
-                                  body: Any) -> Dict[str, Any]:
+                                  body: Any, *, action: str, actor: Optional[str],
+                                  refs: Dict[str, Optional[str]],
+                                  cred_meta: Dict[str, Any]) -> Dict[str, Any]:
         current_url = url
         current_method = method
         current_headers = dict(headers)
@@ -206,9 +258,19 @@ class HTTPEgressExecutor:
                                         resolver=self.resolver)
             resolved_ips, pinned_ip = dest.ips, dest.pinned_ip
 
+            # Resolve credentials for THIS hop's exact destination (inside the
+            # trusted boundary). The first hop is strict (out-of-scope -> DENY);
+            # redirect hops re-validate scope and simply skip injection if a target
+            # is unauthorized, and never carry a credential cross-origin.
+            hopc = await self._hop_credentials(
+                refs, scheme=scheme, host=host, port=int(port), method=current_method,
+                path=parts.path or "/", action=action, actor=actor, anchor_url=url,
+                hop_url=current_url, strict=(_hop == 0),
+                cred_meta=cred_meta if _hop == 0 else None)
+
             status, hdrs, content, truncated, peer_ip, tls_validated, tls_version, location = \
                 await self._send_once(current_method, current_url, current_headers, current_body,
-                                      scheme, dest)
+                                      scheme, dest, hopc=hopc)
 
             if (status in _REDIRECT_CODES and location and _hop < self.max_redirects):
                 target = validate_redirect(current_url, location, policy=self.policy,
@@ -234,10 +296,63 @@ class HTTPEgressExecutor:
 
         raise SSRFError(f"too many redirects (> {self.max_redirects}); fail-closed")
 
+    async def _hop_credentials(self, refs, *, scheme, host, port, method, path, action, actor,
+                               anchor_url, hop_url, strict, cred_meta) -> Dict[str, Any]:
+        """Resolve credential references for one hop's exact destination. Header
+        credentials are forwarded only same-origin as the original request;
+        cross-origin hops never receive them. mTLS/CA references are re-validated
+        for the hop's scope and skipped if unauthorized."""
+        out: Dict[str, Any] = {"header_name": None, "header_value": None,
+                               "client_cert": None, "client_key": None, "ca_data": None}
+        scope = CredentialScope(host=host, port=int(port), method=method.upper(), action=action,
+                                env=self.env_name, path=path or "/", actor=actor)
+        if refs.get("cred"):
+            if same_origin(hop_url, anchor_url):
+                cred = await self._provider_resolve(refs["cred"], scope, SECRET_HEADER, strict)
+                if cred is not None:
+                    out["header_name"], out["header_value"] = cred.header_name, cred.value
+                    if cred_meta is not None:
+                        cred_meta["credential_resolved"] = True
+                        cred_meta["credential_type"] = SECRET_HEADER
+            elif cred_meta is not None:
+                cred_meta["credential_policy_result"] = "stripped_cross_origin"
+        if refs.get("client"):
+            cred = await self._provider_resolve(refs["client"], scope, CLIENT_IDENTITY, strict)
+            if cred is not None:
+                out["client_cert"], out["client_key"] = cred.cert_pem, cred.key_pem
+                if cred_meta is not None:
+                    cred_meta["client_identity_loaded"] = True
+                    cred_meta["client_cert_fingerprint"] = \
+                        "sha256:" + hashlib.sha256(cred.cert_pem).hexdigest()
+        if refs.get("ca"):
+            cred = await self._provider_resolve(refs["ca"], scope, CA_BUNDLE, strict)
+            if cred is not None:
+                out["ca_data"] = cred.ca_pem
+        return out
+
+    async def _provider_resolve(self, ref, scope, expected_type, strict):
+        if self.credential_provider is None:
+            raise CredentialError(f"credential reference {ref!r} supplied but no provider configured")
+        try:
+            return await self.credential_provider.resolve(
+                ref, scope=scope, expected_type=expected_type)
+        except CredentialError:
+            if strict:
+                raise
+            return None
+
     async def _send_once(self, method: str, url: str, headers: Dict[str, str], body: Any,
-                         scheme: str, dest) -> Tuple:
+                         scheme: str, dest, *, hopc: Optional[Dict[str, Any]] = None) -> Tuple:
+        hopc = hopc or {}
         capture: Dict[str, Any] = {}
-        ssl_context = build_ssl_context(ca_file=self.tls_ca_file, minimum_tls=self.tls_min_version)
+        try:
+            ssl_context = build_ssl_context(
+                ca_file=self.tls_ca_file if not hopc.get("ca_data") else None,
+                ca_data=hopc.get("ca_data"), client_cert_pem=hopc.get("client_cert"),
+                client_key_pem=hopc.get("client_key"), minimum_tls=self.tls_min_version)
+        except ssl.SSLError:
+            # Bad client identity / CA material -> fail closed before any network.
+            raise CredentialError("client identity / CA bundle material invalid; fail-closed") from None
         transport = build_pinned_transport(pinned_ip=dest.pinned_ip, approved_ips=dest.ips,
                                            ssl_context=ssl_context, capture=capture)
         timeout = httpx.Timeout(self.total_timeout, connect=self.connect_timeout,
@@ -246,9 +361,14 @@ class HTTPEgressExecutor:
         truncated = False
         tls_validated: Optional[bool] = None
         tls_version: Optional[str] = None
+        # Inject the resolved secret header inside the executor (the agent never
+        # supplies it). A resolved header always wins over any same-named header.
+        req_headers = dict(headers)
+        if hopc.get("header_name"):
+            req_headers[hopc["header_name"]] = hopc["header_value"]
         async with httpx.AsyncClient(transport=transport, timeout=timeout,
                                      follow_redirects=False) as client:
-            kwargs: Dict[str, Any] = {"headers": headers}
+            kwargs: Dict[str, Any] = {"headers": req_headers}
             if isinstance(body, dict):
                 kwargs["json"] = body
             elif isinstance(body, (bytes, bytearray)):
@@ -282,11 +402,13 @@ class HTTPEgressExecutor:
                 tls_version, location)
 
     def _audit_metadata(self, authorization, method: str, url: str, *, status: int,
-                        outcome: str, result: Optional[Dict[str, Any]] = None) -> None:
+                        outcome: str, result: Optional[Dict[str, Any]] = None,
+                        cred_meta: Optional[Dict[str, Any]] = None) -> None:
         """Append safe egress execution metadata to the existing audit chain.
 
         Post-actuation only (the durable pre-actuation record is the coordinator's
-        responsibility and already happened). Never logs secrets/headers/bodies."""
+        responsibility and already happened). Never logs secrets/headers/bodies/
+        credential values — only references, types, booleans, and safe fingerprints."""
         if self.audit is None:
             return
         parts = urlsplit(url)
@@ -302,6 +424,12 @@ class HTTPEgressExecutor:
             "transaction_id": _g(authorization, "transaction_id"),
             "authorized_action_hash": _g(authorization, "payload_hash"),
         }
+        if cred_meta is not None:
+            for k in ("credential_ref", "credential_type", "credential_resolved",
+                      "mtls_requested", "client_identity_loaded", "ca_bundle_ref",
+                      "client_cert_fingerprint", "credential_policy_result"):
+                if k in cred_meta:
+                    entry[k] = cred_meta[k]
         if result is not None:
             entry.update({
                 "resolved_ips": result.get("resolved_ips"),

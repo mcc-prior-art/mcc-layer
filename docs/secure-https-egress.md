@@ -6,7 +6,9 @@
 > idempotency/velocity/audit path decides and the same executor performs the call.
 
 See `docs/enforced-http-egress-proxy.md` for the overall egress architecture; this
-document covers the HTTPS/TLS/SSRF/redirect hardening of the executor.
+document covers the HTTPS/TLS/SSRF/redirect hardening of the executor. For
+governed credential references (auth headers) and optional mTLS, see
+`docs/credential-references-mtls.md`.
 
 -----
 

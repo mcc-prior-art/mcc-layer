@@ -41,7 +41,9 @@ class EgressService:
 
     def _canonical(self, req: HTTPExecuteRequest) -> Dict[str, Any]:
         action = build_canonical_action(
-            method=req.method, url=req.url, headers=req.headers, body=req.body)
+            method=req.method, url=req.url, headers=req.headers, body=req.body,
+            credential_ref=req.credential_ref, client_identity_ref=req.client_identity_ref,
+            ca_bundle_ref=req.ca_bundle_ref)
         # Submission-time SSRF gate (re-checked again at connect time in the executor).
         validate_destination(action["host"], int(action["port"]),
                              policy=self.rt.executor.policy)
@@ -152,6 +154,10 @@ class EgressService:
                 upstream_headers=resp.get("upstream_headers"),
                 upstream_body=resp.get("upstream_body"),
                 truncated=resp.get("truncated"),
+                credential_ref=resp.get("credential_ref"),
+                credential_resolved=resp.get("credential_resolved"),
+                mtls_requested=resp.get("mtls_requested"),
+                client_identity_loaded=resp.get("client_identity_loaded"),
                 applied_constraints=getattr(r, "applied_changes", []) or []), 200
 
         # Not executed and not a clean DENY/ESCALATE/CONSTRAIN above -> classify.
@@ -194,14 +200,18 @@ class EgressService:
               constrained_action: Optional[Dict[str, Any]] = None,
               applied_constraints=None, upstream_status: Optional[int] = None,
               upstream_headers=None, upstream_body: Any = None,
-              truncated: Optional[bool] = None) -> HTTPExecuteResponse:
+              truncated: Optional[bool] = None, credential_ref: Optional[str] = None,
+              credential_resolved: Optional[bool] = None, mtls_requested: Optional[bool] = None,
+              client_identity_loaded: Optional[bool] = None) -> HTTPExecuteResponse:
         return HTTPExecuteResponse(
             outcome=outcome, executed=executed, reason=reason, action_hash=action_hash,
             audit_ref=audit_ref, correlation_id=correlation_id, challenge_id=challenge_id,
             nonce=nonce, approval_request_id=approval_request_id,
             constrained_action=constrained_action, applied_constraints=applied_constraints or [],
             upstream_status=upstream_status, upstream_headers=upstream_headers,
-            upstream_body=upstream_body, truncated=truncated)
+            upstream_body=upstream_body, truncated=truncated, credential_ref=credential_ref,
+            credential_resolved=credential_resolved, mtls_requested=mtls_requested,
+            client_identity_loaded=client_identity_loaded)
 
 
 # ---------------- app factory ----------------
