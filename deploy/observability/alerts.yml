@@ -1,0 +1,147 @@
+# Example Prometheus alert rules for the MCC-Core governed egress proxy.
+#
+# These alerts watch the operational health of the governance + governed-execution
+# path. They are advisory: an alert NEVER relaxes enforcement. The correct response
+# to any of these is in deploy/observability/INCIDENT_RUNBOOK.md.
+#
+# RULE ZERO (operational doctrine): operators must NEVER bypass MCC-Core to restore
+# service. Fail-closed denials are the system working as designed. Restore the
+# failed dependency — do not route around the gate.
+#
+# All series are bounded-cardinality (see docs/OBSERVABILITY.md). Tune thresholds
+# and `for:` windows to your traffic.
+
+groups:
+  - name: mcc-egress-critical
+    rules:
+      - alert: MCCAuditWriteFailure
+        expr: increase(mcc_audit_write_failures_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MCC audit write failure (no audit = no execution)"
+          description: >
+            The append-only hash-chain audit log could not be durably written.
+            Execution fails closed by design. Investigate disk/fsync/permissions;
+            do NOT disable auditing to restore throughput. Runbook: AUDIT_WRITE_FAILURE.
+
+      - alert: MCCRedisDown
+        expr: mcc_redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis unreachable — governance registries fail closed"
+          description: >
+            Nonce/idempotency/velocity/approval/challenge registries require Redis.
+            While down, the proxy fails closed (DEPENDENCY_UNAVAILABLE). Restore
+            Redis; never switch to in-memory or bypass to recover. Runbook: REDIS_OUTAGE.
+
+      - alert: MCCReadinessFailing
+        expr: mcc_readiness_ready == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MCC egress proxy not ready"
+          description: >
+            /ready is failing: a required dependency/config (Redis, audit durability,
+            consensus verifier) is unavailable. The instance should be out of rotation.
+            Runbook: READINESS_FAILURE.
+
+  - name: mcc-egress-warning
+    rules:
+      - alert: MCCNonceReplaySpike
+        expr: increase(mcc_nonce_replay_denials_total[5m]) > 20
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated nonce-replay denials"
+          description: >
+            A spike in replay denials may indicate a retry storm or an attempted
+            replay attack. Replays are correctly denied. Runbook: REPLAY_SPIKE.
+
+      - alert: MCCConsensusFailures
+        expr: increase(mcc_consensus_total{result="failure"}[5m]) > 5
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Consensus verification failures elevated"
+          description: >
+            N-of-M evaluator consensus is failing (below threshold, veto, or invalid
+            votes). Check evaluator availability and trust config. Runbook: CONSENSUS_FAILURE.
+
+      - alert: MCCCredentialResolutionFailures
+        expr: increase(mcc_credential_resolution_total{result="failure"}[5m]) > 5
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Credential resolution failures elevated"
+          description: >
+            Governed credential resolution is failing (scope mismatch or provider
+            unavailable). Secrets are resolved only after authorization. Runbook:
+            CREDENTIAL_RESOLUTION_FAILURE.
+
+      - alert: MCCTLSFailures
+        expr: increase(mcc_tls_failures_total[5m]) > 5
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TLS/mTLS failures elevated"
+          description: >
+            HTTPS verification or client-identity (mTLS) material is failing. Do NOT
+            disable verification. Check upstream certs / CA bundle / client identity.
+            Runbook: TLS_FAILURE.
+
+      - alert: MCCExecutorFailures
+        expr: increase(mcc_https_execution_total{result="failure"}[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Governed executor failures elevated"
+          description: >
+            The governed outbound executor is failing (timeouts/transport/redirect).
+            Authorization succeeded; the upstream call did not. Runbook: EXECUTOR_FAILURE.
+
+      - alert: MCCElevatedDenyRate
+        expr: >
+          increase(mcc_governance_decisions_total{verdict="DENY"}[10m])
+          / clamp_min(increase(mcc_egress_requests_total[10m]), 1) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated governance DENY rate (>50%)"
+          description: >
+            A majority of requests are being denied. This may be a misconfigured
+            client, a policy change, or an attack. DENY is the system working.
+            Runbook: ELEVATED_DENY_RATE.
+
+      - alert: MCCFailClosedDependency
+        expr: increase(mcc_failclosed_dependency_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Fail-closed denials caused by a dependency failure"
+          description: >
+            Requests are being denied because a dependency (Redis/registry) is
+            unavailable. Restore the dependency; do not bypass. Runbook: REDIS_OUTAGE.
+
+      - alert: MCCTelemetryExportFailures
+        expr: increase(mcc_telemetry_export_failures_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: "Telemetry (OTel) export failures"
+          description: >
+            Span export is failing. This is isolated by design — telemetry failure
+            never affects a governance decision. Fix the collector at leisure.
+            Runbook: TELEMETRY_EXPORT_FAILURE.

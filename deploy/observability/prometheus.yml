@@ -1,0 +1,37 @@
+# Example Prometheus scrape configuration for the MCC-Core governed egress proxy.
+#
+# The proxy exposes bounded-cardinality metrics at GET /metrics (Prometheus text
+# format). Metrics are instrumentation only — scraping, or a scrape failure, can
+# never authorize execution, bypass governance, or change a decision.
+#
+# Copy this file to your Prometheus config directory and adjust the target(s) to
+# match your deployment. No secrets, credential references, URLs, actor ids, or
+# transaction ids ever appear in the exported series (see docs/OBSERVABILITY.md).
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: mcc-egress
+    metrics_path: /metrics
+    scheme: http        # use https + tls_config in production
+    static_configs:
+      - targets:
+          - "mcc-egress:8080"   # one entry per proxy instance
+        labels:
+          service: mcc-egress
+
+    # Liveness/readiness are NOT scrape targets — they are orchestrator probes.
+    # Liveness:  GET /livez  (process alive only)
+    # Readiness: GET /ready  (validates Redis, audit durability, consensus,
+    #                         credential provider, signing key; 503 when not ready)
+
+# alertmanager wiring (optional) — point at your Alertmanager.
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ["alertmanager:9093"]

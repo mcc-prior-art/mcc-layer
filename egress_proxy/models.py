@@ -63,6 +63,9 @@ class HTTPExecuteResponse(_Strict):
     outcome: Outcome
     executed: bool = False
     reason: str = ""
+    # Stable operational error code (egress_proxy.observability.ErrorCode); safe
+    # for external consumption (no raw exception text, no stack traces).
+    error_code: Optional[str] = None
     action_hash: Optional[str] = None
     audit_ref: Optional[str] = None
     correlation_id: Optional[str] = None
