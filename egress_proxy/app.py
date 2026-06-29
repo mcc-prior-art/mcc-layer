@@ -12,7 +12,7 @@ by the existing runtime — the proxy keeps no governance state of its own.
 from __future__ import annotations
 
 import os
-import uuid
+import time
 from typing import Any, Dict, Optional, Tuple
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
@@ -24,18 +24,67 @@ from examples.governed_agent.agent import Agent, ProposedAction
 from .canonical_action import CanonicalActionError, action_hash, build_canonical_action
 from .config import EgressSettings
 from .models import HTTPExecuteRequest, HTTPExecuteResponse, Outcome
+from .observability import (
+    EXECUTOR_CATEGORY_TO_CODE,
+    CorrelationError,
+    ErrorCode,
+    Metrics,
+    classify_reason,
+    emit_event,
+    resolve_correlation_id,
+    safe_message,
+    span,
+)
 from .runtime import EgressRuntime
 from .ssrf import SSRFError, validate_destination
 
 settings = EgressSettings()
 
+# Outcome -> the verdict it represents (for bounded decision metrics), if any.
+_OUTCOME_VERDICT = {
+    Outcome.ALLOW: "ALLOW", Outcome.DENY: "DENY", Outcome.ESCALATE: "ESCALATE",
+    Outcome.CONSTRAIN: "CONSTRAIN",
+}
+
+# Stable error code -> (external outcome, HTTP status). Governance/credential/SSRF
+# denials are 403; dependency/audit failures are 503; upstream failures are 5xx.
+_CODE_OUTCOME = {
+    ErrorCode.UPSTREAM_TIMEOUT: (Outcome.UPSTREAM_TIMEOUT, 504),
+    ErrorCode.UPSTREAM_ERROR: (Outcome.UPSTREAM_ERROR, 502),
+    ErrorCode.TLS_FAILED: (Outcome.UPSTREAM_ERROR, 502),
+    ErrorCode.MTLS_FAILED: (Outcome.DENY, 403),
+    ErrorCode.SSRF_DENIED: (Outcome.DENY, 403),
+    ErrorCode.REDIRECT_DENIED: (Outcome.DENY, 403),
+    ErrorCode.CREDENTIAL_DENIED: (Outcome.DENY, 403),
+    ErrorCode.CREDENTIAL_UNAVAILABLE: (Outcome.DEPENDENCY_UNAVAILABLE, 503),
+    ErrorCode.DEPENDENCY_UNAVAILABLE: (Outcome.DEPENDENCY_UNAVAILABLE, 503),
+    ErrorCode.AUDIT_WRITE_FAILED: (Outcome.DEPENDENCY_UNAVAILABLE, 503),
+    ErrorCode.NONCE_REPLAY: (Outcome.DENY, 403),
+    ErrorCode.IDEMPOTENCY_CONFLICT: (Outcome.DENY, 403),
+    ErrorCode.VELOCITY_EXCEEDED: (Outcome.DENY, 403),
+    ErrorCode.CONSENSUS_FAILED: (Outcome.DENY, 403),
+    ErrorCode.APPROVAL_INVALID: (Outcome.DENY, 403),
+    ErrorCode.MANDATE_INVALID: (Outcome.DENY, 403),
+    ErrorCode.GOVERNANCE_DENY: (Outcome.DENY, 403),
+    ErrorCode.INTERNAL_ERROR: (Outcome.GOVERNANCE_UNAVAILABLE, 503),
+}
+
+
+def _host_of(url: str) -> Optional[str]:
+    from urllib.parse import urlsplit
+    try:
+        return (urlsplit(url).hostname or "").lower() or None
+    except Exception:  # noqa: BLE001
+        return None
+
 
 # ---------------- service ----------------
 
 class EgressService:
-    def __init__(self, rt: EgressRuntime) -> None:
+    def __init__(self, rt: EgressRuntime, *, metrics: Optional[Metrics] = None) -> None:
         self.rt = rt
         self.settings = rt.settings
+        self.metrics = metrics or Metrics()
 
     # -- build the canonical action + a proposal bound to it --
 
@@ -57,12 +106,60 @@ class EgressService:
             correlation_id=correlation_id)
 
     async def handle(self, req: HTTPExecuteRequest) -> Tuple[HTTPExecuteResponse, int]:
-        correlation_id = req.correlation_id or f"corr-{uuid.uuid4().hex}"
+        """Correlate, dispatch through the governed path, then record bounded
+        metrics + a redacted structured event. Observability never alters the
+        decision: recording happens after the verdict, and any telemetry failure
+        is swallowed."""
+        started = time.monotonic()
+        try:
+            correlation_id = resolve_correlation_id(req.correlation_id)
+        except CorrelationError:
+            self.metrics.correlation_rejected.inc()
+            self.metrics.record(outcome=Outcome.INVALID_REQUEST.value, verdict=None,
+                                code=ErrorCode.INVALID_CORRELATION_ID, latency_s=0.0,
+                                executed=False)
+            return self._resp(Outcome.INVALID_REQUEST,
+                              reason=safe_message(ErrorCode.INVALID_CORRELATION_ID),
+                              error_code=ErrorCode.INVALID_CORRELATION_ID), 400
+
+        with span("egress.request", {"mcc.correlation_id": correlation_id,
+                                     "http.method": req.method}, metrics=self.metrics):
+            resp, status = await self._dispatch(req, correlation_id)
+
+        latency = time.monotonic() - started
+        code = self._error_code_for(resp)
+        verdict = _OUTCOME_VERDICT.get(resp.outcome)
+        try:
+            self.metrics.record(outcome=resp.outcome.value, verdict=verdict, code=code,
+                                latency_s=latency, executed=resp.executed)
+            emit_event(self.rt.logger, "egress.request", correlation_id=correlation_id,
+                       outcome=resp.outcome.value, verdict=verdict, error_code=code.value,
+                       executed=resp.executed, status=status, action_hash=resp.action_hash,
+                       host=_host_of(req.url), method=req.method,
+                       duration_ms=round(latency * 1000, 2),
+                       mtls_requested=resp.mtls_requested,
+                       credential_resolved=resp.credential_resolved)
+        except Exception:  # noqa: BLE001 — telemetry must never break the path
+            pass
+        return resp, status
+
+    @staticmethod
+    def _error_code_for(resp: HTTPExecuteResponse) -> ErrorCode:
+        if resp.error_code:
+            try:
+                return ErrorCode(resp.error_code)
+            except ValueError:
+                return ErrorCode.INTERNAL_ERROR
+        return ErrorCode.OK if resp.executed else ErrorCode.GOVERNANCE_DENY
+
+    async def _dispatch(self, req: HTTPExecuteRequest,
+                        correlation_id: str) -> Tuple[HTTPExecuteResponse, int]:
         try:
             action = self._canonical(req)
         except (CanonicalActionError, SSRFError) as exc:
-            return self._resp(Outcome.INVALID_REQUEST, reason=str(exc),
-                              correlation_id=correlation_id), 400
+            code = ErrorCode.SSRF_DENIED if isinstance(exc, SSRFError) else ErrorCode.INVALID_REQUEST
+            return self._resp(Outcome.INVALID_REQUEST, reason=safe_message(code),
+                              error_code=code, correlation_id=correlation_id), 400
 
         p = self._propose(req, action, correlation_id)
         ah = action_hash(action)
@@ -91,6 +188,7 @@ class EgressService:
                     return self._resp(
                         Outcome.CONSENSUS_REQUIRED,
                         reason="supply N-of-M evaluator votes for this challenge",
+                        error_code=ErrorCode.CONSENSUS_REQUIRED,
                         action_hash=ah, challenge_id=ch.challenge_id, nonce=ch.nonce,
                         correlation_id=correlation_id), 202
                 challenge = await self._reload_challenge(req.challenge_id)
@@ -102,9 +200,11 @@ class EgressService:
             return await self._after_submit(r, p, action, correlation_id, ah)
         except HTTPException:
             raise
-        except Exception as exc:  # noqa: BLE001 — any runtime failure is fail-closed
+        except Exception:  # noqa: BLE001 — any runtime failure is fail-closed
+            # No raw exception text / stack trace leaves the process.
             return self._resp(Outcome.GOVERNANCE_UNAVAILABLE,
-                              reason=f"runtime error; fail-closed: {type(exc).__name__}",
+                              reason=safe_message(ErrorCode.INTERNAL_ERROR),
+                              error_code=ErrorCode.INTERNAL_ERROR,
                               correlation_id=correlation_id, action_hash=ah), 503
 
     async def _reload_challenge(self, challenge_id: Optional[str]):
@@ -115,8 +215,10 @@ class EgressService:
     async def _after_submit(self, r, p: ProposedAction, action: Dict[str, Any],
                             correlation_id: str, ah: str) -> Tuple[HTTPExecuteResponse, int]:
         if r.verdict == "DENY":
-            return self._resp(Outcome.DENY, reason=r.reason, action_hash=ah,
-                              audit_ref=r.audit_ref, correlation_id=correlation_id), 403
+            code = classify_reason(r.reason)
+            return self._resp(Outcome.DENY, reason=safe_message(code), error_code=code,
+                              action_hash=ah, audit_ref=r.audit_ref,
+                              correlation_id=correlation_id), 403
 
         if r.verdict == "ESCALATE" and not r.executed:
             # Open an approval bound to this exact operation; the caller has the
@@ -124,7 +226,8 @@ class EgressService:
             # consensus mode). Approval state lives in the runtime, not the proxy.
             rid = await self.rt.client.request_approval(p)
             return self._resp(
-                Outcome.ESCALATE, reason=r.reason or "human approval required",
+                Outcome.ESCALATE, reason=safe_message(ErrorCode.ESCALATION_REQUIRED),
+                error_code=ErrorCode.ESCALATION_REQUIRED,
                 action_hash=ah, correlation_id=correlation_id,
                 approval_request_id=rid), 202
 
@@ -135,7 +238,8 @@ class EgressService:
             ch = await self.rt.client.issue_challenge(p, payload=constrained)
             return self._resp(
                 Outcome.CONSTRAIN,
-                reason="action constrained; obtain fresh consensus for the new action hash",
+                reason=safe_message(ErrorCode.CONSTRAINT_RECONSENSUS),
+                error_code=ErrorCode.CONSTRAINT_RECONSENSUS,
                 action_hash=action_hash(constrained), correlation_id=correlation_id,
                 challenge_id=ch.challenge_id, nonce=ch.nonce,
                 constrained_action=constrained, applied_constraints=r.applied_changes), 202
@@ -147,7 +251,7 @@ class EgressService:
             resp = self.rt.executor.pop_response(correlation_id) or {}
             outcome = Outcome.CONSTRAIN if r.verdict == "CONSTRAIN" else Outcome.ALLOW
             return self._resp(
-                outcome, executed=True, reason=r.reason,
+                outcome, executed=True, reason="executed", error_code=ErrorCode.OK,
                 action_hash=action_hash(r.authorized_payload) if r.authorized_payload else ah,
                 audit_ref=r.audit_ref, correlation_id=correlation_id,
                 upstream_status=resp.get("upstream_status"),
@@ -160,40 +264,19 @@ class EgressService:
                 client_identity_loaded=resp.get("client_identity_loaded"),
                 applied_constraints=getattr(r, "applied_changes", []) or []), 200
 
-        # Not executed and not a clean DENY/ESCALATE/CONSTRAIN above -> classify.
+        # Not executed -> a stable error code from the executor's failure category
+        # (precise) or, failing that, the runtime's safe reason (keyword-classified).
         err = self.rt.executor.pop_error(correlation_id)
-        if err == "UPSTREAM_TIMEOUT":
-            return self._resp(Outcome.UPSTREAM_TIMEOUT, reason=r.reason,
-                              correlation_id=correlation_id, action_hash=ah), 504
-        if err == "UPSTREAM_ERROR":
-            return self._resp(Outcome.UPSTREAM_ERROR, reason=r.reason,
-                              correlation_id=correlation_id, action_hash=ah), 502
-        if err == "DENY":  # connect-time SSRF rebinding rejection
-            return self._resp(Outcome.DENY, reason="destination rejected at connect time",
-                              correlation_id=correlation_id, action_hash=ah), 403
-
-        reason = (r.reason or "").lower()
-        # A single-use violation (one-time nonce / challenge / approval replay) is a
-        # governance denial. The gate deliberately does not distinguish replay from
-        # nonce-store unavailability (to avoid leaking state); both are fail-closed
-        # with zero upstream calls, and we surface the security interpretation.
-        if "replay" in reason or "nonce" in reason or "already consumed" in reason:
-            return self._resp(Outcome.DENY, reason=r.reason,
-                              correlation_id=correlation_id, action_hash=ah), 403
-        # Explicit backend/durability failure -> dependency unavailable.
-        if any(k in reason for k in ("redis", "could not reserve", "registry unavailable",
-                                     "audit-before-actuation", "backend")):
-            return self._resp(Outcome.DEPENDENCY_UNAVAILABLE, reason=r.reason,
-                              correlation_id=correlation_id, action_hash=ah), 503
-        if r.verdict == "ERROR":
-            return self._resp(Outcome.GOVERNANCE_UNAVAILABLE, reason=r.reason,
-                              correlation_id=correlation_id, action_hash=ah), 503
-        # Governance refusal (consensus below threshold, idempotency, velocity, etc.).
-        return self._resp(Outcome.DENY, reason=r.reason or "governance refused",
-                          correlation_id=correlation_id, action_hash=ah), 403
+        code = EXECUTOR_CATEGORY_TO_CODE.get(err) if err else None
+        if code is None:
+            code = ErrorCode.INTERNAL_ERROR if r.verdict == "ERROR" else classify_reason(r.reason)
+        outcome, status = _CODE_OUTCOME.get(code, (Outcome.DENY, 403))
+        return self._resp(outcome, reason=safe_message(code), error_code=code,
+                          correlation_id=correlation_id, action_hash=ah), status
 
     @staticmethod
     def _resp(outcome: Outcome, *, executed: bool = False, reason: str = "",
+              error_code: Optional[ErrorCode] = None,
               action_hash: Optional[str] = None, audit_ref: Optional[str] = None,
               correlation_id: Optional[str] = None, challenge_id: Optional[str] = None,
               nonce: Optional[str] = None, approval_request_id: Optional[str] = None,
@@ -204,7 +287,9 @@ class EgressService:
               credential_resolved: Optional[bool] = None, mtls_requested: Optional[bool] = None,
               client_identity_loaded: Optional[bool] = None) -> HTTPExecuteResponse:
         return HTTPExecuteResponse(
-            outcome=outcome, executed=executed, reason=reason, action_hash=action_hash,
+            outcome=outcome, executed=executed, reason=reason,
+            error_code=(error_code.value if isinstance(error_code, ErrorCode) else error_code),
+            action_hash=action_hash,
             audit_ref=audit_ref, correlation_id=correlation_id, challenge_id=challenge_id,
             nonce=nonce, approval_request_id=approval_request_id,
             constrained_action=constrained_action, applied_constraints=applied_constraints or [],
@@ -224,6 +309,18 @@ _REDIS_BACKEND_VARS = (
 
 def _redis_required(env) -> bool:
     return any(env.get(v, "").strip().lower() == "redis" for v in _REDIS_BACKEND_VARS)
+
+
+def _audit_durable(runtime) -> bool:
+    """The audit chain must be durably writable for actuation to be allowed."""
+    try:
+        path = getattr(runtime.client.audit, "path", None)
+        if not path:
+            return False
+        d = os.path.dirname(os.path.abspath(path)) or "."
+        return os.path.isdir(d) and os.access(d, os.W_OK)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 async def _redis_ok(env) -> bool:
@@ -248,12 +345,13 @@ def build_app(cfg: EgressSettings, *, env=None, resolver=None) -> FastAPI:
     """Build the egress proxy app. Fail-closed startup is surfaced via /ready
     (and, in pilot, by refusing to start at all)."""
     env = os.environ if env is None else env
+    metrics = Metrics()
     service: Optional[EgressService] = None
     runtime: Optional[EgressRuntime] = None
     startup_error: Optional[str] = None
     try:
         runtime = EgressRuntime(cfg, env=env, resolver=resolver)
-        service = EgressService(runtime)
+        service = EgressService(runtime, metrics=metrics)
     except Exception as exc:  # noqa: BLE001
         startup_error = f"{type(exc).__name__}: {exc}"
         if cfg.mcc_env == "pilot":
@@ -277,11 +375,15 @@ def build_app(cfg: EgressSettings, *, env=None, resolver=None) -> FastAPI:
     async def http_execute(req: HTTPExecuteRequest, response: Response,
                            _=Depends(require_api_key)) -> HTTPExecuteResponse:
         if service is None:
+            metrics.failclosed_dependency.inc()
             response.status_code = 503
             return HTTPExecuteResponse(outcome=Outcome.GOVERNANCE_UNAVAILABLE,
-                                       reason=f"runtime not initialized: {startup_error}")
+                                       error_code=ErrorCode.DEPENDENCY_UNAVAILABLE.value,
+                                       reason=safe_message(ErrorCode.DEPENDENCY_UNAVAILABLE))
         body, status = await service.handle(req)
         response.status_code = status
+        if body.correlation_id:
+            response.headers["X-MCC-Correlation-Id"] = body.correlation_id
         return body
 
     @application.post("/v1/approvals/{request_id}/approve")
@@ -309,8 +411,15 @@ def build_app(cfg: EgressSettings, *, env=None, resolver=None) -> FastAPI:
             response.status_code = 409
         return {"denied": bool(ok), "request_id": request_id}
 
+    @application.get("/livez")
+    def livez() -> Dict[str, Any]:
+        """Liveness only: the process is running. No dependency checks, no secrets,
+        no internal topology — distinct from readiness."""
+        return {"alive": True, "version": RUNTIME_VERSION}
+
     @application.get("/health")
     def health() -> Dict[str, Any]:
+        # Liveness (kept for compatibility). Distinct from /ready below.
         body = {"status": "ok", "fail_closed": True, "version": RUNTIME_VERSION,
                 "consensus_required": cfg.require_consensus,
                 "action_type": "http.request"}
@@ -319,13 +428,21 @@ def build_app(cfg: EgressSettings, *, env=None, resolver=None) -> FastAPI:
             body["policy_hash"] = runtime.policy_hash
         return body
 
+    @application.get("/metrics")
+    def metrics_endpoint() -> Response:
+        body, content_type = metrics.render()
+        return Response(content=body, media_type=content_type)
+
     @application.get("/ready")
     async def ready(response: Response) -> Dict[str, Any]:
+        # Readiness validates required production dependencies/config. It never
+        # exposes secrets or internal topology — only boolean check results.
         checks: Dict[str, Any] = {"runtime_initialized": service is not None}
-        if startup_error:
-            checks["startup_error"] = startup_error
         if service is not None:
             checks["ephemeral_signing_key"] = runtime.ephemeral_signing_key
+            checks["audit_durable"] = _audit_durable(runtime)
+            checks["credential_provider"] = (
+                "configured" if runtime.executor.credential_provider is not None else "none")
             if cfg.require_consensus:
                 checks["consensus_verifier"] = (
                     runtime.client.consensus_required and runtime.client.challenges is not None)
@@ -333,15 +450,20 @@ def build_app(cfg: EgressSettings, *, env=None, resolver=None) -> FastAPI:
         checks["redis_required"] = redis_required
         if redis_required:
             checks["redis"] = await _redis_ok(env)
+            metrics.redis_up.set(1 if checks["redis"] else 0)
 
         required = [checks.get("runtime_initialized", False)]
+        if service is not None:
+            required.append(checks.get("audit_durable", False))
         if cfg.require_consensus and service is not None:
             required.append(checks.get("consensus_verifier", False))
         if redis_required:
             required.append(checks.get("redis", False))
         ready_now = all(required)
+        metrics.readiness.set(1 if ready_now else 0)
         if not ready_now:
             response.status_code = 503
+        # Only safe boolean/string check results are returned (no startup detail).
         return {"ready": ready_now, "checks": checks}
 
     # Test/operator hook (not an HTTP surface): the in-process service + runtime.

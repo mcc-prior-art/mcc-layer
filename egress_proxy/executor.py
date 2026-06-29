@@ -42,6 +42,7 @@ from .credentials import (
 )
 from .secure_transport import (
     DEFAULT_GOVERNED_API_KEY_HEADERS,
+    RedirectError,
     build_pinned_transport,
     build_ssl_context,
     same_origin,
@@ -151,7 +152,7 @@ class HTTPEgressExecutor:
         for h in send_headers:
             if h.lower() in SECRET_BEARING_HEADERS:
                 if correlation_id is not None:
-                    self._errors[correlation_id] = "DENY"
+                    self._errors[correlation_id] = "CREDENTIAL_DENIED"
                 raise CredentialError(
                     f"secret-bearing header {h.lower()!r} present in action; fail-closed")
 
@@ -169,30 +170,31 @@ class HTTPEgressExecutor:
             result = await self._run_with_redirects(method, url, send_headers, body,
                                                     action=action, actor=actor, refs=refs,
                                                     cred_meta=cred_meta)
-        except CredentialError:
-            if correlation_id is not None:
-                self._errors[correlation_id] = "DENY"
-            cred_meta["credential_policy_result"] = "denied"
-            self._audit_metadata(authorization, method, url, status=0,
-                                 outcome="DENY_CREDENTIAL", cred_meta=cred_meta)
+        except CredentialError as exc:
+            # mTLS/CA material build failure vs scope/credential denial.
+            cat = "MTLS_FAILED" if "material invalid" in str(exc) else "CREDENTIAL_DENIED"
+            self._fail(correlation_id, cat, authorization, method, url, cred_meta, "DENY_CREDENTIAL")
             raise
-        except (SSRFError, SchemeError):
-            if correlation_id is not None:
-                self._errors[correlation_id] = "DENY"
-            self._audit_metadata(authorization, method, url, status=0, outcome="DENY_SSRF",
-                                 cred_meta=cred_meta)
+        except RedirectError:
+            self._fail(correlation_id, "REDIRECT_DENIED", authorization, method, url,
+                       cred_meta, "DENY_REDIRECT")
+            raise
+        except SchemeError:
+            self._fail(correlation_id, "SCHEME_DENIED", authorization, method, url,
+                       cred_meta, "DENY_SCHEME")
+            raise
+        except SSRFError:
+            self._fail(correlation_id, "SSRF_DENIED", authorization, method, url,
+                       cred_meta, "DENY_SSRF")
             raise
         except httpx.TimeoutException:
-            if correlation_id is not None:
-                self._errors[correlation_id] = "UPSTREAM_TIMEOUT"
-            self._audit_metadata(authorization, method, url, status=0, outcome="UPSTREAM_TIMEOUT",
-                                 cred_meta=cred_meta)
+            self._fail(correlation_id, "UPSTREAM_TIMEOUT", authorization, method, url,
+                       cred_meta, "UPSTREAM_TIMEOUT")
             raise
-        except httpx.HTTPError:
-            if correlation_id is not None:
-                self._errors[correlation_id] = "UPSTREAM_ERROR"
-            self._audit_metadata(authorization, method, url, status=0, outcome="UPSTREAM_ERROR",
-                                 cred_meta=cred_meta)
+        except httpx.HTTPError as exc:
+            cat = "TLS_FAILED" if _looks_tls(exc) else "UPSTREAM_ERROR"
+            self._fail(correlation_id, cat, authorization, method, url, cred_meta,
+                       "UPSTREAM_ERROR")
             raise
 
         self._records.append(EgressCall(
@@ -205,7 +207,8 @@ class HTTPEgressExecutor:
             authorized_action_hash=_g(authorization, "payload_hash")))
 
         self._audit_metadata(authorization, method, url, status=result["status"],
-                             outcome="EXECUTED", result=result, cred_meta=cred_meta)
+                             outcome="EXECUTED", result=result, cred_meta=cred_meta,
+                             correlation_id=correlation_id)
 
         response = {
             "executed": True,
@@ -401,9 +404,20 @@ class HTTPEgressExecutor:
         return (status_code, sanitized, decoded, truncated, peer_ip, tls_validated,
                 tls_version, location)
 
+    def _fail(self, correlation_id, category: str, authorization, method: str, url: str,
+              cred_meta: Dict[str, Any], outcome: str) -> None:
+        """Record a failure category for the proxy + a redacted audit entry."""
+        if correlation_id is not None:
+            self._errors[correlation_id] = category
+        if category in ("CREDENTIAL_DENIED", "MTLS_FAILED"):
+            cred_meta["credential_policy_result"] = "denied"
+        self._audit_metadata(authorization, method, url, status=0, outcome=outcome,
+                             cred_meta=cred_meta, correlation_id=correlation_id)
+
     def _audit_metadata(self, authorization, method: str, url: str, *, status: int,
                         outcome: str, result: Optional[Dict[str, Any]] = None,
-                        cred_meta: Optional[Dict[str, Any]] = None) -> None:
+                        cred_meta: Optional[Dict[str, Any]] = None,
+                        correlation_id: Optional[str] = None) -> None:
         """Append safe egress execution metadata to the existing audit chain.
 
         Post-actuation only (the durable pre-actuation record is the coordinator's
@@ -420,6 +434,7 @@ class HTTPEgressExecutor:
             "port": parts.port or (443 if parts.scheme == "https" else 80),
             "outcome": outcome,
             "status": status,
+            "correlation_id": correlation_id,
             "audit_ref": _g(authorization, "audit_ref"),
             "transaction_id": _g(authorization, "transaction_id"),
             "authorized_action_hash": _g(authorization, "payload_hash"),
@@ -458,3 +473,10 @@ class HTTPEgressExecutor:
 
 def _g(token: Any, key: str) -> Optional[Any]:
     return token.get(key) if isinstance(token, dict) else None
+
+
+def _looks_tls(exc: Exception) -> bool:
+    """Heuristic (metrics only; never an authorization input): does this transport
+    error look like a TLS/certificate failure?"""
+    m = str(exc).lower()
+    return any(s in m for s in ("ssl", "certificate", "tls", "handshake"))

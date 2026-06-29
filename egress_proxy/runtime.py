@@ -173,6 +173,9 @@ class EgressRuntime:
         # provider is selected but misconfigured) and bind the environment scope.
         self.executor.credential_provider = _build_credential_provider(settings)
         self.executor.env_name = settings.mcc_env
+        # Operational logger (structured, redacted events; never the audit chain).
+        import logging
+        self.logger = logging.getLogger("mcc.egress")
 
     @property
     def policy_hash(self) -> str:
