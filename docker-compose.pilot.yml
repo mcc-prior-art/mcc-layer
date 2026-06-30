@@ -1,0 +1,104 @@
+# MCC-Core Governed Agent Pilot — full stack in one command.
+#
+#   docker compose -f docker-compose.pilot.yml up --build
+#   docker compose -f docker-compose.pilot.yml run --rm mcc-agent \
+#       python /app/governed_agent_compose_demo.py
+#
+# Services:
+#   redis       — Redis-backed nonce/idempotency/velocity/approval state.
+#   pilot-api   — the EXTERNAL enterprise API the agent acts upon.
+#   mcc-gateway — the MCC-Core governed gateway (the egress proxy): authority +
+#                 execution gate + governed HTTPS executor + audit. The ONLY
+#                 service that performs the outbound call to pilot-api.
+#   mcc-agent   — the governed agent runner: proposes + submits to mcc-gateway.
+#
+# Network boundary (a PILOT boundary — see "production hardening" in
+# docs/MCC_CORE_PILOT_V0_1.md): production isolation additionally requires
+# network policies, service identity, and workload isolation.
+#   * agent_edge   — mcc-agent <-> mcc-gateway only.
+#   * gov_internal — mcc-gateway <-> pilot-api <-> redis. mcc-agent is NOT here,
+#                    so it has no governed-bypass route to the external API.
+networks:
+  agent_edge:
+  gov_internal:
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks: [gov_internal]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  pilot-api:
+    build:
+      context: .
+      dockerfile: deploy/pilot/Dockerfile.agent-pilot
+    command: ["uvicorn", "pilot_api.app:app", "--host", "0.0.0.0", "--port", "9100"]
+    networks: [gov_internal]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9100/health').status==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mcc-gateway:
+    build:
+      context: .
+      dockerfile: deploy/pilot/Dockerfile.agent-pilot
+    command: ["uvicorn", "egress_proxy.app:app", "--host", "0.0.0.0", "--port", "8090"]
+    environment:
+      # Governed gateway config (the verdict comes from MCC-Core authority).
+      MCC_EGRESS_API_KEY: "agent-key"
+      MCC_EGRESS_OPERATOR_API_KEY: "op-key"
+      MCC_EGRESS_EGRESS_ACTOR_MANDATE: "agent/crm"
+      MCC_EGRESS_ALLOWED_HOSTS: "pilot-api"
+      MCC_EGRESS_ALLOWED_METHODS: "get,post"
+      MCC_EGRESS_MAX_AMOUNT: "5000"
+      MCC_EGRESS_ALLOW_LOOPBACK: "false"
+      MCC_EGRESS_ALLOW_PRIVATE: "true"       # pilot-api is on a private Docker network
+      MCC_EGRESS_REQUIRE_HTTPS: "false"      # pilot-only: plain HTTP on the internal net
+      MCC_EGRESS_ALLOW_HTTP: "true"
+      MCC_EGRESS_REQUIRE_CONSENSUS: "false"
+      MCC_EGRESS_AUDIT_LOG_PATH: "/data/egress-audit.jsonl"
+      # Redis-backed state (no in-memory fallback; fail closed if Redis is down).
+      MCC_REDIS_URL: "redis://redis:6379/0"
+      MCC_NONCE_BACKEND: "redis"
+      MCC_IDEMPOTENCY_BACKEND: "redis"
+      MCC_VELOCITY_BACKEND: "redis"
+      MCC_APPROVAL_BACKEND: "redis"
+    networks: [agent_edge, gov_internal]
+    volumes:
+      - mcc-agent-audit:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      pilot-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/livez').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  mcc-agent:
+    build:
+      context: .
+      dockerfile: deploy/pilot/Dockerfile.agent-pilot
+    command: ["python", "/app/governed_agent_compose_demo.py"]
+    environment:
+      MCC_GATEWAY_URL: "http://mcc-gateway:8090"
+      PILOT_API_BASE: "http://pilot-api:9100"
+      MCC_EGRESS_API_KEY: "agent-key"
+      MCC_EGRESS_OPERATOR_API_KEY: "op-key"
+      MCC_EGRESS_EGRESS_ACTOR_MANDATE: "agent/crm"
+    networks: [agent_edge]
+    depends_on:
+      mcc-gateway:
+        condition: service_healthy
+
+volumes:
+  mcc-agent-audit:
