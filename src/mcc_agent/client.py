@@ -40,6 +40,7 @@ from mcc_core import (
     MandateRegistry,
     Verdict,
     approval_registry_from_env,
+    hash_payload,
     idempotency_registry_from_env,
     nonce_registry_from_env,
     velocity_registry_from_env,
@@ -47,6 +48,7 @@ from mcc_core import (
 
 from egress_proxy.canonical_action import (
     CanonicalActionError,
+    action_hash,
     build_canonical_action,
     reconstruct_request,
 )
@@ -197,7 +199,35 @@ class EmbeddedGovernanceClient:
                 final_payload=None)
         return None
 
-    def _outcome(self, r, proposed) -> GovernanceOutcome:
+    _AUTHORITY_STATE = {
+        "ALLOW": "verified mandate satisfied",
+        "CONSTRAIN": "mandate held; constraint applied (clamped)",
+        "ESCALATE": "no standing mandate; human approval required",
+        "DENY": "no authorizing mandate (deny-by-default / hard deny)",
+    }
+
+    @property
+    def policy_hash(self) -> str:
+        return self._mcc.policy_hash
+
+    def _evidence(self, proposed, canonical, *, decision, r, authorized) -> Dict[str, Any]:
+        """The per-decision audit evidence (hashes, ids, verdict, linkage)."""
+        body = authorized if authorized is not None else canonical
+        return {
+            "proposal_id": proposed.transaction_id,
+            "actor": proposed.actor,
+            "resource": proposed.resource,
+            "action_hash": action_hash(canonical),
+            "payload_hash": hash_payload(body),
+            "policy_hash": self.policy_hash,
+            "authority_state": self._AUTHORITY_STATE.get(decision.value, decision.value),
+            "verdict": decision.value,
+            "constraints": list(r.applied_changes or []) if r is not None else [],
+            "execution_result": "EXECUTED" if (r is not None and r.executed) else "BLOCKED",
+            "audit_ref": getattr(r, "audit_ref", None) if r is not None else None,
+        }
+
+    def _outcome(self, r, proposed, canonical) -> GovernanceOutcome:
         verdict = r.verdict
         decision = {
             "ALLOW": Decision.ALLOW, "DENY": Decision.DENY,
@@ -216,17 +246,22 @@ class EmbeddedGovernanceClient:
         upstream_status: Optional[int] = None
         upstream_body: Any = None
         final_payload: Optional[Dict[str, Any]] = None
+        authorized = None
         if r.executed and r.authorized_payload is not None:
+            authorized = r.authorized_payload
             resp = self.executor.pop_response(proposed.correlation_id) or {}
             upstream_status = resp.get("upstream_status")
             upstream_body = resp.get("upstream_body")
             _, _, _, final_payload = reconstruct_request(r.authorized_payload)
         return GovernanceOutcome(
             decision=decision, executed=bool(r.executed), reason=r.reason,
+            action_hash=action_hash(canonical),
             audit_ref=r.audit_ref, correlation_id=r.correlation_id,
             applied_constraints=list(r.applied_changes or []),
             upstream_status=upstream_status, upstream_body=upstream_body,
-            final_payload=final_payload)
+            final_payload=final_payload,
+            audit_evidence=self._evidence(proposed, canonical, decision=decision, r=r,
+                                          authorized=authorized))
 
     # -- the four stages --
 
@@ -246,12 +281,14 @@ class EmbeddedGovernanceClient:
         r = await self._mcc.submit(proposed)
         if r.verdict == "ESCALATE" and not r.executed:
             rid = await self._mcc.request_approval(proposed)
-            out = self._outcome(r, proposed)
             return GovernanceOutcome(
                 decision=Decision.ESCALATE, executed=False, reason=r.reason,
+                action_hash=action_hash(canonical),
                 approval_request_id=rid, correlation_id=r.correlation_id,
-                final_payload=None)
-        return self._outcome(r, proposed)
+                final_payload=None,
+                audit_evidence=self._evidence(proposed, canonical,
+                                              decision=Decision.ESCALATE, r=r, authorized=None))
+        return self._outcome(r, proposed, canonical)
 
     async def approve(self, approval_request_id: str) -> bool:
         return await self._mcc.approve(approval_request_id)
@@ -264,7 +301,7 @@ class EmbeddedGovernanceClient:
         canonical = self._canonical(proposal)
         proposed = self._proposed(proposal, canonical)
         r = await self._mcc.execute_with_approval(proposed, approval_request_id)
-        return self._outcome(r, proposed)
+        return self._outcome(r, proposed, canonical)
 
     # -- audit --
 

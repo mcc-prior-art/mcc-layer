@@ -34,8 +34,11 @@ from .models import (
     GovernanceOutcome,
 )
 from .planner import DeterministicPlanner
+from .version import PILOT_RELEASE_NAME, PILOT_VERSION
 
 __all__ = [
+    "PILOT_RELEASE_NAME",
+    "PILOT_VERSION",
     "GovernedAgent",
     "DeterministicPlanner",
     "EmbeddedGovernanceClient",

@@ -97,6 +97,10 @@ class GovernanceOutcome:
     upstream_body: Any = None
     # The payload actually authorized + sent (clamped for CONSTRAIN).
     final_payload: Optional[Dict[str, Any]] = None
+    # Per-decision audit evidence: proposal id, actor, resource, action/payload/
+    # policy hash, authority state, verdict, constraints, execution result, and
+    # audit-chain linkage (see GovernedAgent / the pilot demo).
+    audit_evidence: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -116,6 +120,7 @@ class AgentResult:
     upstream_status: Optional[int] = None
     correlation_id: Optional[str] = None
     approval_request_id: Optional[str] = None
+    audit_evidence: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -132,4 +137,5 @@ class AgentResult:
             "upstream_status": self.upstream_status,
             "correlation_id": self.correlation_id,
             "approval_request_id": self.approval_request_id,
+            "audit_evidence": dict(self.audit_evidence),
         }
