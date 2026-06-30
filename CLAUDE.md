@@ -195,7 +195,8 @@ mcc-layer/
 │       ├── planner.py         ← DeterministicPlanner: goal→ActionProposal (credential-free; pilot goals)
 │       ├── client.py          ← GovernanceClient protocol + EmbeddedGovernanceClient (reuses GovernedMCCClient + HTTPEgressExecutor + per-action pilot AuthorityModel); propose/decide/approve/execute
 │       ├── models.py / errors.py ← typed ActionProposal/GovernanceOutcome/AgentResult + structured errors
-│       └── demo.py            ← runnable pilot: 9 scenarios vs a real loopback pilot-api + reproducible evidence
+│       ├── demo.py            ← runnable pilot: 9 scenarios (+ --verdicts four-verdict staged demo) vs a real loopback pilot-api + reproducible evidence
+│       └── version.py         ← pilot release metadata (PILOT_RELEASE_NAME = "MCC-Core Pilot v0.1", PILOT_VERSION = "0.1.0-pilot")
 ├── pilot_api/                 ← the EXTERNAL pilot API the agent acts upon (separate service; deterministic state, /operations evidence, strict schemas; no governance)
 │   └── app.py                 ← /leads /campaigns/{id}/budget /notifications /tasks /webhooks /operations /health
 ├── gateway/                   ← the gate as an HTTP service
@@ -320,7 +321,8 @@ mcc-layer/
     ├── test_egress_observability.py ← correlation generate/validate/reject, redaction, bounded metric labels, telemetry-failure isolation, liveness≠readiness, correlation→header/audit, secret never in metrics/logs/response/ready/audit, audit-before-execution
     ├── test_demo_server.py    ← demo-server lifecycle: shutdown requested + thread joined + none survive, cleanup on exception, startup-failure reported, shutdown-timeout fails explicitly, no thread leak, success→exit 0, failure→non-zero
     ├── test_mcc_agent.py      ← governed agent E2E: ALLOW/DENY/ESCALATE(+invalid approvals)/CONSTRAIN, replay/nonce/idempotency, Redis fail-closed, SSRF/malformed, audit-before-exec, bypass, real external execution, state-unchanged-after-blocked
-    ├── test_mcc_agent_no_direct_egress.py ← static guard: no forbidden networking imports in src/mcc_agent; no direct-execute surface
+    ├── test_mcc_agent_no_direct_egress.py ← static guard: no forbidden networking imports in src/mcc_agent (incl. subprocess); no direct-execute surface
+    ├── test_pilot_release.py  ← Pilot v0.1 release matrix: version metadata, clean/fail-closed startup, four verdicts, audit-evidence completeness, audit-before-exec, chain verify, no-exec-before-auth, constrained-payload-executed, Redis replay (gated)
     ├── examples/test_egress_credentials_governed.py ← secrets resolved only after authorization + durable audit; never in response/audit
     └── opa_test_vectors.json
 ```

@@ -405,10 +405,14 @@ which is the only thing that performs the external request. Every proposal,
 decision, approval, constraint, execution, or rejection is recorded in the audit
 chain.
 
+Release baseline: **MCC-Core Pilot v0.1** (`0.1.0-pilot`). Full run/demo/validate
+guide: **[PILOT.md](PILOT.md)**.
+
 **Run it (in-process pilot — all scenarios, no Docker, no credentials):**
 
 ```bash
-PYTHONPATH=src python -m mcc_agent.demo            # ALLOW/DENY/ESCALATE/CONSTRAIN + bypass/replay/Redis/SSRF/audit
+PYTHONPATH=src python -m mcc_agent.demo --verdicts # the four governed verdicts, staged + audit evidence
+PYTHONPATH=src python -m mcc_agent.demo            # all 9 scenarios + bypass/replay/Redis/SSRF/audit
 PYTHONPATH=src python -m mcc_agent.demo --evidence # also regenerate evidence/governed_agent_pilot/
 ```
 
@@ -434,8 +438,9 @@ and verify the audit chain via the gateway's `/export` / audit tooling.
   SSRF/TLS, audit-before-execution, and fail-closed dependency behavior.
   **Still requires production hardening:** persistent signing keys, signed
   mandates at scale, network policy / service identity / workload isolation, and
-  an LLM planner behind the deterministic one. See
-  [docs/MCC_CORE_PILOT_V0_1.md](docs/MCC_CORE_PILOT_V0_1.md) and the reproducible
+  an LLM planner behind the deterministic one. See **[PILOT.md](PILOT.md)**,
+  [docs/MCC_CORE_PILOT_V0_1.md](docs/MCC_CORE_PILOT_V0_1.md),
+  [release notes](RELEASE_NOTES_v0.1.0-pilot.md), and the reproducible
   [evidence](evidence/governed_agent_pilot/).
 
 ## Without MCC / With MCC
