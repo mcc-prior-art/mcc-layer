@@ -20,7 +20,8 @@ PKG = Path(__file__).resolve().parents[1] / "src" / "mcc_agent"
 # performs no outbound networking of its own).
 FORBIDDEN = {
     "httpx", "requests", "urllib", "urllib.request", "urllib3", "socket",
-    "aiohttp", "http.client", "ssl", "asyncio.streams",
+    "aiohttp", "http.client", "ssl", "asyncio.streams", "subprocess",
+    "pycurl",
 }
 
 
