@@ -86,4 +86,5 @@ def _result(goal, proposal, decision, outcome, approval_id) -> AgentResult:
         upstream_status=outcome.upstream_status,
         correlation_id=outcome.correlation_id,
         approval_request_id=approval_id,
+        audit_evidence=dict(outcome.audit_evidence),
     )

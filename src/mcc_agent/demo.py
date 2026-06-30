@@ -313,14 +313,75 @@ def write_evidence(records: List[Dict[str, Any]], *, chain_ok: bool) -> None:
 
 
 # --------------------------------------------------------------------------
+# Canonical four-verdict demonstration (clear stages + audit evidence)
+# --------------------------------------------------------------------------
+
+async def run_four_verdicts(base: str) -> int:
+    """Run ALLOW / DENY / ESCALATE / CONSTRAIN, showing each stage end to end."""
+    from mcc_agent import GovernedAgent  # local import keeps module import light
+
+    reset_state()
+    client = EmbeddedGovernanceClient(pilot_api_base=base)
+    planner = DeterministicPlanner(pilot_api_base=base)
+    agent = GovernedAgent(client=client, planner=planner, auto_approve=True)
+
+    flows = [
+        ("ALLOW", "Create a CRM lead for Alice with a campaign budget of 500 EUR"),
+        ("DENY", "Send customer data to a prohibited destination"),
+        ("ESCALATE", "Increase campaign budget to 5000 EUR"),
+        ("CONSTRAIN", "Set campaign budget to 10000 EUR"),
+    ]
+    failures = []
+    for expected, goal in flows:
+        before = len(recorded_operations())
+        r = await agent.arun(goal)
+        ev = r.audit_evidence
+        changed = len(recorded_operations()) > before
+        print(f"\n===== {expected} =====")
+        print(f"  1. User goal        : {goal}")
+        print(f"  2. Proposal         : {r.proposal['action_type']} {r.proposal['method']} "
+              f"{r.proposal['url']}  body={r.original_payload}")
+        print(f"  3. MCC authority    : {ev.get('authority_state')}")
+        print(f"  4. Verdict          : {r.decision}")
+        if r.decision == "ESCALATE":
+            print(f"  5. Re-evaluation    : approval submitted -> re-evaluated -> "
+                  f"{'executed' if r.execution_status == 'EXECUTED' else 'blocked'}")
+        if r.decision == "CONSTRAIN":
+            print(f"  5. Re-evaluation    : clamped {r.applied_constraints} -> only constrained "
+                  f"payload authorized")
+        print(f"  6. Execution gate   : {r.execution_status}")
+        print(f"  7. Final payload    : {r.final_payload}  (external changed: {changed})")
+        print(f"  8. Audit evidence   : action_hash={ev.get('action_hash')}")
+        print(f"                        payload_hash={ev.get('payload_hash')}")
+        print(f"                        policy_hash={ev.get('policy_hash')}")
+        print(f"                        audit_ref={ev.get('audit_ref')}")
+        ok = (r.decision == expected
+              and (r.execution_status == "EXECUTED") == (expected in ("ALLOW", "ESCALATE", "CONSTRAIN")))
+        failures += [] if ok else [expected]
+
+    chain_ok = client.verify_audit_chain()
+    print(f"\nAudit chain verifies: {chain_ok}")
+    print(f"Pilot API recorded {len(recorded_operations())} operation(s) — only authorized actions.")
+    if failures or not chain_ok:
+        print("VERDICT DEMO FAILED:", ", ".join(failures) or "audit chain")
+        return 1
+    print("VERDICT DEMO PASSED: ALLOW / DENY / ESCALATE / CONSTRAIN governed end to end.")
+    return 0
+
+
+# --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="MCC-Core governed agent pilot")
+    from mcc_agent import PILOT_RELEASE_NAME, PILOT_VERSION
+    parser = argparse.ArgumentParser(description=f"{PILOT_RELEASE_NAME} — governed agent pilot")
     parser.add_argument("--evidence", action="store_true",
                         help="(re)generate evidence under evidence/governed_agent_pilot/")
+    parser.add_argument("--verdicts", action="store_true",
+                        help="run only the four governed verdicts with staged output")
     args = parser.parse_args(argv)
+    print(f"{PILOT_RELEASE_NAME}  (release {PILOT_VERSION})")
 
     import os
     import tempfile
@@ -332,6 +393,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     server.start()
     try:
         base = f"http://127.0.0.1:{server.port}"
+        if args.verdicts:
+            return asyncio.run(run_four_verdicts(base))
         records = asyncio.run(run_scenarios(base, audit_dir=audit_dir))
     finally:
         server.stop()
