@@ -27,18 +27,17 @@ import os
 import socket
 import sys
 import tempfile
-import threading
-import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
-import uvicorn
 from fastapi import FastAPI, Request
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
+
+from examples._demo_server import DemoServers  # noqa: E402
 
 from mcc_core import SigningKey, issue_vote  # noqa: E402
 
@@ -56,21 +55,17 @@ def _free_port() -> int:
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 
 
-def _serve(app, port):
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="error")
-
-
-def _wait(url, timeout=10.0):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            httpx.get(url, timeout=0.3); return
-        except Exception:
-            time.sleep(0.05)
-    raise RuntimeError(f"{url} did not come up")
-
-
 def main() -> int:
+    servers = DemoServers()
+    try:
+        return _run(servers)
+    finally:
+        # Deterministic teardown: stop + join every embedded server before the
+        # interpreter exits, on success and on exception alike.
+        servers.stop_all()
+
+
+def _run(servers: DemoServers) -> int:
     up_port, proxy_port = _free_port(), _free_port()
     upstream = FastAPI()
 
@@ -101,10 +96,9 @@ def main() -> int:
     proxy_app = build_app(settings)
     policy_hash = _policy_hash(settings)
 
-    threading.Thread(target=_serve, args=(upstream, up_port), daemon=True).start()
-    threading.Thread(target=_serve, args=(proxy_app, proxy_port), daemon=True).start()
-    _wait(f"http://127.0.0.1:{up_port}/")
-    _wait(f"http://127.0.0.1:{proxy_port}/health")
+    # DemoServers.start() blocks until each server is ready (server.started).
+    servers.start(upstream, up_port)
+    servers.start(proxy_app, proxy_port)
 
     base = f"http://127.0.0.1:{proxy_port}"
     up = f"http://127.0.0.1:{up_port}/charge"

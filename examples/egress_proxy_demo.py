@@ -19,17 +19,16 @@ import asyncio
 import os
 import sys
 import tempfile
-import threading
-import time
 from pathlib import Path
 
 import httpx
-import uvicorn
 from fastapi import FastAPI, Request
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
+
+from examples._demo_server import DemoServers  # noqa: E402
 
 # Gateway settings must be set before importing the gateway module.
 os.environ["MCC_GATEWAY_MODE"] = "inline"
@@ -67,28 +66,23 @@ async def echo(request: Request, path: str):
     return {"upstream_reached": True, "path": f"/{path}", "received": body}
 
 
-def serve(app, port):
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="error")
-
-
-def wait_for(url: str, timeout: float = 10.0) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            httpx.get(url, timeout=0.5)
-            return
-        except Exception:
-            time.sleep(0.1)
-    raise RuntimeError(f"service at {url} did not come up")
-
-
 def main() -> int:
+    servers = DemoServers()
+    try:
+        return _run(servers)
+    finally:
+        # Deterministic teardown: stop + join every embedded server (and fail
+        # loudly if one will not stop) before the interpreter exits. Runs on
+        # success and on exception — never relies on daemon-thread termination.
+        servers.stop_all()
+
+
+def _run(servers: DemoServers) -> int:
     # Start the gateway and upstream first; the proxy's ExecutionGate is keyed
     # from the gateway's /health, so the gateway must be up before we build it.
-    for app, port in [(upstream, UPSTREAM_PORT), (gw.app, GATEWAY_PORT)]:
-        threading.Thread(target=serve, args=(app, port), daemon=True).start()
-    wait_for(f"http://127.0.0.1:{GATEWAY_PORT}/health")
-    wait_for(f"http://127.0.0.1:{UPSTREAM_PORT}/")
+    # DemoServers.start() blocks until each server is ready (server.started).
+    servers.start(upstream, UPSTREAM_PORT)
+    servers.start(gw.app, GATEWAY_PORT)
 
     gateway_url = f"http://127.0.0.1:{GATEWAY_PORT}"
     governor = EgressGovernor(
@@ -103,8 +97,7 @@ def main() -> int:
         gate=build_gate_from_health(gateway_url),  # verifies signature + nonce
     )
     proxy = build_proxy_app(governor, upstream_base=f"http://127.0.0.1:{UPSTREAM_PORT}")
-    threading.Thread(target=serve, args=(proxy, PROXY_PORT), daemon=True).start()
-    wait_for(f"http://127.0.0.1:{PROXY_PORT}/", timeout=10.0)
+    servers.start(proxy, PROXY_PORT)
 
     base = f"http://127.0.0.1:{PROXY_PORT}"
     cases = [

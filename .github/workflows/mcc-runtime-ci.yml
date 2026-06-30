@@ -84,6 +84,14 @@ jobs:
           # actions and never the original over-cap body. Exits non-zero on any miss.
           python examples/enforced_egress_agent.py
 
+      - name: Smoke demo shutdown stress (no exit 139, no hang)
+        run: |
+          # Regression guard for the embedded-server lifecycle: run every demo
+          # repeatedly and fail on any non-zero exit, SIGSEGV (exit 139), or hang.
+          # Deterministic and bounded (per-run timeout); no retries or masking.
+          # 5 demos x 3 = 15 sequential executions (~30s).
+          bash scripts/smoke_stress.sh 3
+
       - name: Validate the pilot Docker Compose configuration
         run: |
           # The pilot compose now includes the egress proxy + isolated networks.

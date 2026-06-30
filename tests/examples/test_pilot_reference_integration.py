@@ -10,8 +10,6 @@ Proves, against a live loopback upstream and the REAL runtime:
 """
 
 import asyncio
-import threading
-import time
 
 import pytest
 
@@ -22,26 +20,26 @@ from mcc_core import RedisNonceRegistry
 from pilot.outbound_executor import OutboundHTTPExecutor, UnauthorizedExecution
 from tests._fakeredis import DownRedis
 
+from examples._demo_server import DemoServer
 import examples.pilot_reference_integration as ref
 
 run = asyncio.run
-_UPSTREAM_STARTED = False
 
 
-def _ensure_upstream() -> str:
-    """Start the demo's loopback upstream once for this test module."""
-    global _UPSTREAM_STARTED
-    if not _UPSTREAM_STARTED:
-        threading.Thread(target=ref.serve, args=(ref.upstream, ref.UPSTREAM_PORT),
-                         daemon=True).start()
-        ref.wait_for(f"http://127.0.0.1:{ref.UPSTREAM_PORT}/")
-        _UPSTREAM_STARTED = True
-    return f"http://127.0.0.1:{ref.UPSTREAM_PORT}"
+@pytest.fixture(scope="module")
+def upstream_base():
+    """Start the demo's loopback upstream with deterministic shutdown: the server
+    thread is joined at teardown (no reliance on daemon-thread termination)."""
+    server = DemoServer(ref.upstream, ref.UPSTREAM_PORT)
+    server.start()
+    try:
+        yield f"http://127.0.0.1:{ref.UPSTREAM_PORT}"
+    finally:
+        server.stop()
 
 
-def test_reference_integration_all_paths_no_bypass():
-    base = _ensure_upstream()
-    failures = run(ref.run_scenarios(base))
+def test_reference_integration_all_paths_no_bypass(upstream_base):
+    failures = run(ref.run_scenarios(upstream_base))
     assert failures == [], f"reference integration reported: {failures}"
     # The original over-cap body must never have reached upstream.
     assert all(c["body"].get("amount") != 10000 for c in ref.SEEN if "amount" in c["body"])
