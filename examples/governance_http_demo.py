@@ -16,17 +16,16 @@ import os
 import shutil
 import sys
 import tempfile
-import threading
-import time
 from pathlib import Path
 
 import httpx
-import uvicorn
 from fastapi import FastAPI, Request
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
+
+from examples._demo_server import DemoServers  # noqa: E402
 
 from mcc_core import SigningKey, issue_mandate  # noqa: E402
 
@@ -72,52 +71,6 @@ async def echo(request: Request, path: str):
     return {"upstream_reached": True}
 
 
-def make_server(app, port):
-    """Start a uvicorn server in a daemon thread and return (server, thread)
-    handles so it can be shut down *explicitly* — ``uvicorn.run()`` gives no
-    handle to stop the server, which is what forces a process to rely on native
-    finalizers at exit."""
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
-    server = uvicorn.Server(config)
-    server.install_signal_handlers = lambda: None  # not the main thread
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    return server, thread
-
-
-def shutdown(servers, threads, client, temp_dir):
-    """Explicitly release everything the demo started, in order, before the
-    process exits:
-
-    * close the HTTP client (connection pool);
-    * ask each uvicorn server to stop (``should_exit`` triggers its graceful
-      shutdown, including the app's lifespan/shutdown);
-    * join the server threads;
-    * remove the temp trust + audit directory.
-
-    The audit log holds no persistent file handle — ``AuditLog`` opens, writes,
-    fsyncs and closes on every append — so removing the directory is a clean
-    delete with nothing left open."""
-    if client is not None:
-        client.close()
-    for server in servers:
-        server.should_exit = True
-    for thread in threads:
-        thread.join(timeout=5.0)
-    shutil.rmtree(temp_dir, ignore_errors=True)
-
-
-def wait_for(client, url, timeout=10.0):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            client.get(url, timeout=0.5)
-            return
-        except Exception:
-            time.sleep(0.1)
-    raise RuntimeError(f"{url} did not come up")
-
-
 def mandate(key, **over):
     kw = dict(issuer="axlogiq-demo", subject="agent/x", action_scope=["generic_op"],
               resource_scope=["res-1"], constraints={}, not_before=PAST, not_after=FUTURE,
@@ -128,11 +81,7 @@ def mandate(key, **over):
 
 def main() -> int:
     client = httpx.Client(timeout=5.0)
-    servers, threads = [], []
-    for app, port in [(upstream, UPSTREAM_PORT), (gw.app, GATEWAY_PORT)]:
-        server, thread = make_server(app, port)
-        servers.append(server)
-        threads.append(thread)
+    servers = DemoServers()
 
     base = f"http://127.0.0.1:{GATEWAY_PORT}"
     failures = []
@@ -144,8 +93,9 @@ def main() -> int:
         return client.post(base + "/mandates/execute", headers=AGENT, json=body).json()
 
     try:
-        wait_for(client, f"http://127.0.0.1:{GATEWAY_PORT}/health")
-        wait_for(client, f"http://127.0.0.1:{UPSTREAM_PORT}/")
+        # DemoServers.start() blocks until each server is ready (server.started).
+        servers.start(upstream, UPSTREAM_PORT)
+        servers.start(gw.app, GATEWAY_PORT)
 
         print("\n=== Governance HTTP end-to-end (real gateway + upstream) ===\n")
 
@@ -208,19 +158,17 @@ def main() -> int:
               "ESCALATE single-use, all through the one coordinator/gate path.\n")
         return 0
     finally:
-        # Tear down everything we started, in order, while the interpreter is
-        # still healthy — servers stopped, threads joined, client and temp
-        # resources released — so process exit has nothing live left to finalize.
-        shutdown(servers, threads, client, _trust_dir)
+        # Deterministic teardown, while the interpreter is still healthy: stop +
+        # join every embedded server (failing loudly if one will not stop), then
+        # release the HTTP client and temp resources. Because the server threads
+        # are joined here, no uvloop/libuv loop is still live at interpreter exit
+        # — so no os._exit() workaround is needed to dodge a finalizer segfault.
+        try:
+            servers.stop_all()
+        finally:
+            client.close()
+            shutil.rmtree(_trust_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
-    rc = main()
-    # All resources are explicitly released in main()'s finally block above.
-    # The servers run uvloop/OpenSSL in (now-joined) threads; to remove any
-    # residual chance of a native-finalizer race segfaulting at shutdown *after*
-    # a successful run (intermittent exit 139), flush and exit immediately with
-    # the real status code rather than running the interpreter's finalizers.
-    sys.stdout.flush()
-    sys.stderr.flush()
-    os._exit(rc)
+    sys.exit(main())

@@ -34,17 +34,16 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import threading
-import time
 from pathlib import Path
 
 import httpx
-import uvicorn
 from fastapi import FastAPI, Request
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
+
+from examples._demo_server import DemoServers  # noqa: E402
 
 from examples.governed_agent.agent import Agent  # noqa: E402
 from examples.governed_agent.consensus_support import EvaluatorPool  # noqa: E402
@@ -69,21 +68,6 @@ async def sink(request: Request, path: str):
     if request.method != "GET":
         SEEN.append({"action": path, "body": body})
     return {"upstream_reached": True, "action": path, "received": body}
-
-
-def serve(app, port):
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="error")
-
-
-def wait_for(url: str, timeout: float = 10.0) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            httpx.get(url, timeout=0.5)
-            return
-        except Exception:
-            time.sleep(0.1)
-    raise RuntimeError(f"service at {url} did not come up")
 
 
 def _votes(pool, client, p, ch, *, payload=None):
@@ -174,21 +158,27 @@ async def run_scenarios(base_url: str) -> list[str]:
 
 
 def main() -> int:
-    threading.Thread(target=serve, args=(upstream, UPSTREAM_PORT), daemon=True).start()
-    wait_for(f"http://127.0.0.1:{UPSTREAM_PORT}/")
-    base_url = f"http://127.0.0.1:{UPSTREAM_PORT}"
+    servers = DemoServers()
+    try:
+        # DemoServers.start() blocks until the upstream is ready (server.started).
+        servers.start(upstream, UPSTREAM_PORT)
+        base_url = f"http://127.0.0.1:{UPSTREAM_PORT}"
 
-    print("\n=== Reference integration: outbound HTTP governed by MCC-Core (consensus-required) ===\n")
-    failures = asyncio.run(run_scenarios(base_url))
+        print("\n=== Reference integration: outbound HTTP governed by MCC-Core (consensus-required) ===\n")
+        failures = asyncio.run(run_scenarios(base_url))
 
-    if failures:
-        print("\nREFERENCE INTEGRATION FAILED:")
-        for f in failures:
-            print(f"  - {f}")
-        return 1
-    print("\nPASSED: only ALLOW / approved-ESCALATE / re-consensused-CONSTRAIN reached upstream; "
-          "DENY and direct bypass never did.\n")
-    return 0
+        if failures:
+            print("\nREFERENCE INTEGRATION FAILED:")
+            for f in failures:
+                print(f"  - {f}")
+            return 1
+        print("\nPASSED: only ALLOW / approved-ESCALATE / re-consensused-CONSTRAIN reached upstream; "
+              "DENY and direct bypass never did.\n")
+        return 0
+    finally:
+        # Deterministic teardown: stop + join the embedded server before the
+        # interpreter exits, on success and on exception alike.
+        servers.stop_all()
 
 
 if __name__ == "__main__":
