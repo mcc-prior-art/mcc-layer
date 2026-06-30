@@ -1,0 +1,25 @@
+# One image for the governed-agent pilot's Python services (gateway / pilot-api /
+# agent runner). Build context is the repository root (the compose file sets it).
+FROM python:3.11-slim
+
+RUN useradd --create-home --uid 10003 mcc
+WORKDIR /app
+
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# The authoritative runtime + the egress proxy gateway + the agent package + the
+# external pilot API + the compose runner. No keys/secrets are copied in.
+COPY src /app/src
+COPY gateway /app/gateway
+COPY egress_proxy /app/egress_proxy
+COPY examples /app/examples
+COPY pilot_api /app/pilot_api
+COPY deploy/pilot/governed_agent_compose_demo.py /app/governed_agent_compose_demo.py
+
+ENV PYTHONPATH=/app/src:/app
+
+RUN mkdir -p /data && chown -R mcc:mcc /data /app
+USER mcc
+
+CMD ["python", "-c", "print('mcc agent pilot image')"]

@@ -190,6 +190,14 @@ mcc-layer/
 │       ├── policy.py          ← PolicyBundle with hash verification
 │       ├── authority.py       ← config mandate registry + action→authority→verdict (the formula in code)
 │       └── signing.py         ← Ed25519 token signing/verification
+│   └── mcc_agent/             ← governed agent pilot (proposes only; no executor/signing key/outbound HTTP)
+│       ├── agent.py           ← GovernedAgent: goal→planner→submit→[ESCALATE approve]→AgentResult
+│       ├── planner.py         ← DeterministicPlanner: goal→ActionProposal (credential-free; pilot goals)
+│       ├── client.py          ← GovernanceClient protocol + EmbeddedGovernanceClient (reuses GovernedMCCClient + HTTPEgressExecutor + per-action pilot AuthorityModel); propose/decide/approve/execute
+│       ├── models.py / errors.py ← typed ActionProposal/GovernanceOutcome/AgentResult + structured errors
+│       └── demo.py            ← runnable pilot: 9 scenarios vs a real loopback pilot-api + reproducible evidence
+├── pilot_api/                 ← the EXTERNAL pilot API the agent acts upon (separate service; deterministic state, /operations evidence, strict schemas; no governance)
+│   └── app.py                 ← /leads /campaigns/{id}/budget /notifications /tasks /webhooks /operations /health
 ├── gateway/                   ← the gate as an HTTP service
 │   ├── app.py                 ← POST /evaluate; /verify; /export; mounts governance HTTP routes
 │   ├── pilot_policy.py        ← hardcoded authority + velocity (PILOT_VELOCITY) config for the first pilot client
@@ -311,6 +319,8 @@ mcc-layer/
     ├── test_egress_mtls.py    ← optional mTLS via refs: valid; missing/mismatched cert+key; invalid CA; server-trust/SSRF still enforced; temp cleanup
     ├── test_egress_observability.py ← correlation generate/validate/reject, redaction, bounded metric labels, telemetry-failure isolation, liveness≠readiness, correlation→header/audit, secret never in metrics/logs/response/ready/audit, audit-before-execution
     ├── test_demo_server.py    ← demo-server lifecycle: shutdown requested + thread joined + none survive, cleanup on exception, startup-failure reported, shutdown-timeout fails explicitly, no thread leak, success→exit 0, failure→non-zero
+    ├── test_mcc_agent.py      ← governed agent E2E: ALLOW/DENY/ESCALATE(+invalid approvals)/CONSTRAIN, replay/nonce/idempotency, Redis fail-closed, SSRF/malformed, audit-before-exec, bypass, real external execution, state-unchanged-after-blocked
+    ├── test_mcc_agent_no_direct_egress.py ← static guard: no forbidden networking imports in src/mcc_agent; no direct-execute surface
     ├── examples/test_egress_credentials_governed.py ← secrets resolved only after authorization + durable audit; never in response/audit
     └── opa_test_vectors.json
 ```

@@ -373,6 +373,71 @@ or alters a decision, and observability never weakens fail-closed behavior. See
 [alert rules](deploy/observability/alerts.yml), and the
 [incident runbook](deploy/observability/INCIDENT_RUNBOOK.md).
 
+## Real Governed Agent Pilot
+
+A real, runnable AI agent (`src/mcc_agent/`) whose external actions are governed
+end to end by MCC-Core. It is **not** a mock: the agent proposes, MCC-Core
+decides, the execution gate enforces, and the existing governed HTTPS executor
+performs the request against a separate external pilot API. The agent holds no
+executor and no signing key, performs no outbound networking of its own, and
+never treats a proposal as permission.
+
+```mermaid
+flowchart LR
+    G[User Goal] --> A[Governed Agent]
+    A -->|structured proposal| M[MCC-Core]
+    M --> D{Decision\nALLOW / DENY / ESCALATE / CONSTRAIN}
+    D -->|authorized| GATE[Execution Gate]
+    GATE --> X[Governed HTTPS Executor]
+    X --> E[External Pilot API]
+    M --> AU[(Append-only Audit Chain)]
+    GATE --> AU
+    X --> AU
+    D -->|DENY / unapproved / unsafe| AU
+```
+
+**What the agent does.** A deterministic planner (no LLM credentials required)
+turns a goal — e.g. *"Create a CRM lead for Alice with a campaign budget of 500
+EUR"* — into a structured action proposal. The supported governance client
+submits it to the real MCC-Core runtime (`AuthorityModel` → decision token →
+`ExecutionGate` → `EnforcementCoordinator` → governed `HTTPEgressExecutor`),
+which is the only thing that performs the external request. Every proposal,
+decision, approval, constraint, execution, or rejection is recorded in the audit
+chain.
+
+**Run it (in-process pilot — all scenarios, no Docker, no credentials):**
+
+```bash
+PYTHONPATH=src python -m mcc_agent.demo            # ALLOW/DENY/ESCALATE/CONSTRAIN + bypass/replay/Redis/SSRF/audit
+PYTHONPATH=src python -m mcc_agent.demo --evidence # also regenerate evidence/governed_agent_pilot/
+```
+
+**Run the full containerized pilot (agent + gateway + Redis + external API):**
+
+```bash
+docker compose -f docker-compose.pilot.yml up --build
+docker compose -f docker-compose.pilot.yml run --rm mcc-agent \
+    python /app/governed_agent_compose_demo.py
+```
+
+The Docker topology enforces a network boundary: the agent can reach the MCC
+gateway but has **no route** to the external pilot API — only the governed
+executor does. Inspect external state with `curl http://localhost:9100/operations`,
+and verify the audit chain via the gateway's `/export` / audit tooling.
+
+- **ESCALATE** returns `PENDING_APPROVAL`; execution happens only after a valid,
+  single-use approval through the existing approval path. Invalid, forged,
+  expired, untrusted, or mis-bound approvals never authorize execution.
+- **CONSTRAIN** clamps the payload to the mandate bound, re-hashes it, and
+  authorizes/executes only the constrained payload — the original is never sent.
+- **Pilot-ready:** the governed path, the four verdicts, replay/idempotency,
+  SSRF/TLS, audit-before-execution, and fail-closed dependency behavior.
+  **Still requires production hardening:** persistent signing keys, signed
+  mandates at scale, network policy / service identity / workload isolation, and
+  an LLM planner behind the deterministic one. See
+  [docs/MCC_CORE_PILOT_V0_1.md](docs/MCC_CORE_PILOT_V0_1.md) and the reproducible
+  [evidence](evidence/governed_agent_pilot/).
+
 ## Without MCC / With MCC
 
 Mobile-safe comparison:

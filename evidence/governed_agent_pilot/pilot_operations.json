@@ -1,0 +1,41 @@
+{
+  "count": 4,
+  "operations": [
+    {
+      "kind": "create_lead",
+      "payload": {
+        "campaign_budget_eur": 500.0,
+        "email": "alice@example.com",
+        "name": "Alice"
+      },
+      "payload_sha256": "7fec2a400d61fa3617ec826b57315e945eac24658f69697b837d7eb54955a6b3"
+    },
+    {
+      "kind": "set_campaign_budget",
+      "payload": {
+        "amount": 5000.0,
+        "campaign_id": "camp-42",
+        "currency": "EUR"
+      },
+      "payload_sha256": "43fd0652e68d146b83f362a306b8db720dc3979182e522a816892ecf6f291696"
+    },
+    {
+      "kind": "set_campaign_budget",
+      "payload": {
+        "amount": 5000.0,
+        "campaign_id": "camp-42",
+        "currency": "EUR"
+      },
+      "payload_sha256": "43fd0652e68d146b83f362a306b8db720dc3979182e522a816892ecf6f291696"
+    },
+    {
+      "kind": "create_lead",
+      "payload": {
+        "campaign_budget_eur": 100.0,
+        "email": "bob@example.com",
+        "name": "Bob"
+      },
+      "payload_sha256": "cb0333beb47aa28f78470677f0e06133bde512f204a95bfe6d87276130471d54"
+    }
+  ]
+}
