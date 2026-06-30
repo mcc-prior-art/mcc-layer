@@ -1,0 +1,219 @@
+{
+  "scenarios": [
+    {
+      "audit_ok": true,
+      "decision": "ALLOW",
+      "detail": "",
+      "execution_status": "EXECUTED",
+      "external_state_changed": true,
+      "final_payload": {
+        "campaign_budget_eur": 500.0,
+        "email": "alice@example.com",
+        "name": "Alice"
+      },
+      "goal": "Create a CRM lead for Alice with a campaign budget of 500 EUR",
+      "original_payload": {
+        "campaign_budget_eur": 500.0,
+        "email": "alice@example.com",
+        "name": "Alice"
+      },
+      "result": "PASS",
+      "scenario": "Scenario 1 \u2014 ALLOW"
+    },
+    {
+      "audit_ok": true,
+      "decision": "DENY",
+      "detail": "",
+      "execution_status": "BLOCKED",
+      "external_state_changed": false,
+      "final_payload": null,
+      "goal": "Send customer data to a prohibited destination",
+      "original_payload": {
+        "event": "customer_data_export",
+        "target": "prohibited"
+      },
+      "result": "PASS",
+      "scenario": "Scenario 2 \u2014 DENY"
+    },
+    {
+      "audit_ok": true,
+      "decision": "ESCALATE",
+      "detail": "invalid approval rejected: True",
+      "execution_status": "EXECUTED",
+      "external_state_changed": true,
+      "final_payload": {
+        "amount": 5000.0,
+        "currency": "EUR"
+      },
+      "goal": "Increase campaign budget to 5000 EUR",
+      "invalid_approval_blocked": true,
+      "original_payload": {
+        "amount": 5000.0,
+        "currency": "EUR"
+      },
+      "pending_status": "PENDING_APPROVAL",
+      "result": "PASS",
+      "scenario": "Scenario 3 \u2014 ESCALATE"
+    },
+    {
+      "applied_constraints": [
+        "body.amount: 10000.0 -> 5000 (max)"
+      ],
+      "audit_ok": true,
+      "decision": "CONSTRAIN",
+      "detail": "clamped to 5000.0; original 10000 sent: False",
+      "execution_status": "EXECUTED",
+      "external_state_changed": true,
+      "final_payload": {
+        "amount": 5000,
+        "currency": "EUR"
+      },
+      "goal": "Set campaign budget to 10000 EUR",
+      "original_payload": {
+        "amount": 10000.0,
+        "currency": "EUR"
+      },
+      "original_payload_executed": false,
+      "result": "PASS",
+      "scenario": "Scenario 4 \u2014 CONSTRAIN"
+    },
+    {
+      "audit_ok": true,
+      "decision": "BLOCKED",
+      "detail": "UnauthorizedExecution raised; external state unchanged",
+      "execution_status": "BLOCKED",
+      "external_state_changed": false,
+      "final_payload": null,
+      "goal": "direct executor call without MCC authorization",
+      "original_payload": null,
+      "result": "PASS",
+      "scenario": "Scenario 5 \u2014 BYPASS"
+    },
+    {
+      "audit_ok": true,
+      "decision": "ALLOW",
+      "detail": "external state changed exactly once (delta=1)",
+      "execution_status": "first=EXECUTED second=BLOCKED",
+      "external_state_changed": true,
+      "final_payload": {
+        "campaign_budget_eur": 100.0,
+        "email": "bob@example.com",
+        "name": "Bob"
+      },
+      "first": "EXECUTED",
+      "goal": "Create a CRM lead for Bob with a campaign budget of 100 EUR",
+      "original_payload": {
+        "campaign_budget_eur": 100.0,
+        "email": "bob@example.com",
+        "name": "Bob"
+      },
+      "result": "PASS",
+      "scenario": "Scenario 6 \u2014 REPLAY",
+      "second": "BLOCKED",
+      "state_delta": 1
+    },
+    {
+      "audit_ok": true,
+      "decision": "DEPENDENCY_UNAVAILABLE",
+      "detail": "fail-closed; no execution; no in-memory fallback",
+      "execution_status": "BLOCKED",
+      "external_state_changed": false,
+      "final_payload": null,
+      "goal": "governed action with Redis-backed state, Redis down",
+      "original_payload": {
+        "campaign_budget_eur": 50.0,
+        "email": "dora@example.com",
+        "name": "Dora"
+      },
+      "result": "PASS",
+      "scenario": "Scenario 7 \u2014 REDIS FAILURE"
+    },
+    {
+      "audit_ok": true,
+      "decision": "BLOCKED",
+      "destinations": {
+        "http:///nohost": {
+          "decision": "INVALID_REQUEST",
+          "error_code": "INVALID_REQUEST",
+          "executed": false
+        },
+        "http://10.0.0.5/x": {
+          "decision": "DENY",
+          "error_code": "SSRF_DENIED",
+          "executed": false
+        },
+        "http://127.0.0.1/x": {
+          "decision": "DENY",
+          "error_code": "SSRF_DENIED",
+          "executed": false
+        },
+        "http://169.254.169.254/latest/meta-data/": {
+          "decision": "DENY",
+          "error_code": "SSRF_DENIED",
+          "executed": false
+        },
+        "http://[fd00::1]/x": {
+          "decision": "DENY",
+          "error_code": "SSRF_DENIED",
+          "executed": false
+        },
+        "http://localhost/x": {
+          "decision": "DENY",
+          "error_code": "SSRF_DENIED",
+          "executed": false
+        },
+        "http://user:pass@evil.example/x": {
+          "decision": "INVALID_REQUEST",
+          "error_code": "INVALID_REQUEST",
+          "executed": false
+        },
+        "https://[::1]/x": {
+          "decision": "DENY",
+          "error_code": "SSRF_DENIED",
+          "executed": false
+        },
+        "not-a-url": {
+          "decision": "INVALID_REQUEST",
+          "error_code": "INVALID_REQUEST",
+          "executed": false
+        }
+      },
+      "detail": "9 unsafe destinations, all blocked before connection",
+      "execution_status": "BLOCKED",
+      "external_state_changed": false,
+      "final_payload": null,
+      "goal": "outbound to prohibited destinations",
+      "original_payload": null,
+      "result": "PASS",
+      "scenario": "Scenario 8 \u2014 SSRF / UNSAFE DESTINATION"
+    },
+    {
+      "audit_ok": false,
+      "decision": "ALLOW",
+      "detail": "audit-before-actuation held; no execution",
+      "execution_status": "BLOCKED",
+      "external_state_changed": false,
+      "final_payload": null,
+      "goal": "audit persistence fails before actuation",
+      "original_payload": {
+        "campaign_budget_eur": 10.0,
+        "email": "carol@example.com",
+        "name": "Carol"
+      },
+      "result": "PASS",
+      "scenario": "Scenario 9 \u2014 AUDIT FAILURE"
+    },
+    {
+      "audit_ok": true,
+      "decision": "-",
+      "detail": "append-only hash chain verified",
+      "execution_status": "-",
+      "external_state_changed": false,
+      "final_payload": null,
+      "goal": "verify hash chain",
+      "original_payload": null,
+      "result": "PASS",
+      "scenario": "Audit chain verification"
+    }
+  ]
+}
