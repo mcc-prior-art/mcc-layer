@@ -231,6 +231,7 @@ mcc-layer/
 ├── server/
 │   └── app.py                 ← DEPRECATED legacy runtime (no decision tokens)
 ├── examples/                  ← demo scripts and execution profiles
+│   ├── _demo_server.py        ← deterministic embedded-uvicorn lifecycle (DemoServer/DemoServers): server.started readiness + should_exit + bounded join + verify-not-alive; prevents the interpreter-finalization SIGSEGV (exit 139); daemon-thread termination never relied upon
 │   ├── egress_proxy_demo.py   ← live E2E: agent → proxy → upstream (ALLOW reaches, DENY blocked)
 │   ├── transaction_governance_demo.py ← live E2E: idempotency dedup + cumulative ceiling through gateway+coordinator proxy
 │   ├── governance_http_demo.py ← live E2E HTTP: mandate execute/revoke + ESCALATE approve→single-use over the real gateway
@@ -244,6 +245,7 @@ mcc-layer/
 │   ├── redis_approval_smoke.py ← E2E: cross-instance single-use approval consume on real Redis
 │   ├── redis_challenge_smoke.py ← E2E: cross-instance challenge issue + single-use consume on real Redis
 │   ├── redis_governance_http_smoke.py ← E2E: cross-instance revocation + single-use through GovernanceService on real Redis
+│   ├── smoke_stress.sh        ← stress harness: each affected demo x N runs; fails on exit 139 / hang / non-zero (no retries/masking)
 │   └── smoke_test.sh
 ├── docs/                      ← architecture, security model, decision token spec
 │   ├── MVP_GATEWAY.md         ← MVP: authority model, gateway service, the one interceptor
@@ -308,6 +310,7 @@ mcc-layer/
     ├── test_egress_credentials.py ← credential scope binding, resolution, header injection, redaction, cross-origin stripping
     ├── test_egress_mtls.py    ← optional mTLS via refs: valid; missing/mismatched cert+key; invalid CA; server-trust/SSRF still enforced; temp cleanup
     ├── test_egress_observability.py ← correlation generate/validate/reject, redaction, bounded metric labels, telemetry-failure isolation, liveness≠readiness, correlation→header/audit, secret never in metrics/logs/response/ready/audit, audit-before-execution
+    ├── test_demo_server.py    ← demo-server lifecycle: shutdown requested + thread joined + none survive, cleanup on exception, startup-failure reported, shutdown-timeout fails explicitly, no thread leak, success→exit 0, failure→non-zero
     ├── examples/test_egress_credentials_governed.py ← secrets resolved only after authorization + durable audit; never in response/audit
     └── opa_test_vectors.json
 ```
