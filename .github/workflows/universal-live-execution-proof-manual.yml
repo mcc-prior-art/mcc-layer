@@ -1,0 +1,130 @@
+name: Universal Execution Authority Live Proof (manual, optional)
+
+# Optional, MANUALLY-TRIGGERED live proof that PR #111's ACTUAL HTTP
+# surface (POST /v1/proposals, POST /v1/operations/{id}/execute) can
+# reach a real external sandbox side effect (one harmless GitHub issue in
+# an explicitly configured, isolated sandbox repository), via a REAL
+# uvicorn server on a real TCP port, hit with a real httpx client --
+# never an in-process ASGI transport. Never runs on pull_request/push --
+# normal CI stays green with zero external secrets (see
+# tests/test_universal_execution_proof.py, which uses a local mock
+# GitHub server and never this workflow).
+#
+# Reuses the SAME safety gate and secret naming convention as
+# phase2-live-sandbox-manual.yml (examples/phase2_live_sandbox/config.py,
+# unchanged). Requires BOTH of:
+#   - repository variable  PHASE2_SANDBOX_REPO   (owner/repo -- NEVER this
+#     repository itself; the code-level guard refuses
+#     mcc-prior-art/mcc-layer regardless of what is configured here)
+#   - repository secret    PHASE2_SANDBOX_GITHUB_TOKEN
+#
+# If either is unset, the run fails fast with
+# "LIVE EXTERNAL SANDBOX: NOT EXECUTED — CREDENTIALS NOT AVAILABLE" and
+# makes zero external requests.
+#
+# The THIRD step (live-model-provenance remediation) additionally
+# requires, ONLY for that step:
+#   - repository secret    ASTRA_LIVE_OPENAI_API_KEY
+#   - repository variable  ASTRA_LIVE_OPENAI_MODEL
+# mapped into the literal env vars OpenAIAstraProvider.from_env() reads
+# (OPENAI_API_KEY / OPENAI_MODEL). If either is unset, that step alone
+# fails fast with "LIVE OPENAI MODEL PROOF — NOT EXECUTED" and makes zero
+# calls to OpenAI or GitHub -- there is no fallback to the offline/
+# reference Astra provider the second step already exercises. That third
+# step's producer is a real, live OpenAI-compatible model (identity taken
+# from the response at call time -- never hardcoded, never claimed to be
+# "GPT-6 Astra", which names only this repository's reference
+# abstraction). This workflow still never runs on pull_request/push, so
+# normal CI never requires or consumes these credentials either.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  universal-live-execution-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run the universal live execution proof
+        env:
+          MCC_PHASE2_LIVE_SANDBOX: "1"
+          MCC_PHASE2_SANDBOX_REPO: ${{ vars.PHASE2_SANDBOX_REPO }}
+          GITHUB_TOKEN: ${{ secrets.PHASE2_SANDBOX_GITHUB_TOKEN }}
+          MCC_REDIS_URL: redis://127.0.0.1:6379/0
+        run: |
+          if [ -z "${MCC_PHASE2_SANDBOX_REPO}" ] || [ -z "${GITHUB_TOKEN}" ]; then
+            echo "LIVE EXTERNAL SANDBOX: NOT EXECUTED — CREDENTIALS NOT AVAILABLE"
+            echo "::warning::Set the 'PHASE2_SANDBOX_REPO' repository variable and the"
+            echo "::warning::'PHASE2_SANDBOX_GITHUB_TOKEN' repository secret to enable this workflow."
+            exit 1
+          fi
+          python examples/universal_execution_proof/run_live_proof.py
+
+      - name: Run the same live proof with GPT-6 Astra (reference/offline) as the upstream producer
+        env:
+          MCC_PHASE2_LIVE_SANDBOX: "1"
+          MCC_PHASE2_SANDBOX_REPO: ${{ vars.PHASE2_SANDBOX_REPO }}
+          GITHUB_TOKEN: ${{ secrets.PHASE2_SANDBOX_GITHUB_TOKEN }}
+          MCC_REDIS_URL: redis://127.0.0.1:6379/0
+        run: |
+          if [ -z "${MCC_PHASE2_SANDBOX_REPO}" ] || [ -z "${GITHUB_TOKEN}" ]; then
+            echo "LIVE EXTERNAL SANDBOX: NOT EXECUTED — CREDENTIALS NOT AVAILABLE"
+            exit 1
+          fi
+          python examples/universal_execution_proof/run_live_proof_astra.py
+
+      - name: Run the same live proof with a REAL live OpenAI model call as the upstream producer
+        # Distinct from the previous step: this one sources its proposal
+        # from a genuine OpenAI Chat Completions call (OpenAIAstraProvider),
+        # never DeterministicAstraProvider. The producer is whatever real
+        # model OPENAI_MODEL names (e.g. gpt-4o-mini) -- never "GPT-6
+        # Astra", which is only this repository's internal reference-
+        # abstraction label. Optional on top of the already-optional
+        # workflow: if the secret/variable pair below is not configured,
+        # this step alone reports "LIVE OPENAI MODEL PROOF — NOT EXECUTED"
+        # and exits non-zero without silently downgrading to an offline run.
+        env:
+          MCC_PHASE2_LIVE_SANDBOX: "1"
+          MCC_PHASE2_SANDBOX_REPO: ${{ vars.PHASE2_SANDBOX_REPO }}
+          GITHUB_TOKEN: ${{ secrets.PHASE2_SANDBOX_GITHUB_TOKEN }}
+          MCC_REDIS_URL: redis://127.0.0.1:6379/0
+          OPENAI_API_KEY: ${{ secrets.ASTRA_LIVE_OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.ASTRA_LIVE_OPENAI_MODEL }}
+        run: |
+          if [ -z "${OPENAI_API_KEY}" ] || [ -z "${OPENAI_MODEL}" ]; then
+            echo "LIVE OPENAI MODEL PROOF — NOT EXECUTED"
+            echo "::warning::Set the 'ASTRA_LIVE_OPENAI_API_KEY' repository secret and the"
+            echo "::warning::'ASTRA_LIVE_OPENAI_MODEL' repository variable to enable this step."
+            exit 1
+          fi
+          if [ -z "${MCC_PHASE2_SANDBOX_REPO}" ] || [ -z "${GITHUB_TOKEN}" ]; then
+            echo "LIVE EXTERNAL SANDBOX: NOT EXECUTED — CREDENTIALS NOT AVAILABLE"
+            exit 1
+          fi
+          python examples/universal_execution_proof/run_live_proof_astra_openai.py

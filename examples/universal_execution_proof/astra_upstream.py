@@ -1,0 +1,108 @@
+"""GPT-6 Astra reference-abstraction adapter for the Universal Execution
+Authority proof (PR #112, correction addendum + live-model-provenance
+remediation). "GPT-6 Astra" names this repository's own reference
+abstraction/adapter, not any particular real model's brand identity --
+the offline/reference evidence line genuinely uses that abstraction's
+deterministic provider; the live evidence line (see
+``run_live_proof_astra_openai.py``) uses the abstraction's real adapter
+to make a genuine call to whatever real OpenAI-compatible model an
+operator configures (e.g. ``gpt-4o-mini``), and is never itself
+identified as "GPT-6 Astra".
+
+Reuses, unchanged, ``examples.gpt6_astra_reference``'s existing
+intelligence-layer abstraction (``AstraProvider.propose(task) ->
+AstraResponse``, ``DeterministicAstraProvider``, ``AstraProposal``) — no
+new provider integration, no new Astra-specific architecture. Astra
+itself has, and can reach, nothing MCC would treat as trusted evidence or
+authority: no signing key, no attestation material, no reference to
+``mcc_core``/the Gate/the coordinator at all (see
+``examples/gpt6_astra_reference/astra_provider.py``'s own module
+docstring and ``tests/test_gpt6_astra_reference_architecture_guards.py``,
+both unmodified and reused as the structural proof that Astra cannot mint
+or bypass execution authority).
+
+This module's ONLY job is translating one ``AstraProposal`` (whatever
+Astra "decided" to propose) into the plain JSON shape PR #111's real HTTP
+boundary (``POST /v1/proposals``) already accepts -- there is no
+Astra-specific field, no Astra-specific verdict, and no Astra-specific
+execution path. Any other proposal producer (a different provider, a
+different framework, a human) uses the exact same
+``astra_proposal_to_http_request`` shape trivially, because it is nothing
+more than ``{action, resource, payload}``.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict
+
+from examples.gpt6_astra_reference.astra_provider import AstraProvider, DeterministicAstraProvider
+from examples.gpt6_astra_reference.models import AstraError, AstraProposal, AstraSelfRefusal
+
+
+class AstraUpstreamError(Exception):
+    """Raised when Astra declined (self-refusal) or its output could not
+    be used (parse/format error) -- in both cases, exactly as
+    ``examples.gpt6_astra_reference`` already documents, MCC-Core is never
+    invoked at all; there is nothing to authorize."""
+
+
+def build_astra_provider(task: str, *, action: str, resource: str, payload: Dict[str, Any]) -> DeterministicAstraProvider:
+    """The reference/offline Astra provider this repository's own demos
+    and tests already default to (no live OpenAI-compatible call, no
+    credential) -- one canned task -> proposal table entry, run through
+    the SAME strict parser (``parse_proposals``) a live model's output
+    would be."""
+    return DeterministicAstraProvider({task: {"action": action, "resource": resource, "payload": payload}})
+
+
+async def propose_via_astra(provider: AstraProvider, task: str) -> AstraProposal:
+    """Calls Astra (``propose``) and returns exactly one
+    :class:`AstraProposal` -- raising :class:`AstraUpstreamError` for a
+    self-refusal or a malformed/forbidden-field response, precisely
+    mirroring how a real live-model failure would be handled: MCC-Core is
+    never reached in either case.
+
+    Accepts anything satisfying the ``AstraProvider`` protocol -- the
+    reference/offline ``DeterministicAstraProvider`` this module's own
+    ``build_astra_provider`` returns, or the real
+    ``OpenAIAstraProvider`` (see
+    ``examples/universal_execution_proof/run_live_proof_astra_openai.py``,
+    PR #112's live-model-provenance remediation) -- unchanged, because
+    this function only ever calls the one narrow method both providers
+    implement identically: ``propose(task) -> AstraResponse``."""
+    response = await provider.propose(task)
+    outcome = response.outcome
+    if isinstance(outcome, AstraSelfRefusal):
+        raise AstraUpstreamError(f"Astra declined to propose: {outcome.reason}")
+    if isinstance(outcome, AstraError):
+        raise AstraUpstreamError(f"Astra output could not be used: {outcome.detail}")
+    if not outcome:
+        raise AstraUpstreamError("Astra produced no proposals")
+    return outcome[0]
+
+
+def astra_proposal_to_http_request(proposal: AstraProposal, *, actor: str = "gpt-6-astra-reference/v1") -> Dict[str, Any]:
+    """The ENTIRE upstream-adaptation surface: an ``AstraProposal`` has no
+    field this dict does not already carry, and no field of this dict is
+    Astra-specific -- ``actor`` is the only addition, a plain label
+    (unused by authority; see
+    ``docs/UNIVERSAL_EXECUTION_PROOF.md`` §2), never a trust signal.
+
+    ``actor`` defaults to the existing reference/offline label unchanged
+    (every existing caller that does not pass it is unaffected); the
+    live-OpenAI-model run passes a distinct, non-Astra-branded label
+    (``"live-openai-model/v1"``, see
+    ``run_live_proof_astra_openai.LIVE_OPENAI_MODEL_ACTOR``) so the two
+    proof lines' evidence can never be confused for one another, even
+    though authority itself never reads this field either way."""
+    return {
+        "actor": actor,
+        "action": proposal.action,
+        "resource": proposal.resource,
+        "payload": dict(proposal.payload),
+    }
+
+
+__all__ = [
+    "AstraUpstreamError", "build_astra_provider", "propose_via_astra", "astra_proposal_to_http_request",
+]
