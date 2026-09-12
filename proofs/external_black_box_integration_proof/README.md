@@ -1,4 +1,22 @@
-# External Black-Box Integration Proof (PR #114)
+# External Black-Box Integration Proof (PR #114, hardened by PR #115)
+
+> **PR #115 hardening note:** the original PR #114 harness could return
+> `result: "COMPLETED"` / exit 0 even if one of the proof's required
+> conditions had silently failed. PR #115 made both the consumer and the
+> orchestrator fail-closed: the consumer now evaluates all 14 required
+> conditions explicitly (`proof_checks`/`failed_checks`/`result:
+> "PROVEN"|"NOT PROVEN"`, exit 0 only on `"PROVEN"`), and the orchestrator
+> additionally requires the consumer's own verdict, `execute_status ==
+> "EXECUTED"`, and a verified, exactly-one-match independent GitHub
+> read-back before reporting `overall_verdict: "PROVEN"` (exit 0) —
+> otherwise `"NOT PROVEN"` (non-zero), with explicit
+> `overall_failure_reasons`. See `tests/test_external_black_box_proof_harness_verdict.py`
+> for the tests proving this fails closed on each falsified condition.
+> PR #115 also corrected overclaimed "byte-identical"/"exact bytes"
+> wording (see "What this proves / does not prove" below) and removed
+> leftover "Astra" wording from `mcc_side/run_server.py`'s docstring.
+> This did not change PR #114's own recorded historical evidence, which
+> remains valid as-is.
 
 Proves that a genuinely external consumer — isolated from MCC-Core
 internals, running outside this repository, with no MCC imports, signing
@@ -148,8 +166,12 @@ the kind of gap Phase 1's own externality requirement exists to catch.
   possible) can integrate with PR #113's pack using only its documented
   public HTTP contract.
 * A real, live, non-mocked call to `gpt-4o-mini` materially produced the
-  submitted proposal content (hash-bound, verified byte-identical from
-  capture to submission).
+  submitted proposal content. A canonical SHA-256 hash over the
+  proposal's `action`/`resource`/`payload` fields, computed at capture
+  time and re-verified immediately before submission, confirms those
+  fields were unchanged between the two points (canonical/semantic
+  equality — this is not a claim of literal HTTP wire-level byte
+  identity, which is not independently captured or asserted here).
 * MCC's existing, unmodified authority path (tenant resolution → stored
   proposal → authority evaluation → signed decision →
   `EnforcementCoordinator` → durable admission → audit-before-actuation)

@@ -1,23 +1,24 @@
 {
   "connection_info": {
     "action": "create_github_issue",
-    "api_key_redacted": "8mko...<redacted>...",
-    "base_url": "http://127.0.0.1:54391",
+    "api_key_redacted": "ipFB...<redacted>...",
+    "base_url": "http://127.0.0.1:46375",
     "resource": "mcc-prior-art/mcc-phase2-sandbox",
-    "run_id": "03214f00",
-    "tenant_hint": "blackbox-tenant-03214f00"
+    "run_id": "7a1e1875",
+    "tenant_hint": "blackbox-tenant-7a1e1875"
   },
   "consumer_evidence": {
-    "captured_proposal_sha256": "144922a69369df1632121de9385c9976a2c34cd8306e09f57fcee72e48624fb4",
+    "captured_proposal_sha256": "42187e55b27ac358e524ef21d21fa2b20367b44b15a7d19e1ba00d71f9a60363",
     "execute_body": {
       "applied_changes": [],
-      "audit_ref": "1ac88dd9a8cc9a958514bbc1df4e71b20dd118b80a9c98b5d916fcd95d21d2c2",
+      "audit_ref": "efc65f5ee35995631767267aa8aad6abe85ce7fa314d91667b668076d7536a59",
       "decision": "ALLOW",
       "reason": "executed",
       "status": "EXECUTED"
     },
     "execute_status": "EXECUTED",
     "execute_status_code": 200,
+    "failed_checks": [],
     "invalid_auth_execute_status_code": 401,
     "invalid_auth_submit_status_code": 401,
     "isolation_check": {
@@ -27,13 +28,13 @@
       "mcc_layer_path_in_sys_path": false,
       "mcc_proposal": "import failed as expected: ModuleNotFoundError: No module named 'mcc_proposal'"
     },
-    "logical_operation_id": "mcc-blackbox-757067efbdb4492498ea16d4d701fe87",
+    "logical_operation_id": "mcc-blackbox-6c720ad09e004786972e150f8c1b2c2e",
     "malformed_submit_body": {
       "detail": [
         {
           "input": {
             "actor": "live-gpt-4o-mini-external-consumer/v1",
-            "logical_operation_id": "mcc-blackbox-malformed-193d9e2c292b480988773c23ab155230"
+            "logical_operation_id": "mcc-blackbox-malformed-25ffe14b7d8b428d889ae9f736468925"
           },
           "loc": [
             "body",
@@ -45,35 +46,51 @@
       ]
     },
     "malformed_submit_status_code": 422,
-    "mcc_api_key_redacted": "8mko...<redacted>...pR3Y",
-    "mcc_base_url": "http://127.0.0.1:54391",
-    "model_created": 1789234638,
+    "mcc_api_key_redacted": "ipFB...<redacted>...2g2a",
+    "mcc_base_url": "http://127.0.0.1:46375",
+    "model_created": 1789239247,
     "model_identity_match": false,
     "model_is_live": true,
-    "model_openai_request_id": "req_e0f5cb10790e4697a2a77268935b9ee5",
-    "model_response_id": "chatcmpl-ENLx8WjB18AqWP2Fw6w7eDf4mEHWq",
+    "model_openai_request_id": "req_ee1d1338f6c444d39864b163f2aa25b9",
+    "model_response_id": "chatcmpl-ENN9T5ryAffhOtIU2NpVBXbp34aYJ",
     "model_usage": {
-      "completion_tokens": 96,
+      "completion_tokens": 101,
       "completion_tokens_details": {
         "accepted_prediction_tokens": 0,
         "audio_tokens": 0,
         "reasoning_tokens": 0,
         "rejected_prediction_tokens": 0
       },
-      "prompt_tokens": 227,
+      "prompt_tokens": 231,
       "prompt_tokens_details": {
         "audio_tokens": 0,
         "cached_tokens": 0
       },
-      "total_tokens": 323
+      "total_tokens": 332
     },
     "openai_api_key_redacted": "sk-p...<redacted>...UG0A",
-    "proof_id": "mcc-blackbox-757067efbdb4492498ea16d4d701fe87",
+    "proof_checks": {
+      "execute_http_200": true,
+      "execute_status_executed": true,
+      "invalid_auth_execute_401": true,
+      "invalid_auth_submit_401": true,
+      "live_model_call_succeeded": true,
+      "malformed_submit_422": true,
+      "proof_id_in_model_output": true,
+      "proposal_hash_binding_verified": true,
+      "replay_http_200": true,
+      "replay_status_blocked": true,
+      "submit_http_200": true,
+      "submit_status_proposed": true,
+      "unauthorized_execute_denied": true,
+      "unauthorized_submit_accepted": true
+    },
+    "proof_id": "mcc-blackbox-6c720ad09e004786972e150f8c1b2c2e",
     "proof_id_present_in_model_output": true,
     "proposal_action": "create_github_issue",
     "proposal_hash_binding_verified": true,
-    "proposal_payload_body": "This issue was created by a real, live external integration proof. Please reference the following string for locating this issue later: mcc-blackbox-757067efbdb4492498ea16d4d701fe87.",
-    "proposal_payload_title": "Integration Proof Issue",
+    "proposal_payload_body": "This issue was created by a real, live external integration proof. Please reference the identifier for locating this issue: mcc-blackbox-6c720ad09e004786972e150f8c1b2c2e.",
+    "proposal_payload_title": "Integration Proof: External System Trigger",
     "proposal_resource": "mcc-prior-art/mcc-phase2-sandbox",
     "replay_body": {
       "applied_changes": [],
@@ -85,34 +102,43 @@
     "replay_status": "BLOCKED",
     "replay_status_code": 200,
     "requested_model": "gpt-4o-mini",
-    "result": "COMPLETED",
+    "result": "PROVEN",
     "returned_model": "gpt-4o-mini-2024-07-18",
     "submit_body": {
       "accepted": true,
       "contract_version": "v1",
-      "logical_operation_id": "mcc-blackbox-757067efbdb4492498ea16d4d701fe87",
-      "proposal_binding": "sha256:e0fe644f5355b734eda02436e7b9e687f1f143f65d154861d50afc545f39f7b7",
+      "logical_operation_id": "mcc-blackbox-6c720ad09e004786972e150f8c1b2c2e",
+      "proposal_binding": "sha256:1599e23ae1d242e8932112e82b4be30d1be0fa1f5a74706b423a345fea746647",
       "status": "PROPOSED"
     },
     "submit_status_code": 200,
-    "submitted_proposal_sha256": "144922a69369df1632121de9385c9976a2c34cd8306e09f57fcee72e48624fb4",
+    "submitted_proposal_sha256": "42187e55b27ac358e524ef21d21fa2b20367b44b15a7d19e1ba00d71f9a60363",
     "unauthorized_execute_status": "DENIED",
     "unauthorized_execute_status_code": 200,
+    "unauthorized_submit_body": {
+      "accepted": true,
+      "contract_version": "v1",
+      "logical_operation_id": "mcc-blackbox-unauthorized-10f0a278b0fe43d8b4afa62a639afe38",
+      "proposal_binding": "sha256:a3d63527a9bcb8090ae1698d8a8c0fcb466a2905210e1bebb218c5d4c92e63ae",
+      "status": "PROPOSED"
+    },
     "unauthorized_submit_status_code": 200
   },
   "consumer_returncode": 0,
   "consumer_stderr_tail": "",
   "independent_readback": {
-    "attempt": 3,
+    "attempt": 4,
     "issues": [
       {
-        "number": 7,
-        "title": "Integration Proof Issue",
-        "url": "https://github.com/mcc-prior-art/mcc-phase2-sandbox/issues/7"
+        "number": 8,
+        "title": "Integration Proof: External System Trigger",
+        "url": "https://github.com/mcc-prior-art/mcc-phase2-sandbox/issues/8"
       }
     ],
     "total_count": 1,
     "verified": true
   },
+  "overall_failure_reasons": [],
+  "overall_verdict": "PROVEN",
   "phase": "startup"
 }

@@ -1,251 +1,205 @@
-# Live Proof Report — External Black-Box Integration Proof (PR #114)
+# Live Proof Report — External Black-Box Integration Proof
 
 **DO NOT MERGE.**
 
+This report supersedes PR #114's original `LIVE_PROOF_REPORT.md` after
+PR #115's hardening (fail-closed consumer/orchestrator verdict logic,
+corrected canonical-hash wording, removed leftover "Astra" title). This
+is a fresh live re-run under the hardened harness — a new `proof_id` and
+a new real GitHub issue, per PR #115's explicit requirement not to reuse
+PR #114's issue #7.
+
 ## A. Baseline
 
-Starting `main` SHA: `731ab5942994963cfb47d2fad107ba3709e94496` (PR #113's
-merge commit). Branch: `feat/live-astra-external-black-box-proof`.
+Starting `main` SHA: `54f5b084928281a7d34fda3ae5ab66d0e5a3aa14` (PR #114's
+merge commit). Branch: `fix/external-black-box-proof-harness-hardening`.
 
 ## B. Files changed
 
 | File | Purpose |
 |---|---|
-| `proofs/external_black_box_integration_proof/mcc_side/run_server.py` | Real governed HTTP server subprocess. Reuses `build_external_pilot_app` (PR #113), a real GitHub actuator (PR #108/#110/#112, unchanged), and real Redis-backed registries. New file, no existing code modified. |
-| `proofs/external_black_box_integration_proof/run_black_box_proof.py` | Orchestrator: spawns the server subprocess, spawns the external consumer as a separate subprocess with an isolated venv/cwd/env, performs an independent GitHub read-back over a third code path. New file. |
-| `proofs/external_black_box_integration_proof/external_consumer_snapshot/consumer.py` | Committed byte-for-byte copy of the external consumer (real location: outside this repository, `/tmp/mcc-live-external-consumer/consumer.py`), so the static architecture guard tests can scan it without reaching outside the repo checkout. New file. |
-| `proofs/external_black_box_integration_proof/README.md` | Proof layout, scope correction record, isolation-caveat writeup. New file. |
-| `proofs/external_black_box_integration_proof/sanitized_live_run.json` | Machine-readable evidence from the actual live run. No secrets (all keys/tokens redacted by the scripts before ever being written). New file. |
-| `tests/test_external_black_box_proof_architecture_guards.py` | 16 offline tests: static AST guards (forbidden imports/names/calls) with non-vacuity probes per category, plus a dynamic import-and-run check of the consumer's own isolation self-check function. New file. |
+| `proofs/external_black_box_integration_proof/mcc_side/run_server.py` | Removed leftover "Live Astra Black-Box..." title; now model-neutral (Finding 4) |
+| `proofs/external_black_box_integration_proof/run_black_box_proof.py` | Added `_compute_overall_verdict`: fail-closed `overall_verdict`/`overall_failure_reasons`, requiring consumer PROVEN + EXECUTED + verified single-match read-back (Finding 2) |
+| `proofs/external_black_box_integration_proof/external_consumer_snapshot/consumer.py` | Re-synced snapshot of the hardened external consumer (see below) |
+| `proofs/external_black_box_integration_proof/README.md` | PR #115 hardening note; corrected byte-identity wording (Finding 3) |
+| `proofs/external_black_box_integration_proof/LIVE_PROOF_REPORT.md` | This file — regenerated for the new run |
+| `proofs/external_black_box_integration_proof/sanitized_live_run.json` | Regenerated evidence, no secrets |
+| `proofs/external_black_box_integration_proof/sha256_manifest.txt` | Regenerated hashes |
+| `tests/test_external_black_box_proof_harness_verdict.py` | New: 22 tests exercising the actual verdict/exit-code decision functions (not string search) for conditions A-L + positive controls |
+| `tests/test_external_black_box_proof_architecture_guards.py` | Updated 2 tests whose string-search assertions were stale after Finding 1's refactor; behavior they guard is unchanged and now additionally covered by the new verdict tests |
 
-No existing file under `src/mcc_core/`, `gateway/`, `mcc_proposal/`,
-`examples/external_pilot/`, `examples/phase2_live_sandbox/`, or
-`examples/gpt6_astra_reference/` was modified.
+The real external consumer — outside this repository, at
+`/tmp/mcc-live-external-consumer/consumer.py` — was rewritten to add the
+fail-closed `REQUIRED_CHECKS`/`_finalize` verdict logic (Finding 1) and
+corrected `canonical_hash` wording (Finding 3). No file under
+`src/mcc_core/`, `gateway/proposal_execution_*`, `mcc_proposal/`, or any
+existing actuator/authority module was touched.
 
 ## C. Externality proof
 
-The external consumer (`/tmp/mcc-live-external-consumer/`, not part of
-this repository) is isolated by:
-
-* **Separate filesystem location and git repository.** `git init`'d
-  independently, own `README.md`/`requirements.txt` (only `httpx`), no
-  relationship to the mcc-layer checkout.
-* **Separate, freshly-created Python virtualenv**
-  (`/tmp/mcc-live-external-consumer/.venv`), containing only `httpx`.
-  This was necessary because this container's *ambient* Python
-  interpreter carries an unrelated, pre-existing editable install of
-  this repo's own `mcc_client` SDK from earlier SDK development work
-  (`/usr/local/lib/python3.11/dist-packages/__editable__.mcc_client-0.1.0.pth`
-  → `sdk/python/src`), which would have placed an mcc-layer path on
-  `sys.path` for any process on the machine. Confirmed the isolated
-  venv's `sys.path` contains no mcc-layer reference:
-  ```
-  ['', '/usr/lib/python311.zip', '/usr/lib/python3.11',
-   '/usr/lib/python3.11/lib-dynload',
-   '/tmp/mcc-live-external-consumer/.venv/lib/python3.11/site-packages']
-  ```
-* **Runtime self-check, actually executed** (not assumed): the
-  consumer's `check_mcc_internals_unavailable()` attempts
-  `__import__("mcc_core")`, `__import__("gateway.proposal_execution_service")`,
-  and `__import__("mcc_proposal")`, and records each result. From the
-  live run's own evidence (`isolation_check` in `sanitized_live_run.json`):
-  ```
-  "mcc_core": "import failed as expected: ModuleNotFoundError: No module named 'mcc_core'",
-  "gateway.proposal_execution_service": "import failed as expected: ModuleNotFoundError: No module named 'gateway'",
-  "mcc_proposal": "import failed as expected: ModuleNotFoundError: No module named 'mcc_proposal'",
-  "mcc_layer_path_in_sys_path": false,
-  "cwd": "/tmp/mcc-live-external-consumer"
-  ```
-* **Static guard, independent of the runtime check**:
-  `tests/test_external_black_box_proof_architecture_guards.py` AST-scans
-  the committed snapshot for any import of `mcc_core`, `gateway.*`,
-  `mcc_proposal`, `egress_proxy.executor`, direct GitHub write clients
-  (`github`/`pygithub`), any MCC signing/Gate/coordinator/authority name,
-  or any direct-GitHub-API call token — 16/16 tests pass, including one
-  non-vacuity probe per forbidden category proving the guard actually
-  catches a planted violation (verified by temporarily reverting each
-  guard and confirming the corresponding probe fails — see test run
-  output in section L).
+Unchanged from PR #114: separate filesystem location, own git repo, own
+isolated virtualenv (`/tmp/mcc-live-external-consumer/.venv`, only
+`httpx`). This run's isolation check:
+```
+"mcc_core": "import failed as expected: ModuleNotFoundError: No module named 'mcc_core'",
+"gateway.proposal_execution_service": "import failed as expected: ModuleNotFoundError: No module named 'gateway'",
+"mcc_proposal": "import failed as expected: ModuleNotFoundError: No module named 'mcc_proposal'",
+"mcc_layer_path_in_sys_path": false,
+"cwd": "/tmp/mcc-live-external-consumer"
+```
 
 ## D. Live-model provenance
 
-**Requested model:** `gpt-4o-mini`
-**Returned model:** `gpt-4o-mini-2024-07-18` (a normal, expected
-dated-snapshot resolution of the alias — not a different model family)
-**Response ID:** `chatcmpl-ENLx8WjB18AqWP2Fw6w7eDf4mEHWq`
-**OpenAI request ID:** `req_e0f5cb10790e4697a2a77268935b9ee5`
-**Created (unix):** `1789234638`
-**Usage:** `prompt_tokens: 227, completion_tokens: 96, total_tokens: 323`
-**is_live:** `true` — `call_live_model()` performs exactly one
-`httpx.post` to `https://api.openai.com/v1/chat/completions`; no fixture,
-cache, or fallback branch exists in that function (confirmed by
-`test_consumer_has_single_live_model_call_site` and
-`test_consumer_raises_rather_than_substitutes_on_model_call_failure`).
+**Requested model:** `gpt-4o-mini` — **Returned:** `gpt-4o-mini-2024-07-18`
+**Response ID:** `chatcmpl-ENN9T5ryAffhOtIU2NpVBXbp34aYJ`
+**OpenAI request ID:** `req_ee1d1338f6c444d39864b163f2aa25b9`
+**Usage:** `prompt_tokens: 231, completion_tokens: 101, total_tokens: 332`
+**is_live:** `true`. Same sandboxed-network-proxy caveat as PR #114
+applies and is retained here: all outbound HTTPS in this session passes
+through this environment's own agent proxy. No claim about "GPT-6 Astra"
+is made anywhere in this evidence.
 
-**Sandboxed-network-proxy caveat (explicitly retained per instruction):**
-all outbound HTTPS in this session — including this OpenAI call — passes
-through this environment's own agent network proxy. This is disclosed
-because it is material: it means "live" here is relative to what this
-sandboxed environment can reach, not an out-of-band, disinterested
-network path. This caveat is exactly why the separate "GPT-6 Astra"
-investigation in this same PR could not be resolved to PROVEN (see
-`README.md`) — the same channel that reports `gpt-4o-mini` responses here
-was the only channel that ever affirmed a `gpt-6-astra` model, and that
-specific claim was not independently corroborated. `gpt-4o-mini`, by
-contrast, is not a novel or contested claim — it is the same model this
-repository's own prior, already-merged live proofs (PR #112, and issue
-#5's own correction) already used and recorded, and this run reproduces
-that same, previously-accepted evidentiary basis.
-
-## E. Proposal (model-generated, secrets removed)
+## E. Proposal and corrected hash-binding wording (Finding 3)
 
 ```json
 {
   "action": "create_github_issue",
   "resource": "mcc-prior-art/mcc-phase2-sandbox",
   "payload": {
-    "title": "Integration Proof Issue",
-    "body": "This issue was created by a real, live external integration proof. Please reference the following string for locating this issue later: mcc-blackbox-757067efbdb4492498ea16d4d701fe87."
+    "title": "Integration Proof: External System Trigger",
+    "body": "This issue was created by a real, live external integration proof. Please reference the identifier for locating this issue: mcc-blackbox-6c720ad09e004786972e150f8c1b2c2e."
   }
 }
 ```
 
-`proof_id` (`mcc-blackbox-757067efbdb4492498ea16d4d701fe87`) was minted by
-the consumer *before* the model call and given to the model only as an
-instruction to include verbatim — the model chose the title and the rest
-of the body content itself. The consumer aborts (never proceeds, never
-injects the identifier itself) if the model's own output does not
-literally contain it — this run's `proof_id_present_in_model_output:
-true` confirms the model complied on its own.
+`proof_id` (`mcc-blackbox-6c720ad09e004786972e150f8c1b2c2e`) was minted
+before the model call; the model included it verbatim on its own
+(`proof_id_present_in_model_output: true`).
 
-**Hash binding:** `captured_proposal_sha256` (computed immediately after
-parsing the model's JSON output) and `submitted_proposal_sha256`
-(recomputed immediately before the HTTP POST) are both
-`144922a69369df1632121de9385c9976a2c34cd8306e09f57fcee72e48624fb4` —
-`proposal_hash_binding_verified: true`. The bytes MCC received are
-exactly the bytes the model produced.
+**Corrected wording, per Finding 3:** `captured_proposal_sha256` and
+`submitted_proposal_sha256` are both
+`42187e55b27ac358e524ef21d21fa2b20367b44b15a7d19e1ba00d71f9a60363` —
+`proposal_hash_binding_verified: true`. This is a canonical SHA-256
+binding over the proposal's `action`/`resource`/`payload` fields,
+computed at capture time and re-verified immediately before submission.
+**It establishes that those fields' canonical content was unchanged
+between capture and submission — it does not, and this report does not
+claim it does, establish literal HTTP wire-level byte identity of the
+outbound request.** (PR #114's report used "the bytes MCC received are
+exactly the bytes the model produced," which overstated what the
+mechanism proves; this report and the underlying code comments/docstrings
+have been corrected.)
 
 ## F. Public API traversal
 
-* `POST /v1/proposals` → `200`, `{"accepted": true, "status": "PROPOSED", "proposal_binding": "sha256:e0fe644f..."}`
-* `POST /v1/operations/{id}/execute` → `200`, `{"status": "EXECUTED", "decision": "ALLOW", "audit_ref": "1ac88dd9..."}`
-
-Both via `X-Api-Key` header authentication only — no signed token, no
-authority claim, and no MCC-internal object ever passed by or to the
-consumer. These are the exact two endpoints documented in
-`docs/EXTERNAL_PILOT_INTEGRATION.md`.
+`POST /v1/proposals` → `200`, `{"status": "PROPOSED", "proposal_binding": "sha256:1599e23a..."}`
+`POST /v1/operations/{id}/execute` → `200`, `{"status": "EXECUTED", "decision": "ALLOW", "audit_ref": "efc65f5e..."}`
 
 ## G. Authority path
 
-The consumer's own request never contains, references, or constructs a
-signing key, decision token, or authority claim (confirmed by the
-architecture guard's `FORBIDDEN_SIGNING_NAMES` check and its non-vacuity
-probe). The `EXECUTED` decision and its `audit_ref` came from the
-server subprocess's real, unmodified stack: `build_external_pilot_app` →
-`gateway.proposal_execution_service.ProposalExecutionService` → the
-existing tenant resolution → authority evaluation → signed decision →
+Unchanged: the existing, unmodified `ProposalExecutionService` →
+tenant resolution → authority evaluation → signed decision →
 `EnforcementCoordinator` → durable admission → audit-before-actuation
-path (PR #111/#112/#113, unchanged by this PR). The consumer supplied
-only `action`/`resource`/`payload`/`logical_operation_id`/`actor` over
-HTTP — nothing that could itself constitute or bypass an authority
-decision.
+path made the decision. The consumer supplied only
+`action`/`resource`/`payload`/`logical_operation_id`/`actor` over HTTP.
 
 ## H. Real side effect
 
-GitHub issue **#7** in `mcc-prior-art/mcc-phase2-sandbox`:
-<https://github.com/mcc-prior-art/mcc-phase2-sandbox/issues/7>
-
-Title: "Integration Proof Issue". Body contains the exact proof
-identifier and matches the hash-bound submitted payload.
+GitHub issue **#8** in `mcc-prior-art/mcc-phase2-sandbox`:
+<https://github.com/mcc-prior-art/mcc-phase2-sandbox/issues/8>
+(a NEW issue, not PR #114's issue #7).
 
 ## I. Independent read-back
 
-Two separate, independent confirmations, neither of which is the
-actuator's own return value:
-
-1. **Orchestrator's own read-back** (`run_black_box_proof.py`, plain
-   `urllib.request`, no MCC code, no consumer code, no actuator code) —
-   `GET /repos/mcc-prior-art/mcc-phase2-sandbox/issues` (repo-scoped;
-   this environment's GitHub token is a Claude-Code-issued,
-   repository-scoped credential and returns `403` on the global
-   `/search/issues` endpoint — documented in the code), filtered
-   client-side for the exact proof identifier. Result (retry 3/5, GitHub
-   read-after-write lag): `verified: true, total_count: 1, issue #7`.
-2. **This investigation's separate GitHub MCP tool call**
-   (`mcp__github__issue_read`, a third, independently-implemented code
-   path — different HTTP client, different auth mechanism — from both
-   the actuator and the orchestrator's own script):
+Two separate paths:
+1. Orchestrator's own repo-scoped `urllib` read-back: `verified: true, attempt: 4, total_count: 1, issue #8`.
+2. This investigation's separate GitHub MCP tool call (`mcp__github__issue_read`) — same result:
    ```
-   number: 7, title: "Integration Proof Issue",
-   body contains: "mcc-blackbox-757067efbdb4492498ea16d4d701fe87"
-   state: open, created_at: 2026-09-12T17:37:20Z
+   number: 8, title: "Integration Proof: External System Trigger",
+   body contains: "mcc-blackbox-6c720ad09e004786972e150f8c1b2c2e"
+   created_at: 2026-09-12T18:54:09Z
    ```
 
-Exactly one matching issue found by both independent paths.
+## J. Replay/idempotency
 
-## J. Replay / idempotency
-
-Second `POST /v1/operations/{id}/execute` on the same
-`logical_operation_id` → `200`, `{"status": "BLOCKED", "reason":
-"operation already executed", "audit_ref": null}`. No second GitHub
-issue was created (confirmed by the independent read-back's
-`total_count: 1`).
+Second execute → `200`, `{"status": "BLOCKED", "reason": "operation already executed", "audit_ref": null}`. No second GitHub issue for this `proof_id` (read-back `total_count: 1`).
 
 ## K. Negative controls
 
 | Control | Result | Side effect |
 |---|---|---|
-| A. Replay | `BLOCKED` | None (see J) |
-| B. Invalid API key | submit `401`, execute `401` | None — rejected before any MCC processing |
-| C. Unauthorized action (valid key, no authority for `unauthorized_black_box_action`) | submit `200`/`PROPOSED`, execute `200`/`DENIED` | None |
-| D. Malformed proposal (missing `action`) | submit `422`, `{"detail":[{"type":"missing","loc":["body","action"],"msg":"Field required"}]}` | None |
-| E. Structural: no signing/authority-token/Gate/coordinator access | 6/6 dedicated guard tests pass, each with a non-vacuity probe | — |
-| F. Structural: no direct GitHub write path, no actuator reference | 4/4 dedicated guard tests pass (forbidden import + forbidden `api.github.com` call token + non-vacuity probes) | — |
+| Replay | `BLOCKED` | None |
+| Invalid API key | submit `401`, execute `401` | None |
+| Unauthorized action (valid key, no authority) | submit `200`/`PROPOSED`, execute `200`/`DENIED` | None |
+| Malformed proposal (missing `action`) | `422` | None |
+| No signing/authority/Gate/coordinator access | guard tests pass | — |
+| No direct GitHub write path / actuator reference | guard tests pass | — |
 
-## L. Tests
+## L. Fail-closed harness verdict logic (PR #115, Findings 1 & 2)
 
-Targeted (this PR's own new test file):
-```
-tests/test_external_black_box_proof_architecture_guards.py: 16 passed
+**Consumer** (`consumer.py::_finalize`, called from every return path in
+`main()`): evaluates all 14 `REQUIRED_CHECKS`, seeded all-False and only
+ever flipped to True at the exact point a condition is positively
+confirmed. This run:
+```json
+"proof_checks": {
+  "live_model_call_succeeded": true, "proof_id_in_model_output": true,
+  "proposal_hash_binding_verified": true, "submit_http_200": true,
+  "submit_status_proposed": true, "execute_http_200": true,
+  "execute_status_executed": true, "replay_http_200": true,
+  "replay_status_blocked": true, "invalid_auth_submit_401": true,
+  "invalid_auth_execute_401": true, "unauthorized_submit_accepted": true,
+  "unauthorized_execute_denied": true, "malformed_submit_422": true
+},
+"failed_checks": [], "result": "PROVEN"
 ```
 
-PR #113's own external pilot tests and PR #111/#112 architecture guards
-(unmodified by this PR — re-run to confirm no regression):
-```
-tests/test_external_pilot_*.py, tests/test_proposal_execution_api*.py,
-tests/test_universal_execution_proof_architecture_guards.py: see full-suite run below
+**Orchestrator** (`run_black_box_proof.py::_compute_overall_verdict`):
+requires consumer returncode 0, consumer `result == "PROVEN"`,
+`execute_status == "EXECUTED"`, `independent_readback.verified == true`,
+and `independent_readback.total_count == 1`. This run:
+```json
+"overall_verdict": "PROVEN", "overall_failure_reasons": []
 ```
 
-Full suite and assurance suite results are recorded in the PR
-description at push time (section L is completed there with the actual
-`pytest`/assurance counts from that run, compared against the PR
-#113-round baseline). No `src/mcc_core/` files changed, so mutation/TLA+
-were not re-run, consistent with this session's established convention
-(mutation/TLA+ target `src/mcc_core/` invariants specifically; this PR
-touches none of those files).
+**Proof that failure is actually fail-closed, not just claimed:**
+`tests/test_external_black_box_proof_harness_verdict.py` calls these two
+functions directly (not string search) with each of the 14 consumer
+conditions and 4 orchestrator conditions individually falsified —
+22/22 tests pass, each asserting non-zero exit / `"NOT PROVEN"` /
+the specific failed check named. See section N of the PR report for
+counts.
 
 ## M. Architecture delta
 
-**NONE.** No file under `src/mcc_core/`, `gateway/proposal_execution_*`,
-`mcc_proposal/`, or any existing actuator/authority module was modified.
-This PR adds only: one new orchestration script, one new server-wiring
-script (reusing existing, unmodified components), one committed consumer
-snapshot, one new test file, and evidence/docs. `git diff --stat` against
-`origin/main` for this PR touches no path under `src/`.
+**NONE.** `git diff 54f5b08..HEAD --stat -- src/ gateway/proposal_execution_service.py gateway/proposal_execution_stack.py mcc_proposal/` is empty. Only `proofs/` and one new/one updated test file changed.
 
 ## N. Final verdict
 
-**EXTERNAL BLACK-BOX INTEGRATION PROOF — PROVEN**
+**EXTERNAL BLACK-BOX PROOF HARNESS — FAIL-CLOSED AND REPRODUCIBLE**
 
-1. Can an external process integrate without importing MCC internals? **YES**
-2. Did a genuine live OpenAI API response materially produce the proposal? **YES** (model: `gpt-4o-mini`)
-3. Did the proposal cross only the documented MCC public HTTP boundary? **YES**
-4. Did MCC-controlled execution create a real external GitHub side effect? **YES**
-5. Was that side effect independently verified with no duplicate on replay? **YES**
+The underlying integration proof itself (per PR #114's own five
+questions, re-confirmed on this new run):
+1. External process integrates without importing MCC internals? **YES**
+2. Genuine live OpenAI response materially produced the proposal? **YES** (`gpt-4o-mini`)
+3. Proposal crossed only the documented public HTTP boundary? **YES**
+4. MCC-controlled execution created a real external GitHub side effect? **YES** (issue #8)
+5. Side effect independently verified with no duplicate on replay? **YES**
 
-**GPT-6 ASTRA-SPECIFIC PROVENANCE — NOT PROVEN IN THIS ENVIRONMENT.**
-See `README.md`, "Important scope correction," for the full record of
-that separate, unsuccessful verification attempt. No claim about a model
-named "GPT-6 Astra" is made anywhere in this evidence package, and
-`mcc-prior-art/mcc-phase2-sandbox` issue #5's existing correction on that
-same point was not altered.
+"GPT-6 Astra"-specific provenance remains **NOT PROVEN** in this
+environment, unchanged from PR #114's own record; `mcc-phase2-sandbox`
+issue #5's existing correction was not altered.
+
+## Note on an unrelated extra live run
+
+During validation of this hardening, one additional full live run was
+triggered by mistake (re-running the orchestrator to double-check its
+exit code, when the already-captured evidence already answered the
+question) — it produced a second, real, harmless GitHub issue,
+`mcc-prior-art/mcc-phase2-sandbox` **#9** (`proof_id
+mcc-blackbox-c6b23d79555242a0a0101aa051d357d6`), also `overall_verdict:
+PROVEN`, written to a scratch path (`/tmp/verify_exit.json`, not part of
+this repository) rather than this evidence package. Recorded here rather
+than silently omitted, consistent with this proof's own transparency
+requirements; it does not affect the evidence above, which is drawn
+entirely from the intended run (issue #8).

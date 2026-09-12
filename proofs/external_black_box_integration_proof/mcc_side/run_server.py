@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
-"""MCC-side server for the Live Astra Black-Box External Integration Proof
-(PR #114).
+"""MCC-side server for the External Black-Box Integration Proof
+(PR #114, hardened by PR #115).
+
+Model-neutral: this server has no dependency on, and makes no claim
+about, any specific upstream model. "GPT-6 Astra" provenance was
+investigated separately and could not be independently verified (see
+../README.md); this server is exercised against whatever model the
+external consumer is invoked with (default: gpt-4o-mini).
 
 Lives INSIDE mcc-layer and is free to import MCC internals -- this is the
 SERVER under test, not the external consumer (that lives entirely outside
