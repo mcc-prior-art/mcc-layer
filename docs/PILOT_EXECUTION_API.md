@@ -18,8 +18,9 @@ already proved and shipped.
 
 ```
 POST /v1/operations/{logical_operation_id}/execute
-POST /v1/operations/{logical_operation_id}/reconcile     (optional, see §9)
 ```
+
+There is no reconciliation HTTP route in this PR — see §9.
 
 `execute` takes **no request body**. There is no field for a caller to
 supply `action`, `resource`, `payload`, `tenant_id`, `actor`, a signed
@@ -169,32 +170,46 @@ a fresh executable reservation (test M).
 | `UNAVAILABLE` | 503 | Genuine backend outage |
 | `REJECTED` | 422 | Malformed input (e.g. a whitespace-only `logical_operation_id`) |
 
-Authentication failure (invalid/missing API key) is always 401, decided
-before any of the above is ever reached. The reconcile endpoint (§9) maps
-its own `ReconcileOutcome` vocabulary the same way (`NOT_FOUND` -> 404,
-`UNAVAILABLE` -> 503, `REJECTED` -> 422, everything else -> 200).
+Authentication failure (invalid/missing/blank API key) is always exactly
+401, decided before any of the above is ever reached — never 422 (see §2).
 
-## 9. Reconciliation (optional, deferred by default)
+## 9. Reconciliation HTTP exposure — deferred to a later, separately-scoped PR
 
-`POST /v1/operations/{logical_operation_id}/reconcile` is mounted **only**
-when the deployment supplies a trusted `verify_external_evidence`
-(`EvidenceVerifier` — the exact contract `reconcile_proposal_operation`
-already defines) to `mount_proposal_execution_routes`. There is no
-deployment-agnostic default evidence verifier in this repository:
-evidence lookup is inherently actuator-specific (see
-`examples/phase2_live_sandbox/evidence.py`'s GitHub-specific
-implementation, which looks for a marker in a GitHub issue). A deployment
-with no configured actuator/verifier therefore gets **no reconcile route
-at all**, rather than a route that would have nothing meaningful to check
-evidence against.
+There is **no** `POST /v1/operations/{logical_operation_id}/reconcile`
+route in this PR. An earlier draft of this router mounted one whenever a
+deployment supplied a trusted `verify_external_evidence`
+(`EvidenceVerifier`), alongside independently-passed `proposals`/
+`idempotency`/`authority` arguments. That shape had a real defect: nothing
+prevented those three objects from being different instances than the
+ones the injected `ProposalExecutionService` was actually built from — a
+configuration-level "split brain" where `/execute` operates against one
+proposal registry/durable registry/authority model while `/reconcile` (a
+path that can transition durable UNKNOWN/DISPATCH_OWNED state to
+EXECUTED) operates against another. A doc comment saying "these must be
+the same instances" is not a structural guarantee, and a runtime equality
+check only catches a caller who was already being honest.
 
-When mounted, the route is a thin authenticated wrapper: the caller
-identifies only the operation (path `logical_operation_id`); tenant
-identity comes from the same authenticated credential as `execute`; there
-is no request body, so a caller cannot supply raw `"executed": true` (or
-any other) evidence — evidence always comes from the trusted verifier the
-deployment configured, exactly as `reconcile_proposal_operation` already
-requires. Reconciliation never invokes the actuator.
+The minimum safe fix for this PR is to remove the route entirely rather
+than attempt to patch that guarantee at the margin:
+
+- `mount_proposal_execution_routes` now takes exactly `(app, service, *,
+  tenants)` — there is no parameter through which a caller could reach a
+  reconciliation handler, under any name, any more.
+- `POST .../reconcile` returns a plain 404 (no route matches).
+- `/reconcile` does not appear in the app's generated OpenAPI schema.
+- The domain-level `gateway.proposal_execution_service.reconcile_proposal_operation`
+  itself is **completely unchanged** and remains available — this defers
+  only its HTTP exposure, not its implementation or its existing tests
+  (`tests/test_proposal_execution_bridge.py`).
+
+A future, separately-scoped PR may reintroduce reconciliation HTTP
+exposure, but must construct it so the executing and reconciling code
+paths cannot be independently configured — e.g. by deriving the
+reconciliation call exclusively from the SAME `ProposalExecutionStack`
+object `mount_proposal_execution_routes` already receives (a single
+construction-time owner of `proposals`/`idempotency`/`authority`, not
+three more function parameters), together with an actuator-specific
+`EvidenceVerifier` that deployment supplies.
 
 ## 10. Configuration
 
@@ -268,7 +283,8 @@ runnable reference — the same pattern this repository already uses for
   backend exception's `repr()`) for `UNAVAILABLE`/`EXECUTION_FAILED` —
   useful for pilot debugging, but a hardened production deployment should
   consider redacting it before it is a public contract.
-- Reconciliation (§9) is off by default and requires an
-  actuator-specific `EvidenceVerifier` a deployment must supply itself.
+- No HTTP reconciliation route exists in this PR (§9) — deferred to a
+  future, separately-scoped PR that can safely single-source the
+  executing/reconciling registries.
 - Not wired into the default `gateway/app.py` process (§12) — a
   deployment must explicitly compose it (see the example).

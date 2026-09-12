@@ -153,11 +153,22 @@ def test_b_invalid_api_key_is_401_zero_actuation():
     assert ctx.calls == []
 
 
-def test_c_missing_api_key_is_401_or_422_zero_actuation():
+def test_c_missing_api_key_is_401_zero_actuation():
+    # Missing credential is an authentication failure -- exactly 401, never
+    # 422 (see gateway.proposal_api.get_tenant_dependency: x_api_key is
+    # Optional/default=None so absence is handled by the auth check itself).
     ctx = _build_app(credential_tenants=CREDS)
     _submit(ctx.client, key="key-a", op_id="op-c")
     r = ctx.client.post("/v1/operations/op-c/execute")
-    assert r.status_code in (401, 422)  # missing required header is 422 (FastAPI Header(...))
+    assert r.status_code == 401
+    assert ctx.calls == []
+
+
+def test_c2_blank_api_key_is_401_zero_actuation():
+    ctx = _build_app(credential_tenants=CREDS)
+    _submit(ctx.client, key="key-a", op_id="op-c2")
+    r = ctx.client.post("/v1/operations/op-c2/execute", headers={"x-api-key": ""})
+    assert r.status_code == 401
     assert ctx.calls == []
 
 
@@ -385,6 +396,55 @@ def test_p_tenant_identity_cannot_be_supplied_or_overridden():
     )
     assert r.status_code == 404
     assert ctx.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# Reconciliation HTTP route: deferred (Blocker 3 remediation) -- proves the
+# route genuinely does not exist, rather than merely being undocumented.
+# --------------------------------------------------------------------------- #
+
+def test_default_app_exposes_execute():
+    ctx = _build_app(credential_tenants=CREDS)
+    _submit(ctx.client, key="key-a", op_id="op-exposes-execute")
+    r = _execute(ctx.client, key="key-a", op_id="op-exposes-execute")
+    assert r.status_code == 200
+    assert r.json()["status"] == "EXECUTED"
+
+
+def test_reconcile_route_is_404_not_mounted():
+    ctx = _build_app(credential_tenants=CREDS)
+    _submit(ctx.client, key="key-a", op_id="op-reconcile-404")
+    r = ctx.client.post("/v1/operations/op-reconcile-404/reconcile", headers={"x-api-key": "key-a"})
+    assert r.status_code == 404
+
+
+def test_reconcile_absent_from_openapi_schema():
+    ctx = _build_app(credential_tenants=CREDS)
+    schema = ctx.app.openapi()
+    paths = schema.get("paths", {})
+    assert not any("reconcile" in p for p in paths), f"reconcile path leaked into OpenAPI: {list(paths)}"
+    assert any(p.endswith("/execute") for p in paths)
+
+
+def test_mount_proposal_execution_routes_accepts_no_reconciliation_parameters():
+    """Structural proof there is no alternate way to activate a
+    reconciliation handler through this function any more -- the
+    signature itself no longer has a place to put
+    proposals/idempotency/authority/verify_external_evidence."""
+    import inspect
+
+    from gateway.proposal_execution_api import mount_proposal_execution_routes
+
+    sig = inspect.signature(mount_proposal_execution_routes)
+    assert set(sig.parameters) == {"app", "service", "tenants"}
+
+
+def test_no_reconcile_handler_reachable_through_any_route():
+    """Belt-and-braces: enumerate every route FastAPI actually registered
+    and confirm none of them is a reconcile handler under any alias."""
+    ctx = _build_app(credential_tenants=CREDS)
+    paths = [r.path for r in ctx.app.routes]
+    assert not any("reconcile" in p for p in paths), paths
 
 
 # --------------------------------------------------------------------------- #

@@ -1,14 +1,13 @@
 """HTTP transport for the MCC Phase 2 governed execution bridge (Pilot
 Execution API, PR #111).
 
-Additive endpoints only. This module performs authentication, path
+Additive endpoint only. This module performs authentication, path
 parsing, and response serialization ONLY — every authority/execution
 decision is made by the EXISTING, unmodified
-``gateway.proposal_execution_service.ProposalExecutionService`` /
-``reconcile_proposal_operation``, never here.
+``gateway.proposal_execution_service.ProposalExecutionService``, never
+here.
 
     POST /v1/operations/{logical_operation_id}/execute    -> ProposalExecResultV1
-    POST /v1/operations/{logical_operation_id}/reconcile   -> ProposalReconcileResultV1  (optional, see below)
 
 Canonical chain this router is a thin wrapper over:
 
@@ -35,33 +34,38 @@ byte of what gets executed comes exclusively from the tenant-owned stored
 proposal (Phase 1's ``POST /v1/proposals``) — this router cannot
 reconstruct, enrich, mutate, or replace it.
 
-The reconcile endpoint is mounted ONLY when the caller supplies a trusted
-``verify_external_evidence`` (an ``EvidenceVerifier`` — the SAME contract
-``reconcile_proposal_operation`` already defines). There is no
-deployment-agnostic default evidence verifier in this repository —
-evidence lookup is inherently actuator-specific (see
-``examples/phase2_live_sandbox/evidence.py``'s GitHub-specific
-implementation) — so a deployment with no configured verifier gets no
-reconcile route at all, rather than a route that would have to accept
-caller-supplied "it happened" evidence to do anything (which
-``reconcile_proposal_operation`` already refuses to do: evidence always
-comes from the trusted verifier, never from the request).
+DELIBERATELY NOT EXPOSED IN THIS PR: an HTTP reconciliation route
+(``POST /v1/operations/{logical_operation_id}/reconcile``). An earlier
+version of this router mounted one whenever a deployment supplied a
+trusted ``EvidenceVerifier``, alongside independently-supplied
+``proposals``/``idempotency``/``authority`` arguments. That shape allowed
+those three objects to be, by construction, DIFFERENT instances from the
+ones the injected ``service`` was actually built from — a configuration-
+level "split brain" where ``/execute`` operates against one proposal
+registry/durable registry/authority model while ``/reconcile`` (a path
+that can transition durable UNKNOWN/DISPATCH_OWNED state to EXECUTED)
+operates against another, with nothing but a docstring and a caller's
+honesty preventing it. Removing the route removes that possibility
+entirely rather than attempting a runtime equality check that only a
+cooperative caller would pass. See ``docs/PILOT_EXECUTION_API.md`` §9 for
+the actuator-specific composition a future, explicitly-scoped PR would
+need to expose reconciliation safely (single-owner construction, not
+independently-suppliable parts). The domain-level
+``gateway.proposal_execution_service.reconcile_proposal_operation`` itself
+is completely unchanged and remains available for that future PR.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from fastapi import Depends, FastAPI, HTTPException
 
 from gateway.proposal_api import get_tenant_dependency
 from gateway.proposal_execution_service import (
-    EvidenceVerifier,
     ProposalExecOutcome,
     ProposalExecStatus,
     ProposalExecutionService,
-    ReconcileOutcome,
-    reconcile_proposal_operation,
 )
 
 # Recommended HTTP status mapping (documented in docs/PILOT_EXECUTION_API.md):
@@ -81,17 +85,6 @@ _EXEC_STATUS_HTTP_CODE = {
     ProposalExecStatus.NOT_FOUND: 404,
     ProposalExecStatus.UNAVAILABLE: 503,
     ProposalExecStatus.REJECTED: 422,
-}
-
-_RECONCILE_STATUS_HTTP_CODE = {
-    ReconcileOutcome.RESOLVED: 200,
-    ReconcileOutcome.EVIDENCE_MATCHED_NOT_APPLIED: 200,
-    ReconcileOutcome.NO_EVIDENCE: 200,
-    ReconcileOutcome.EVIDENCE_MISMATCH: 200,
-    ReconcileOutcome.NOT_RECONCILABLE: 200,
-    ReconcileOutcome.NOT_FOUND: 404,
-    ReconcileOutcome.REJECTED: 422,
-    ReconcileOutcome.UNAVAILABLE: 503,
 }
 
 
@@ -117,10 +110,6 @@ def mount_proposal_execution_routes(
     service: ProposalExecutionService,
     *,
     tenants: Dict[str, str],
-    proposals: Any = None,
-    idempotency: Any = None,
-    authority: Any = None,
-    verify_external_evidence: Optional[EvidenceVerifier] = None,
 ) -> None:
     """Mount the Pilot Execution API onto an existing FastAPI app.
 
@@ -131,10 +120,8 @@ def mount_proposal_execution_routes(
     any URL segment other than the credential-authenticated dependency
     itself.
 
-    The reconcile route is mounted only when ``verify_external_evidence``
-    is provided, together with the SAME ``proposals``/``idempotency``/
-    ``authority`` instances ``service`` was built from (see
-    ``gateway.proposal_execution_stack.build_proposal_execution_stack``).
+    Mounts exactly one route (``/execute``) — no reconciliation surface;
+    see this module's docstring for why.
     """
     get_tenant = get_tenant_dependency(tenants)
 
@@ -147,32 +134,6 @@ def mount_proposal_execution_routes(
         )
         body = _exec_outcome_to_response(outcome)
         code = _EXEC_STATUS_HTTP_CODE.get(outcome.status, 500)
-        if code >= 400:
-            raise HTTPException(status_code=code, detail=body)
-        return body
-
-    if verify_external_evidence is None:
-        return
-
-    if proposals is None or idempotency is None or authority is None:
-        raise ValueError(
-            "mount_proposal_execution_routes: verify_external_evidence was provided "
-            "but proposals/idempotency/authority were not -- the reconcile route "
-            "requires all three (the SAME instances 'service' was built from) to "
-            "call the existing reconcile_proposal_operation"
-        )
-
-    @app.post("/v1/operations/{logical_operation_id}/reconcile")
-    async def reconcile_operation(
-        logical_operation_id: str, tenant: str = Depends(get_tenant),
-    ) -> Dict[str, Any]:
-        outcome = await reconcile_proposal_operation(
-            proposals=proposals, idempotency=idempotency, authority=authority,
-            tenant_id=tenant, logical_operation_id=logical_operation_id,
-            verify_external_evidence=verify_external_evidence,
-        )
-        body = {"outcome": outcome.outcome.value, "reason": outcome.reason}
-        code = _RECONCILE_STATUS_HTTP_CODE.get(outcome.outcome, 500)
         if code >= 400:
             raise HTTPException(status_code=code, detail=body)
         return body
