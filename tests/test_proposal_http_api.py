@@ -52,10 +52,22 @@ def _build_app(tenants):
 
 
 def test_no_api_key_is_401():
+    # Missing credential is an authentication failure -- exactly 401, never
+    # 422 (get_tenant_dependency declares x_api_key Optional/default=None
+    # precisely so an absent header is handled by the auth check itself,
+    # not by FastAPI's own request-validation layer).
     app, _ = _build_app({"k": "t"})
     client = TestClient(app)
     r = client.post("/v1/proposals", json={"logical_operation_id": "x", "actor": "a", "action": "b"})
-    assert r.status_code in (401, 422)  # missing header entirely is a 422 (FastAPI Header(...) required)
+    assert r.status_code == 401
+
+
+def test_blank_api_key_is_401():
+    app, _ = _build_app({"k": "t"})
+    client = TestClient(app)
+    r = client.post("/v1/proposals", headers={"x-api-key": ""},
+                    json={"logical_operation_id": "x", "actor": "a", "action": "b"})
+    assert r.status_code == 401
 
 
 def test_wrong_api_key_is_401():

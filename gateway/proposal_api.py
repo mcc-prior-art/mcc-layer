@@ -91,6 +91,35 @@ async def _check_body_size(request: Request) -> None:
             pass
 
 
+def get_tenant_dependency(tenants: Dict[str, str]):
+    """Build a FastAPI dependency resolving ``X-Api-Key`` to the ONE
+    server-side-trusted tenant identity it maps to, via ``tenants``
+    (``api_key -> tenant_id``). Tenant identity is never taken from the
+    request body, a query parameter, or any other caller-supplied field —
+    reused, unchanged, by every HTTP surface in this repository that needs
+    the SAME trusted-credential-to-tenant resolution (``mount_proposal_routes``
+    below, and ``gateway.proposal_execution_api.mount_proposal_execution_routes``).
+
+    Missing, blank, and invalid credentials are ALL authentication failures
+    and MUST all produce the SAME HTTP 401 — never 422. ``x_api_key`` is
+    declared ``Optional[str] = Header(default=None)`` (not FastAPI's
+    ``Header(...)``, required) precisely so an absent header never reaches
+    FastAPI's own request-validation layer (which would otherwise reject it
+    with 422 before this authentication boundary ever runs) — absence is
+    handled explicitly, inside the authentication check itself, exactly
+    like a blank or wrong value."""
+
+    def get_tenant(x_api_key: Optional[str] = Header(default=None)) -> str:
+        if not x_api_key:
+            raise HTTPException(status_code=401, detail="INVALID_API_KEY")
+        tenant = tenants.get(x_api_key)
+        if not tenant:
+            raise HTTPException(status_code=401, detail="INVALID_API_KEY")
+        return tenant
+
+    return get_tenant
+
+
 def mount_proposal_routes(
     app: FastAPI, service: MCCProposalService, *, tenants: Dict[str, str],
 ) -> None:
@@ -99,11 +128,7 @@ def mount_proposal_routes(
     identity that scopes every proposal — this identity is never taken from
     the request body."""
 
-    def get_tenant(x_api_key: str = Header(...)) -> str:
-        tenant = tenants.get(x_api_key)
-        if not tenant:
-            raise HTTPException(status_code=401, detail="INVALID_API_KEY")
-        return tenant
+    get_tenant = get_tenant_dependency(tenants)
 
     @app.post("/v1/proposals")
     async def submit_proposal(
@@ -134,4 +159,7 @@ def mount_proposal_routes(
         return status.to_dict()
 
 
-__all__ = ["mount_proposal_routes", "tenants_from_env", "ProposalTenantConfigError", "ProposalRequestBody"]
+__all__ = [
+    "mount_proposal_routes", "tenants_from_env", "ProposalTenantConfigError",
+    "ProposalRequestBody", "get_tenant_dependency",
+]
