@@ -1,5 +1,13 @@
-"""GPT-6 Astra as the concrete upstream producer for the Universal
-Execution Authority proof (PR #112, correction addendum).
+"""GPT-6 Astra reference-abstraction adapter for the Universal Execution
+Authority proof (PR #112, correction addendum + live-model-provenance
+remediation). "GPT-6 Astra" names this repository's own reference
+abstraction/adapter, not any particular real model's brand identity --
+the offline/reference evidence line genuinely uses that abstraction's
+deterministic provider; the live evidence line (see
+``run_live_proof_astra_openai.py``) uses the abstraction's real adapter
+to make a genuine call to whatever real OpenAI-compatible model an
+operator configures (e.g. ``gpt-4o-mini``), and is never itself
+identified as "GPT-6 Astra".
 
 Reuses, unchanged, ``examples.gpt6_astra_reference``'s existing
 intelligence-layer abstraction (``AstraProvider.propose(task) ->
@@ -59,7 +67,7 @@ async def propose_via_astra(provider: AstraProvider, task: str) -> AstraProposal
     ``build_astra_provider`` returns, or the real
     ``OpenAIAstraProvider`` (see
     ``examples/universal_execution_proof/run_live_proof_astra_openai.py``,
-    PR #112's live-Astra-provenance remediation) -- unchanged, because
+    PR #112's live-model-provenance remediation) -- unchanged, because
     this function only ever calls the one narrow method both providers
     implement identically: ``propose(task) -> AstraResponse``."""
     response = await provider.propose(task)
@@ -82,10 +90,11 @@ def astra_proposal_to_http_request(proposal: AstraProposal, *, actor: str = "gpt
 
     ``actor`` defaults to the existing reference/offline label unchanged
     (every existing caller that does not pass it is unaffected); the
-    live-OpenAI-backed run passes a distinct label
-    (``"gpt-6-astra-live-openai/v1"``) so the two proof lines' evidence
-    can never be confused for one another, even though authority itself
-    never reads this field either way."""
+    live-OpenAI-model run passes a distinct, non-Astra-branded label
+    (``"live-openai-model/v1"``, see
+    ``run_live_proof_astra_openai.LIVE_OPENAI_MODEL_ACTOR``) so the two
+    proof lines' evidence can never be confused for one another, even
+    though authority itself never reads this field either way."""
     return {
         "actor": actor,
         "action": proposal.action,

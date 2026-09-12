@@ -160,8 +160,10 @@ synchronously, before this read-only observation step ever runs.
 ## 8. Universal replaceability test
 
 **Upstream:** could OpenAI / Meta / Anthropic / Google / enterprise /
-open-source intelligence (GPT-6 Astra, §10, being the concrete producer
-this PR runs end to end) be swapped without changing MCC-Core authority
+open-source intelligence (this repository's Astra reference abstraction,
+§10/§10a, being the concrete producer this PR runs end to end — its
+offline line via the reference/deterministic provider, its live line via
+a real OpenAI model) be swapped without changing MCC-Core authority
 semantics? **YES** — §2's boundary depends only on the HTTP shape and the
 authenticated tenant identity, never on `actor` or any provider signal.
 
@@ -186,14 +188,18 @@ inspection — a direct call to `make_sandbox_evidence_verifier`'s returned
 function and a plain `GET /repos/{owner}/{repo}/issues` — never an HTTP
 API, never a mutation of durable state.
 
-## 10. GPT-6 Astra as the concrete upstream (correction addendum)
+## 10. GPT-6 Astra reference abstraction as the concrete upstream (correction addendum)
 
-The concrete upstream producer for this proof's end-to-end evidence is
-**GPT-6 Astra** — this repository's own existing intelligence-layer
-reference abstraction (`examples/gpt6_astra_reference/astra_provider.py`,
+The concrete upstream producer for this proof's offline/reference
+evidence line is this repository's own existing intelligence-layer
+reference abstraction — internally labeled **GPT-6 Astra**
+(`examples/gpt6_astra_reference/astra_provider.py`,
 `AstraProvider.propose(task) -> AstraResponse`, `DeterministicAstraProvider`,
 `AstraProposal`), reused completely unchanged. No new provider
-integration is part of this PR.
+integration is part of this PR. "GPT-6 Astra" is this repository's own
+internal reference-abstraction label, not a real model's brand identity
+— see §10a for the structurally separate live line, which is a genuine
+call to a real OpenAI model, never itself labeled "GPT-6 Astra".
 
 `examples/universal_execution_proof/astra_upstream.py` is the ENTIRE
 adapter: it calls the existing `DeterministicAstraProvider` (the
@@ -234,7 +240,7 @@ generic upstream-adapter *shape* end to end, but it is **not** evidence
 that a real live model call can drive this chain. §10a below is the
 structurally separate proof that closes that gap.
 
-### 10a. A genuine LIVE OpenAI-backed GPT-6 Astra call (live-Astra-provenance remediation)
+### 10a. A genuine LIVE OpenAI model call (live-model-provenance remediation)
 
 `examples/universal_execution_proof/run_live_proof_astra_openai.py` is a
 dedicated script — not a mode flag on `run_live_proof_astra.py` — that
@@ -249,7 +255,7 @@ AST inspection (not a text grep), in
 could silently fall back to an offline fixture. If `OPENAI_API_KEY`/
 `OPENAI_MODEL` are not both configured,
 `OpenAIAstraProvider.from_env()` raises before anything else runs and
-the script prints exactly `LIVE ASTRA PROOF — NOT EXECUTED` and exits
+the script prints exactly `LIVE OPENAI MODEL PROOF — NOT EXECUTED` and exits
 non-zero. As a second, independent structural guarantee, the script also
 calls `require_live_response()` on the `AstraResponse` returned by the
 real call and refuses to proceed if `is_live` is ever anything other
@@ -265,7 +271,7 @@ requires) against `mcc-prior-art/mcc-phase2-sandbox`:
 
 - `AstraResponse.is_live`: **`True`**
 - `AstraResponse.model`: **`gpt-4o-mini`**
-- Astra's real, live response proposed `action="create_github_issue"`,
+- The real, live model's response proposed `action="create_github_issue"`,
   `resource="mcc-prior-art/mcc-phase2-sandbox"` — the model's own choice
   of JSON content, not a hardcoded fixture — which was submitted, as-is,
   through PR #111's real HTTP boundary.
@@ -273,10 +279,15 @@ requires) against `mcc-prior-art/mcc-phase2-sandbox`:
 - `audit_ref`: `1c7372d28104ac577c2fcb831b332c029847377040a6f413239a95241f49e086`
 - Real external issue:
   [`mcc-prior-art/mcc-phase2-sandbox#5`](https://github.com/mcc-prior-art/mcc-phase2-sandbox/issues/5)
-  ("MCC Universal Execution Authority Proof (live OpenAI Astra
+  ("MCC Universal Execution Authority Proof (live OpenAI model
   upstream)"), independently confirmed via `mcp__github__list_issues` (a
   separate code path from the proof script itself) — exact title and
-  body/marker match.
+  body/marker match. The issue's title/body were originally worded to
+  describe the producer as a "GPT-6 Astra" call; both were corrected
+  in-place (source-level provenance remediation) to name the real model
+  (`gpt-4o-mini`) instead, preserving the marker/`tenant_id`/
+  `logical_operation_id`/issue number exactly — no second external side
+  effect was created.
 - Replay (`POST /execute` again) returned `BLOCKED`, not a second
   `EXECUTED`; exactly one external issue exists for this operation.
 
@@ -287,16 +298,24 @@ content (passed through `live_redteam.scan_and_redact`, the same
 secret-scrubbing utility LIVE-F already uses), and the resulting public
 HTTP/GitHub evidence.
 
-**Structural provenance guarantee:** the headline claim
-"ASTRA-TO-REAL-ACTUATOR UNIVERSAL EXECUTION PROOF — PROVEN" (§10 above)
-is now backed, specifically for its live-API claim, by this run — a real
-`is_live=True` proposal that actually caused the real external side
-effect above — never by the offline-fixture run in §10. The two runs
-remain independently valid and are kept structurally distinguishable:
-different scripts, different actor labels
-(`gpt-6-astra-reference/v1` vs. `gpt-6-astra-live-openai/v1`, neither
-read by authority), different success-banner text, and different real
-GitHub issues (`#4` vs. `#5`).
+**Structural provenance guarantee:** the offline/reference-Astra-to-
+real-actuator claim (§10 above, issue #4) remains **PROVEN** as
+reference/offline evidence. It is not, and does not stand in for, the
+live-API claim: that claim's own verdict —
+**LIVE OPENAI MODEL → MCC → REAL CONTROLLED ACTUATOR — PROVEN** — is
+backed specifically by this run (issue #5), a real `is_live=True`
+proposal to a real OpenAI model that actually caused the real external
+side effect above. The two runs remain independently valid and are kept
+structurally distinguishable: different scripts
+(`run_live_proof_astra.py` vs. `run_live_proof_astra_openai.py`),
+different actor labels (`gpt-6-astra-reference/v1` vs.
+`live-openai-model/v1` — the live label carries no "Astra" branding,
+neither read by authority), different success-banner text
+(`ASTRA-TO-REAL-ACTUATOR LIVE PROOF PASSED` vs.
+`LIVE OPENAI MODEL -> REAL ACTUATOR PROOF PASSED`), and different real
+GitHub issues (`#4` vs. `#5`). Neither run, nor its evidence, claims that
+the live model itself is "GPT-6 Astra" — that label names only this
+repository's internal reference abstraction.
 
 ## 11. Limitations
 

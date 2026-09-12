@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
-"""Universal Execution Authority — REAL LIVE OpenAI-backed GPT-6 Astra
-upstream (PR #112 live-Astra-provenance remediation).
+"""Universal Execution Authority — REAL LIVE OpenAI-model upstream
+(PR #112 live-model-provenance remediation).
+
+The upstream producer here is a real, live OpenAI-compatible model
+(identity taken from ``AstraResponse.model`` at call time -- e.g.
+``gpt-4o-mini`` -- never hardcoded and never asserted to be "GPT-6
+Astra"). "GPT-6 Astra" is this repository's own internal reference-
+abstraction label (``examples/gpt6_astra_reference``); it names the
+adapter/abstraction, not the identity of whatever real model an
+operator configures ``OPENAI_MODEL`` to.
 
 ``run_live_proof_astra.py`` (unchanged, still valid) proves the generic
 upstream-adapter *shape* using ``DeterministicAstraProvider`` — an
@@ -31,7 +39,7 @@ all (see
 which statically asserts this). If ``OPENAI_API_KEY``/``OPENAI_MODEL``
 are not both configured, :meth:`OpenAIAstraProvider.from_env` raises
 ``AstraProviderError`` and this script prints exactly
-``LIVE ASTRA PROOF — NOT EXECUTED`` and exits non-zero -- there is no
+``LIVE OPENAI MODEL PROOF — NOT EXECUTED`` and exits non-zero -- there is no
 code path from that failure to a deterministic/offline proposal. The
 ``AstraResponse.is_live`` flag returned by the real call is also checked
 explicitly before anything is submitted to MCC-Core, as a second,
@@ -75,19 +83,19 @@ from examples.universal_execution_proof.astra_upstream import (  # noqa: E402
 )
 from examples.gpt6_astra_reference.models import AstraError, AstraSelfRefusal  # noqa: E402
 
-LIVE_ASTRA_ACTOR = "gpt-6-astra-live-openai/v1"
-NOT_EXECUTED_MARKER = "LIVE ASTRA PROOF — NOT EXECUTED"
+LIVE_OPENAI_MODEL_ACTOR = "live-openai-model/v1"
+NOT_EXECUTED_MARKER = "LIVE OPENAI MODEL PROOF — NOT EXECUTED"
 
 
 def require_live_response(response: AstraResponse) -> None:
     """Structural guarantee, independent of ``OpenAIAstraProvider``'s own
     behavior: this script refuses to treat any non-``is_live`` response as
-    evidence for the live-Astra proof, even if some future change to the
+    evidence for the live-model proof, even if some future change to the
     provider ever produced one. Raises :class:`AstraUpstreamError`
     (never silently proceeds)."""
     if not response.is_live:
         raise AstraUpstreamError(
-            "refusing to report a live-Astra proof from a non-live AstraResponse "
+            "refusing to report a live-model proof from a non-live AstraResponse "
             "(is_live was False) -- this would misattribute an offline/fixture "
             "result as live evidence"
         )
@@ -168,8 +176,8 @@ async def main() -> int:
     task = (
         f"Propose creating exactly one GitHub issue in the repository '{config.repo}' "
         f"using the action identifier '{GITHUB_ISSUE_ACTION}'. The issue should have a "
-        f"title of 'MCC Universal Execution Authority Proof (live OpenAI Astra upstream)' "
-        f"and a body mentioning that it was proposed by a real, live GPT-6 Astra model "
+        f"title of 'MCC Universal Execution Authority Proof (live OpenAI model upstream)' "
+        f"and a body mentioning that it was proposed by a real, live OpenAI model "
         f"call as part of run {run_id}."
     )
     response = await astra_provider.propose(task)
@@ -187,13 +195,13 @@ async def main() -> int:
         astra_proposal = _proposal_from_response(response)
     except AstraUpstreamError as exc:
         result["astra_error"] = scan_and_redact(str(exc))
-        print("\n=== RESULT (live OpenAI Astra upstream) ===")
+        print("\n=== RESULT (live OpenAI model upstream) ===")
         for k, v in result.items():
             print(f"{k}: {v}")
-        print(f"\n{NOT_EXECUTED_MARKER} (Astra call completed but produced no usable proposal: {result['astra_error']})")
+        print(f"\n{NOT_EXECUTED_MARKER} (live model call completed but produced no usable proposal: {result['astra_error']})")
         return 1
 
-    http_request = astra_proposal_to_http_request(astra_proposal, actor=LIVE_ASTRA_ACTOR)
+    http_request = astra_proposal_to_http_request(astra_proposal, actor=LIVE_OPENAI_MODEL_ACTOR)
     print(f"Astra proposed (redacted): action={http_request['action']!r} resource={http_request['resource']!r}")
     result["astra_proposal_action"] = astra_proposal.action
     result["astra_proposal_resource"] = astra_proposal.resource
@@ -280,16 +288,16 @@ async def main() -> int:
     finally:
         server.stop()
 
-    print("\n=== RESULT (live OpenAI Astra upstream) ===")
+    print("\n=== RESULT (live OpenAI model upstream) ===")
     for k, v in result.items():
         print(f"{k}: {v}")
 
     if failures:
-        print("\nLIVE OPENAI ASTRA -> REAL ACTUATOR PROOF FAILED:")
+        print("\nLIVE OPENAI MODEL -> REAL ACTUATOR PROOF FAILED:")
         for f in failures:
             print("  -", f)
         return 1
-    print("\nLIVE OPENAI ASTRA -> REAL ACTUATOR PROOF PASSED: a real, live GPT-6 Astra model call "
+    print("\nLIVE OPENAI MODEL -> REAL ACTUATOR PROOF PASSED: a real, live OpenAI model call "
           "(is_live=True) -> HTTP boundary -> verified authority -> real external GitHub issue -> "
           "independently observed -> replay-safe.")
     return 0
@@ -299,4 +307,4 @@ if __name__ == "__main__":
     sys.exit(asyncio.run(main()))
 
 
-__all__ = ["main", "require_live_response", "LIVE_ASTRA_ACTOR", "NOT_EXECUTED_MARKER"]
+__all__ = ["main", "require_live_response", "LIVE_OPENAI_MODEL_ACTOR", "NOT_EXECUTED_MARKER"]

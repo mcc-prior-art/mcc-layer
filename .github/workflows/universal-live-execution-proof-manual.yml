@@ -22,17 +22,20 @@ name: Universal Execution Authority Live Proof (manual, optional)
 # "LIVE EXTERNAL SANDBOX: NOT EXECUTED — CREDENTIALS NOT AVAILABLE" and
 # makes zero external requests.
 #
-# The THIRD step (live-Astra-provenance remediation) additionally
+# The THIRD step (live-model-provenance remediation) additionally
 # requires, ONLY for that step:
 #   - repository secret    ASTRA_LIVE_OPENAI_API_KEY
 #   - repository variable  ASTRA_LIVE_OPENAI_MODEL
 # mapped into the literal env vars OpenAIAstraProvider.from_env() reads
 # (OPENAI_API_KEY / OPENAI_MODEL). If either is unset, that step alone
-# fails fast with "LIVE ASTRA PROOF — NOT EXECUTED" and makes zero calls
-# to OpenAI or GitHub -- there is no fallback to the offline/reference
-# Astra provider the second step already exercises. This workflow still
-# never runs on pull_request/push, so normal CI never requires or
-# consumes these credentials either.
+# fails fast with "LIVE OPENAI MODEL PROOF — NOT EXECUTED" and makes zero
+# calls to OpenAI or GitHub -- there is no fallback to the offline/
+# reference Astra provider the second step already exercises. That third
+# step's producer is a real, live OpenAI-compatible model (identity taken
+# from the response at call time -- never hardcoded, never claimed to be
+# "GPT-6 Astra", which names only this repository's reference
+# abstraction). This workflow still never runs on pull_request/push, so
+# normal CI never requires or consumes these credentials either.
 
 on:
   workflow_dispatch: {}
@@ -96,14 +99,16 @@ jobs:
           fi
           python examples/universal_execution_proof/run_live_proof_astra.py
 
-      - name: Run the same live proof with a REAL live OpenAI-backed GPT-6 Astra call as the upstream producer
+      - name: Run the same live proof with a REAL live OpenAI model call as the upstream producer
         # Distinct from the previous step: this one sources its proposal
         # from a genuine OpenAI Chat Completions call (OpenAIAstraProvider),
-        # never DeterministicAstraProvider. Optional on top of the already-
-        # optional workflow: if the Astra-specific secret/variable pair
-        # below is not configured, this step alone reports
-        # "LIVE ASTRA PROOF — NOT EXECUTED" and exits non-zero without
-        # silently downgrading to an offline run.
+        # never DeterministicAstraProvider. The producer is whatever real
+        # model OPENAI_MODEL names (e.g. gpt-4o-mini) -- never "GPT-6
+        # Astra", which is only this repository's internal reference-
+        # abstraction label. Optional on top of the already-optional
+        # workflow: if the secret/variable pair below is not configured,
+        # this step alone reports "LIVE OPENAI MODEL PROOF — NOT EXECUTED"
+        # and exits non-zero without silently downgrading to an offline run.
         env:
           MCC_PHASE2_LIVE_SANDBOX: "1"
           MCC_PHASE2_SANDBOX_REPO: ${{ vars.PHASE2_SANDBOX_REPO }}
@@ -113,7 +118,7 @@ jobs:
           OPENAI_MODEL: ${{ vars.ASTRA_LIVE_OPENAI_MODEL }}
         run: |
           if [ -z "${OPENAI_API_KEY}" ] || [ -z "${OPENAI_MODEL}" ]; then
-            echo "LIVE ASTRA PROOF — NOT EXECUTED"
+            echo "LIVE OPENAI MODEL PROOF — NOT EXECUTED"
             echo "::warning::Set the 'ASTRA_LIVE_OPENAI_API_KEY' repository secret and the"
             echo "::warning::'ASTRA_LIVE_OPENAI_MODEL' repository variable to enable this step."
             exit 1
