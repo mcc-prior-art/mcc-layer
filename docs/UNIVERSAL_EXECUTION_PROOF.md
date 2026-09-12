@@ -114,9 +114,10 @@ Reused, unchanged:
 - `gateway/proposal_api.py` / `gateway/proposal_execution_api.py` / `gateway/proposal_execution_stack.py` (PR #111, unmodified)
 
 New in this PR: `examples/universal_execution_proof/` (composition +
-non-vacuity actuator only), two test files, one doc, one manual workflow.
-**Zero changes** to `src/mcc_core/`, `gateway/proposal_execution_service.py`,
-or any PR #111 file.
+non-vacuity actuator + two live-proof scripts, one offline-fixture-Astra-
+sourced and one genuine-live-OpenAI-Astra-sourced), four test files, one
+doc, one manual workflow. **Zero changes** to `src/mcc_core/`,
+`gateway/proposal_execution_service.py`, or any PR #111 file.
 
 ## 6. Framework/provider/domain-neutrality guard
 
@@ -215,24 +216,107 @@ none of `ResourceBoundUpstream(`, `.execute(resource=`,
 A self-refusal or malformed Astra output raises before anything is ever
 submitted to MCC-Core at all.
 
-**Live result:** `examples/universal_execution_proof/run_live_proof_astra.py`
-— identical wiring/safety gate to `run_live_proof.py`, sourcing the
-proposal from Astra instead of a hardcoded dict — ran for real against
+**Live result (offline-fixture Astra provider):**
+`examples/universal_execution_proof/run_live_proof_astra.py` — identical
+wiring/safety gate to `run_live_proof.py`, sourcing the proposal from
+Astra instead of a hardcoded dict — ran for real against
 `mcc-prior-art/mcc-phase2-sandbox` and produced a real external issue
 ([`#4`](https://github.com/mcc-prior-art/mcc-phase2-sandbox/issues/4)),
 independently confirmed via `mcp__github__list_issues` (a separate code
 path). Replay returned `BLOCKED`; exactly one matching external issue
 exists for that operation. See the PR body for the full evidence record.
 
+**Important provenance note:** the run above used
+`DeterministicAstraProvider` — this repository's own reference/offline
+Astra provider, `is_live=False` by construction on every response it
+produces (see its own docstring in `astra_provider.py`). It proves the
+generic upstream-adapter *shape* end to end, but it is **not** evidence
+that a real live model call can drive this chain. §10a below is the
+structurally separate proof that closes that gap.
+
+### 10a. A genuine LIVE OpenAI-backed GPT-6 Astra call (live-Astra-provenance remediation)
+
+`examples/universal_execution_proof/run_live_proof_astra_openai.py` is a
+dedicated script — not a mode flag on `run_live_proof_astra.py` — that
+sources its proposal from `OpenAIAstraProvider.from_env()`, the SAME
+real adapter `examples/gpt6_astra_reference` already ships and
+`live_redteam.py`'s LIVE-F already uses for its own live model calls. No
+new Astra provider was introduced. This script never imports or
+references `DeterministicAstraProvider` at all — proven statically, by
+AST inspection (not a text grep), in
+`tests/test_universal_execution_proof_astra_openai_provenance.py::test_live_script_never_references_deterministic_provider_as_code`
+— so there is no code path by which a missing/invalid OpenAI credential
+could silently fall back to an offline fixture. If `OPENAI_API_KEY`/
+`OPENAI_MODEL` are not both configured,
+`OpenAIAstraProvider.from_env()` raises before anything else runs and
+the script prints exactly `LIVE ASTRA PROOF — NOT EXECUTED` and exits
+non-zero. As a second, independent structural guarantee, the script also
+calls `require_live_response()` on the `AstraResponse` returned by the
+real call and refuses to proceed if `is_live` is ever anything other
+than `True`, before the proposal is even extracted.
+
+**Live result:** ran for real, with `OPENAI_API_KEY` (a genuine,
+verified-working OpenAI credential — confirmed live via a real
+`GET /v1/models` call returning HTTP 200 before this run) and
+`OPENAI_MODEL=gpt-4o-mini` (a real, currently-available model on that
+account, explicitly set by the operator running this proof — this
+adapter never hardcodes a model identifier, exactly as its own docstring
+requires) against `mcc-prior-art/mcc-phase2-sandbox`:
+
+- `AstraResponse.is_live`: **`True`**
+- `AstraResponse.model`: **`gpt-4o-mini`**
+- Astra's real, live response proposed `action="create_github_issue"`,
+  `resource="mcc-prior-art/mcc-phase2-sandbox"` — the model's own choice
+  of JSON content, not a hardcoded fixture — which was submitted, as-is,
+  through PR #111's real HTTP boundary.
+- `logical_operation_id`: `astra-openai-proof-op-b0866e93`
+- `audit_ref`: `1c7372d28104ac577c2fcb831b332c029847377040a6f413239a95241f49e086`
+- Real external issue:
+  [`mcc-prior-art/mcc-phase2-sandbox#5`](https://github.com/mcc-prior-art/mcc-phase2-sandbox/issues/5)
+  ("MCC Universal Execution Authority Proof (live OpenAI Astra
+  upstream)"), independently confirmed via `mcp__github__list_issues` (a
+  separate code path from the proof script itself) — exact title and
+  body/marker match.
+- Replay (`POST /execute` again) returned `BLOCKED`, not a second
+  `EXECUTED`; exactly one external issue exists for this operation.
+
+No `OPENAI_API_KEY`, `GITHUB_TOKEN`, or other credential/signing material
+appears anywhere in the script's own output, this document, or the PR —
+the script prints only the model identifier, the redacted proposal
+content (passed through `live_redteam.scan_and_redact`, the same
+secret-scrubbing utility LIVE-F already uses), and the resulting public
+HTTP/GitHub evidence.
+
+**Structural provenance guarantee:** the headline claim
+"ASTRA-TO-REAL-ACTUATOR UNIVERSAL EXECUTION PROOF — PROVEN" (§10 above)
+is now backed, specifically for its live-API claim, by this run — a real
+`is_live=True` proposal that actually caused the real external side
+effect above — never by the offline-fixture run in §10. The two runs
+remain independently valid and are kept structurally distinguishable:
+different scripts, different actor labels
+(`gpt-6-astra-reference/v1` vs. `gpt-6-astra-live-openai/v1`, neither
+read by authority), different success-banner text, and different real
+GitHub issues (`#4` vs. `#5`).
+
 ## 11. Limitations
 
-- The live proof used two real external issues in total across this
-  round's development (`#2`, created during initial verification-script
+- The live proof used five real external issues in total across this PR's
+  development (`#2`, created during initial verification-script
   debugging before a transient evidence-lookup consistency-lag bug in
-  the SCRIPT — not the governed path — was fixed; and `#3`, the final,
-  fully-verified run). Both are harmless, disposable sandbox artifacts;
-  neither was deleted, since this proof performs no destructive actions
-  and closing/deleting was not requested.
+  the SCRIPT — not the governed path — was fixed; `#3`, the direct-
+  proposal run; `#4`, the offline-fixture-Astra-sourced run; and `#5`,
+  the genuine live-OpenAI-Astra-sourced run, §10a). All are harmless,
+  disposable sandbox artifacts; none was deleted, since this proof
+  performs no destructive actions and closing/deleting was not
+  requested.
+- The live-OpenAI-Astra run (§10a) makes a real, non-deterministic model
+  call: unlike every other proof in this document, its content (though
+  not whether MCC-Core authorizes it) can vary between runs, and a given
+  run could in principle produce a self-refusal or a malformed response
+  instead of a usable proposal — the script handles both explicitly
+  (never fabricating a proposal to force a pass) and reports accordingly;
+  this run happened to produce a valid, on-target proposal on the first
+  attempt.
 - Not wired into `gateway/app.py`'s default startup, consistent with PR
   #111's own posture — this remains a reference composition
   (`examples/universal_execution_proof/`), not a production deployment

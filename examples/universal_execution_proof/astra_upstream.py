@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from examples.gpt6_astra_reference.astra_provider import DeterministicAstraProvider
+from examples.gpt6_astra_reference.astra_provider import AstraProvider, DeterministicAstraProvider
 from examples.gpt6_astra_reference.models import AstraError, AstraProposal, AstraSelfRefusal
 
 
@@ -47,12 +47,21 @@ def build_astra_provider(task: str, *, action: str, resource: str, payload: Dict
     return DeterministicAstraProvider({task: {"action": action, "resource": resource, "payload": payload}})
 
 
-async def propose_via_astra(provider: DeterministicAstraProvider, task: str) -> AstraProposal:
+async def propose_via_astra(provider: AstraProvider, task: str) -> AstraProposal:
     """Calls Astra (``propose``) and returns exactly one
     :class:`AstraProposal` -- raising :class:`AstraUpstreamError` for a
     self-refusal or a malformed/forbidden-field response, precisely
     mirroring how a real live-model failure would be handled: MCC-Core is
-    never reached in either case."""
+    never reached in either case.
+
+    Accepts anything satisfying the ``AstraProvider`` protocol -- the
+    reference/offline ``DeterministicAstraProvider`` this module's own
+    ``build_astra_provider`` returns, or the real
+    ``OpenAIAstraProvider`` (see
+    ``examples/universal_execution_proof/run_live_proof_astra_openai.py``,
+    PR #112's live-Astra-provenance remediation) -- unchanged, because
+    this function only ever calls the one narrow method both providers
+    implement identically: ``propose(task) -> AstraResponse``."""
     response = await provider.propose(task)
     outcome = response.outcome
     if isinstance(outcome, AstraSelfRefusal):
@@ -64,14 +73,21 @@ async def propose_via_astra(provider: DeterministicAstraProvider, task: str) -> 
     return outcome[0]
 
 
-def astra_proposal_to_http_request(proposal: AstraProposal) -> Dict[str, Any]:
+def astra_proposal_to_http_request(proposal: AstraProposal, *, actor: str = "gpt-6-astra-reference/v1") -> Dict[str, Any]:
     """The ENTIRE upstream-adaptation surface: an ``AstraProposal`` has no
     field this dict does not already carry, and no field of this dict is
     Astra-specific -- ``actor`` is the only addition, a plain label
     (unused by authority; see
-    ``docs/UNIVERSAL_EXECUTION_PROOF.md`` §2), never a trust signal."""
+    ``docs/UNIVERSAL_EXECUTION_PROOF.md`` §2), never a trust signal.
+
+    ``actor`` defaults to the existing reference/offline label unchanged
+    (every existing caller that does not pass it is unaffected); the
+    live-OpenAI-backed run passes a distinct label
+    (``"gpt-6-astra-live-openai/v1"``) so the two proof lines' evidence
+    can never be confused for one another, even though authority itself
+    never reads this field either way."""
     return {
-        "actor": "gpt-6-astra-reference/v1",
+        "actor": actor,
         "action": proposal.action,
         "resource": proposal.resource,
         "payload": dict(proposal.payload),
