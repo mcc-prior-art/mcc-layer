@@ -217,11 +217,18 @@ def test_consumer_has_single_live_model_call_site():
 
 def test_consumer_raises_rather_than_substitutes_on_model_call_failure():
     """On any live-call failure the consumer must record the error and
-    exit non-zero (never quietly proceed with a substitute proposal)."""
+    exit non-zero (never quietly proceed with a substitute proposal).
+    As of PR #115 this is enforced by the fail-closed ``_finalize``
+    verdict logic (``live_model_call_succeeded`` stays False, so the run
+    can never reach ``result: "PROVEN"``) -- see
+    ``tests/test_external_black_box_proof_harness_verdict.py`` for the
+    tests that exercise that decision logic directly rather than via
+    string search."""
     source = _load_snapshot_source()
     assert "except httpx.HTTPStatusError" in source
     assert "except httpx.HTTPError" in source
-    assert 'evidence["result"] = "NOT PROVEN: live model call failed"' in source
+    assert "live_model_call_succeeded" in source
+    assert 'return _finalize(evidence, checks, args.evidence_out)' in source
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +279,10 @@ def test_consumer_hash_binds_captured_and_submitted_proposal():
 
 def test_consumer_aborts_if_proof_id_not_in_model_output():
     """The unique proof identifier must come from the model's own output,
-    never be injected by the consumer after the fact."""
+    never be injected by the consumer after the fact. As of PR #115 this
+    is enforced via the ``proof_id_in_model_output`` required check (see
+    ``tests/test_external_black_box_proof_harness_verdict.py`` for the
+    decision-logic test)."""
     source = _load_snapshot_source()
-    assert "if proof_id not in body_text" in source
-    assert '"ABORTED: model output did not include the required unique proof identifier"' in source
+    assert 'checks["proof_id_in_model_output"] = proof_id in body_text' in source
+    assert '"model output did not include the required unique proof identifier"' in source

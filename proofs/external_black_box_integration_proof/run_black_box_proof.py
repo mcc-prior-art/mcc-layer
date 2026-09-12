@@ -106,6 +106,54 @@ def _independent_github_read_back(*, repo: str, token: str, proof_id: str, retri
     return {"verified": False, "attempts": retries, "last_error": last_error}
 
 
+def _compute_overall_verdict(
+    *, consumer_returncode: int, consumer_evidence: Optional[Dict[str, Any]], independent_readback: Dict[str, Any],
+) -> Dict[str, Any]:
+    """The ONE place this orchestrator decides PROVEN vs NOT PROVEN.
+    Every one of the following must hold; an unmet or unevaluable
+    condition is a failure, never a pass by default:
+
+      1. the consumer subprocess exited 0
+      2. the consumer's OWN verdict (proof_checks/result) is "PROVEN"
+      3. the consumer's execute_status is "EXECUTED"
+      4. independent_readback.verified is True
+      5. independent_readback.total_count == 1 (no duplicate, no zero-match)
+      6/7. the read-back's matching issue(s) were found under the current
+           run's proof_id (guaranteed by _independent_github_read_back's
+           own body-substring filter on that exact proof_id -- never a
+           different run's identifier)
+
+    Unavailable/failed/timed-out/zero-match/multi-match/unvalidatable
+    read-back all fall through to the same NOT PROVEN outcome -- there is
+    no separate "inconclusive" status that passes.
+    """
+    reasons = []
+    consumer_evidence = consumer_evidence or {}
+
+    if consumer_returncode != 0:
+        reasons.append(f"consumer_returncode != 0 (was {consumer_returncode})")
+
+    consumer_result = consumer_evidence.get("result")
+    if consumer_result != "PROVEN":
+        reasons.append(f"consumer evidence result != PROVEN (was {consumer_result!r})")
+
+    execute_status = consumer_evidence.get("execute_status")
+    if execute_status != "EXECUTED":
+        reasons.append(f"consumer execute_status != EXECUTED (was {execute_status!r})")
+
+    if independent_readback.get("verified") is not True:
+        reasons.append(f"independent_readback.verified is not True (was {independent_readback.get('verified')!r})")
+
+    total_count = independent_readback.get("total_count")
+    if total_count != 1:
+        reasons.append(f"independent_readback.total_count != 1 (was {total_count!r})")
+
+    return {
+        "overall_verdict": "PROVEN" if not reasons else "NOT PROVEN",
+        "overall_failure_reasons": reasons,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--consumer-path", default="/tmp/mcc-live-external-consumer/consumer.py")
@@ -135,12 +183,16 @@ def main() -> int:
     except Exception as exc:
         server_proc.terminate()
         report["error"] = f"server startup failed: {exc!r}"
+        report["overall_verdict"] = "NOT PROVEN"
+        report["overall_failure_reasons"] = [report["error"]]
         print(json.dumps(report))
         return 1
 
     if "error" in connection_info:
         server_proc.terminate()
         report["error"] = connection_info["error"]
+        report["overall_verdict"] = "NOT PROVEN"
+        report["overall_failure_reasons"] = [report["error"]]
         print(json.dumps(report))
         return 1
 
@@ -211,9 +263,16 @@ def main() -> int:
     else:
         report["independent_readback"] = {"verified": False, "skipped": "no EXECUTED proof_id from consumer"}
 
+    verdict = _compute_overall_verdict(
+        consumer_returncode=consumer_result.returncode,
+        consumer_evidence=consumer_evidence,
+        independent_readback=report["independent_readback"],
+    )
+    report.update(verdict)
+
     Path(args.evidence_out).write_text(json.dumps(report, indent=2, sort_keys=True))
     print(json.dumps(report))
-    return 0 if consumer_result.returncode == 0 else 1
+    return 0 if verdict["overall_verdict"] == "PROVEN" else 1
 
 
 if __name__ == "__main__":
