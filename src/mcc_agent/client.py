@@ -57,7 +57,7 @@ from egress_proxy.runtime import build_executor
 from egress_proxy.ssrf import SSRFError, validate_destination
 
 from examples.governed_agent.agent import Agent
-from examples.governed_agent.mcc_client import GovernedMCCClient
+from examples.governed_agent.mcc_client import GovernedMCCClient, OperatorConsole
 
 from .errors import GovernanceClientError
 from .models import ActionProposal, Decision, GovernanceOutcome
@@ -171,6 +171,12 @@ class EmbeddedGovernanceClient:
             consensus_required=False,
             **registries,
         )
+        # GovernedMCCClient itself has no approve()/deny_approval() method --
+        # that capability lives only on this separate OperatorConsole. See
+        # GovernedAgent.arun() in agent.py for the known, not-yet-closed
+        # finding this pilot client still has: it is itself one object that
+        # both proposes (submit) and grants (approve) its own ESCALATE.
+        self._operator = OperatorConsole(self._mcc)
         # Share the audit chain so the executor appends post-actuation evidence to
         # the SAME hash chain (the durable pre-actuation record is the
         # coordinator's responsibility).
@@ -291,10 +297,10 @@ class EmbeddedGovernanceClient:
         return self._outcome(r, proposed, canonical)
 
     async def approve(self, approval_request_id: str) -> bool:
-        return await self._mcc.approve(approval_request_id)
+        return await self._operator.approve(approval_request_id)
 
     async def deny_approval(self, approval_request_id: str) -> bool:
-        return await self._mcc.deny_approval(approval_request_id)
+        return await self._operator.deny_approval(approval_request_id)
 
     async def execute_after_approval(
         self, proposal: ActionProposal, approval_request_id: str) -> GovernanceOutcome:

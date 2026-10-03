@@ -33,7 +33,7 @@ from mcc_core import (  # noqa: E402
 
 from examples.governed_agent.agent import Agent  # noqa: E402
 from examples.governed_agent.consensus_support import EvaluatorPool  # noqa: E402
-from examples.governed_agent.mcc_client import GovernedMCCClient  # noqa: E402
+from examples.governed_agent.mcc_client import GovernedMCCClient, OperatorConsole  # noqa: E402
 from examples.governed_agent.mock_executor import MockExecutor, UnauthorizedExecution  # noqa: E402
 
 
@@ -87,7 +87,10 @@ async def scenario_escalate():
     r = await c.submit(p)
     line("ESCALATE", r)
     aid = await c.request_approval(p)
-    await c.approve(aid)
+    # The agent (c) has no approve() method at all. A separate OperatorConsole
+    # -- never held by the agent -- grants the approval.
+    operator = OperatorConsole(c)
+    await operator.approve(aid)
     print("  Approval verified")
     r2 = await c.execute_with_approval(p, aid)
     line("APPROVED", r2)
@@ -282,7 +285,8 @@ async def scenario_consensus_escalate():
           f"(consensus does NOT turn ESCALATE into ALLOW)")
     # Operator approves; final execution carries approval AND the same consensus.
     aid = await c.request_approval(p)
-    await c.approve(aid)
+    operator = OperatorConsole(c)
+    await operator.approve(aid)
     print("  Operator approval verified (single-use)")
     # Approval alone (no consensus) still fails closed.
     no_consensus = await c.execute_with_approval(p, aid)

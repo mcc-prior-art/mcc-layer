@@ -25,7 +25,7 @@ from mcc_core import (
 )
 
 from examples.governed_agent.agent import Agent
-from examples.governed_agent.mcc_client import GovernedMCCClient
+from examples.governed_agent.mcc_client import GovernedMCCClient, OperatorConsole
 from examples.governed_agent.mock_executor import MockExecutor, UnauthorizedExecution
 from tests._fakeredis import DownRedis, FakeRedis
 
@@ -73,7 +73,7 @@ def test_escalate_then_valid_approval_executes_once():
     p = a.propose("transfer_resource", resource="a", payload={"amount": 100})
     assert not run(c.submit(p)).executed
     aid = run(c.request_approval(p))
-    assert run(c.approve(aid))
+    assert run(OperatorConsole(c).approve(aid))
     r = run(c.execute_with_approval(p, aid))
     assert r.executed and ex.count() == 1
 
@@ -89,7 +89,7 @@ def test_replayed_approval_rejected():
     ex = MockExecutor(); c = _client(ex)
     a = Agent("agent/intern")
     p = a.propose("transfer_resource", resource="a", payload={"amount": 100})
-    run(c.submit(p)); aid = run(c.request_approval(p)); run(c.approve(aid))
+    run(c.submit(p)); aid = run(c.request_approval(p)); run(OperatorConsole(c).approve(aid))
     assert run(c.execute_with_approval(p, aid)).executed
     assert not run(c.execute_with_approval(p, aid)).executed  # single-use
     assert ex.count() == 1
@@ -99,7 +99,7 @@ def test_mismatched_approval_payload_rejected():
     ex = MockExecutor(); c = _client(ex)
     a = Agent("agent/intern")
     p = a.propose("transfer_resource", resource="a", payload={"amount": 100})
-    run(c.submit(p)); aid = run(c.request_approval(p)); run(c.approve(aid))
+    run(c.submit(p)); aid = run(c.request_approval(p)); run(OperatorConsole(c).approve(aid))
     # Same approval, different payload than was approved -> bound consume fails closed.
     tampered = a.propose("transfer_resource", resource="a", payload={"amount": 999},
                          transaction_id=p.transaction_id)

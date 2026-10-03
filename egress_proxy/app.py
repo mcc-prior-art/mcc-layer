@@ -395,7 +395,7 @@ def build_app(cfg: EgressSettings, *, env=None, resolver=None) -> FastAPI:
         if service is None:
             response.status_code = 503
             return {"approved": False, "reason": "runtime not initialized"}
-        ok = await service.rt.client.approve(request_id)
+        ok = await service.rt.operator.approve(request_id)
         if not ok:
             response.status_code = 409
         return {"approved": bool(ok), "request_id": request_id}
@@ -406,7 +406,7 @@ def build_app(cfg: EgressSettings, *, env=None, resolver=None) -> FastAPI:
         if service is None:
             response.status_code = 503
             return {"denied": False, "reason": "runtime not initialized"}
-        ok = await service.rt.client.deny_approval(request_id)
+        ok = await service.rt.operator.deny_approval(request_id)
         if not ok:
             response.status_code = 409
         return {"denied": bool(ok), "request_id": request_id}

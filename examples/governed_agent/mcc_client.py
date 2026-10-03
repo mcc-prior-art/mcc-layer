@@ -20,6 +20,13 @@ Fail-closed: any timeout, malformed response, unknown verdict, unavailable
 runtime, missing required field, or verification failure yields a non-executing
 result. The executor is reached **only** via ``coordinator.enforce`` after the
 gate verifies and the audit record is written.
+
+Authority principal separation: ``GovernedMCCClient`` (the proposer side) has
+no ``approve``/``deny_approval`` method -- it can open an ESCALATE approval
+request, but not grant one. ``OperatorConsole`` (below) is a separate class
+that holds that capability; demo/test wiring constructs one of each and
+hands them to separate "agent" and "operator" code paths, never both to the
+same caller.
 """
 
 from __future__ import annotations
@@ -317,19 +324,15 @@ class GovernedMCCClient:
     # ---- ESCALATE approval loop ----
 
     async def request_approval(self, proposed: ProposedAction) -> str:
-        """Open a human-approval request bound to this exact operation."""
+        """Open a human-approval request bound to this exact operation. This
+        is the PROPOSER's half of the ESCALATE loop: it only ever opens a
+        pending request -- it cannot itself grant one. See ``OperatorConsole``
+        below for the authority half; ``GovernedMCCClient`` deliberately has
+        no ``approve``/``deny_approval`` method."""
         return await self.approvals.request(
             actor=proposed.actor, action=proposed.action, resource=proposed.resource,
             transaction_id=proposed.transaction_id, policy_hash=self.policy_hash,
             payload_hash=hash_payload(proposed.payload))
-
-    async def approve(self, approval_id: str) -> bool:
-        """Operator action: grant a pending approval (mints a single-use,
-        signed approval mandate inside the ApprovalService)."""
-        return await self.approvals.approve(approval_id) is not None
-
-    async def deny_approval(self, approval_id: str) -> bool:
-        return await self.approvals.deny(approval_id)
 
     async def execute_with_approval(self, proposed: ProposedAction, approval_id: str, *,
                                     challenge: Optional[Any] = None,
@@ -470,3 +473,37 @@ class GovernedMCCClient:
             verdict=verdict, executed=False, status="BLOCKED", reason=reason,
             proposed_payload=dict(proposed.payload), action=proposed.action,
             correlation_id=proposed.correlation_id, transaction_id=proposed.transaction_id)
+
+
+class OperatorConsole:
+    """The human-authority half of the ESCALATE approval loop -- deliberately
+    a DIFFERENT object/type than ``GovernedMCCClient``, so that whichever
+    code plays "the agent" in a demo or test and holds only a
+    ``GovernedMCCClient`` reference has no ``approve``/``deny_approval``
+    method to call, even if that code (or a dependency it pulls in) were
+    compromised. ``GovernedMCCClient`` has no such method; only this class
+    does.
+
+    This still shares the SAME underlying ``ApprovalService`` (the real
+    single-use approval-mandate registry, with its own distinct signing
+    key, generated once per ``GovernedMCCClient`` instance) -- the proposer
+    and the authority agree on one shared state of pending/granted/denied
+    requests, exactly as a real agent and a real human operator would
+    through one real approval backend. What is separated is WHO can call
+    the privileged operation, not the state it operates on.
+
+    Construct one per demo/test wiring, pass the ``GovernedMCCClient`` to
+    "the agent" code and this ``OperatorConsole`` to "the operator" code --
+    never both to the same caller.
+    """
+
+    def __init__(self, client: "GovernedMCCClient") -> None:
+        self._approvals = client.approvals
+
+    async def approve(self, approval_id: str) -> bool:
+        """Operator action: grant a pending approval (mints a single-use,
+        signed approval mandate inside the ApprovalService)."""
+        return await self._approvals.approve(approval_id) is not None
+
+    async def deny_approval(self, approval_id: str) -> bool:
+        return await self._approvals.deny(approval_id)

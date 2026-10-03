@@ -52,10 +52,10 @@ authority-unavailable-fails-closed — against the real governed stacks, and
 for the reference-agent pilot, against the actual shipped container
 scripts loaded by path).
 
-**Status: no documented exceptions remain.** All three single-process
-reference demos that previously held the operator key
-(`governed_agent_compose_demo.py` / `mcc-agent`, `notify_pilot_agent.py` /
-`pilot-agent`, `reference_agent_runner.py` / `reference-agent`) have been
+**Status: no documented exceptions remain in the Docker Compose topology.**
+All three single-process reference demos that previously held the operator
+key (`governed_agent_compose_demo.py` / `mcc-agent`, `notify_pilot_agent.py`
+/ `pilot-agent`, `reference_agent_runner.py` / `reference-agent`) have been
 refactored into genuinely separate agent/operator process pairs
 (`mcc-operator`, `pilot-operator`, `reference-agent-operator` respectively,
 the latter two sharing `deploy/pilot/gateway_approval_operator.py`), each
@@ -64,6 +64,36 @@ approval's `request_id` and the original proposal — never a credential).
 `KNOWN_COMBINED_ROLE_EXCEPTIONS` in the scanner is intentionally left as an
 empty dict, not deleted, so a future regression has an obvious place to be
 reviewed and documented rather than silently reintroducing the pattern.
+
+**Two single-process reference library/example files were also found and
+fixed, outside the Compose scanner's scope** (it only scans
+`docker-compose*.yml`, not Python call sites):
+
+- `examples/governed_agent/mcc_client.py`'s `GovernedMCCClient` has no
+  `approve`/`deny_approval` method at all; only a new, separate
+  `OperatorConsole` class does. This module is reused as a real, in-process
+  embedded runtime dependency in two other places, not only as a demo —
+  `egress_proxy/runtime.py` (the actual egress proxy gateway) and
+  `src/mcc_agent/client.py`'s `EmbeddedGovernanceClient` — both updated to
+  construct a separate `OperatorConsole` internally rather than calling
+  `approve`/`deny_approval` on the client object directly.
+- `examples/agent_runtime_mcc.py`'s agent and MCC authority are now
+  genuinely separate OS processes (`multiprocessing`), not merely separate
+  objects in one process; the agent-side `AgentRuntimeClient` never
+  imports or constructs `SigningKey` / `DecisionEngine` / `ExecutionGate`.
+
+Enforcement: `tests/test_authority_principal_separation_adversarial_example_scripts.py`
+(Cases A-E for both).
+
+**Known, not-yet-closed finding (flagged, not silently fixed):**
+`src/mcc_agent/agent.py`'s `GovernedAgent.arun()` calls
+`self.client.approve(approval_id)` directly on the SAME
+`EmbeddedGovernanceClient` object it uses to `submit()` the proposal — the
+same combined-role pattern as the demos above, one level further out. This
+was discovered during this audit but was not in the two explicitly-named
+files for this remediation round; closing it requires either widening
+`GovernedAgent`'s constructor to accept a separately-credentialed operator
+object, or an equivalent restructure, and is tracked as follow-on work.
 
 ## INV-01 — No self-authorization
 
