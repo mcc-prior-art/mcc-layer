@@ -85,6 +85,16 @@ flowchart TD
 
 ## Service responsibilities
 
+> **Credential-separation fix:** an earlier revision of
+> `docker-compose.pilot-clinic-voltagent.yml` gave `clinic-agent` a blanket
+> `env_file: [.env.pilot]`, which handed it `MCC_GATEWAY_OPERATOR_API_KEY`
+> despite this table already saying it never should. Fixed: the service
+> now allowlists only the variables its own code (`clinic-cli.ts`/
+> `clinic-agent.ts`) reads. If a deployment ran with the older compose
+> file, rotate `MCC_GATEWAY_OPERATOR_API_KEY`. See
+> `docs/CONSTITUTION-INVARIANTS.md` (INV-06/INV-10) and
+> `tests/test_agent_operator_credential_separation.py`.
+
 | Service            | Responsibility | May it decide/execute? |
 |--------------------|----------------|------------------------|
 | `clinic-agent`     | AXFlow: patient-request classification, tool selection, structured clinic proposals | **No.** No operator key, no clinic route. |

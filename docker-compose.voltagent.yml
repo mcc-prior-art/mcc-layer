@@ -126,11 +126,15 @@ services:
     build:
       context: .
       dockerfile: integrations/voltagent/docker/Dockerfile.agent
+    # Credential separation: no operator key here. agent.ts/demo.ts/pilot-cli.ts
+    # (this container's code) never read MCC_GATEWAY_OPERATOR_API_KEY -- only
+    # e2e-runner.ts does, and that is a local dev/test harness that never runs
+    # inside this container. The agent proposes; only the gateway (which holds
+    # the operator key in its own environment, above) can approve an ESCALATE.
     environment:
       MCC_GATEWAY_URL: "http://mcc-gateway:8001"
       MCC_QUORUM_URL: "http://evaluator-quorum:8080"
       MCC_GATEWAY_API_KEY: "demo-key"
-      MCC_GATEWAY_OPERATOR_API_KEY: "op-key"
       MCC_VOLTAGENT_ACTOR: "agent/notify-bot"
       MCC_VOLTAGENT_RESOURCE: "crm"
       # Deterministic offline model by default (no paid API). Set

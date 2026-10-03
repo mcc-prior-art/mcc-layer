@@ -84,6 +84,14 @@ services:
       timeout: 5s
       retries: 12
 
+  # KNOWN, OUT-OF-SCOPE RELATED FINDING (credential-separation review, see
+  # tests/test_agent_operator_credential_separation.py): unlike the other
+  # agent containers in this repo's compose files, `governed_agent_compose_demo.py`
+  # DOES actively call the approve endpoint with MCC_EGRESS_OPERATOR_API_KEY --
+  # by design, to simulate the ESCALATE->operator-approval step in one process
+  # for a no-second-terminal demo. Removing the key would just break the demo,
+  # not fix a credential leak; giving it a genuinely separate operator process
+  # is a design change beyond this scope. Flagged, not silently fixed.
   mcc-agent:
     build:
       context: .

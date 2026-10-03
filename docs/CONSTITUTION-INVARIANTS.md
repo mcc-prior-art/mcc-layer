@@ -10,6 +10,52 @@ every invariant is enforced by the **existing** `DecisionEngine` /
 `ExecutionGate` / `AuthorityModel` / `EnforcementCoordinator` /
 `AuditLog` / nonce registries.
 
+## Authority Principal Separation (deployment-level corollary of INV-01/INV-06/INV-10)
+
+This is not a new, eleventh invariant alongside INV-01 through INV-10 below
+— it is the same principle those ten already state, applied one layer
+outward, to **who is allowed to hold which credential at deployment time**,
+not only to what the governed code path allows at runtime:
+
+> An autonomous system may propose an operation, but the security principal
+> that controls the proposer MUST NOT possess sufficient capability to
+> issue, approve, sign, or otherwise create executable authority for that
+> same operation.
+>
+> INTELLIGENCE ≠ AUTHORITY. PROPOSER ≠ AUTHORIZER.
+> COMPROMISE OF THE AGENT MUST NOT IMPLY COMPROMISE OF EXECUTION AUTHORITY.
+
+INV-01 (no self-authorization) and INV-06 (executor cannot authorize) prove
+this at the *code* level: the agent/executor's own source never imports or
+constructs `SigningKey`/`AuthorityModel`/`DecisionEngine`. Authority
+Principal Separation is the same claim checked at the *deployment* level:
+even when an agent container's own code never reads a privileged
+credential, that credential must not be reachable from the agent's
+environment, mounts, or process at all — because "my code doesn't use it"
+is not a security boundary against a compromised process, a dependency
+that dumps its environment, or a future code change in that same
+container.
+
+**Enforcement point:** `tests/test_agent_operator_credential_separation.py`
+(a specific confirmed finding, with a real runtime reproduction against the
+actual `egress_proxy` application) and
+`tests/test_authority_principal_separation_scanner.py` (a repository-wide
+scanner classifying every service across every `docker-compose*.yml` file
+as `ROLE_AGENT` or not, by name heuristic, and asserting no `ROLE_AGENT`
+service's EFFECTIVE merged environment — env_file content plus explicit
+`environment:`, interpolated — contains an authority-plane secret, unless
+an explicit, reviewed, reasoned exception is recorded in
+`KNOWN_COMBINED_ROLE_EXCEPTIONS`).
+
+**Known, documented exceptions:** three single-process reference demos
+(`governed_agent_compose_demo.py`, `notify_pilot_agent.py`,
+`reference_agent_runner.py`) deliberately hold the operator key to simulate
+the full propose→escalate→approve lifecycle without a second terminal.
+These are demo-convenience exceptions, not production topology, and are
+each named in the scanner with a reason — removing them (by introducing a
+genuinely separate operator process for each) is tracked as follow-on work,
+not claimed as done here.
+
 ## INV-01 — No self-authorization
 
 **Constitutional principle:** Authority remains with the owner;

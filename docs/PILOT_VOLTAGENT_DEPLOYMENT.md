@@ -76,6 +76,17 @@ it — only the governed executor (inside the gateway) can reach it.
 
 ## Service responsibilities
 
+> **Credential-separation fix:** an earlier revision of
+> `docker-compose.pilot-voltagent.yml` gave `voltagent-agent` a blanket
+> `env_file: [.env.pilot]`, which handed it `MCC_GATEWAY_OPERATOR_API_KEY`
+> despite this table already saying it never should. Fixed: the service
+> now allowlists only the variables its own code (`pilot-cli.ts`/`agent.ts`)
+> reads. If a deployment ran with the older compose file, rotate
+> `MCC_GATEWAY_OPERATOR_API_KEY`. See
+> `docs/CONSTITUTION-INVARIANTS.md` (INV-06/INV-10) for the underlying
+> principle and `tests/test_agent_operator_credential_separation.py` for
+> the regression coverage.
+
 | Service            | Responsibility | May it decide/execute? |
 |--------------------|----------------|------------------------|
 | `voltagent-agent`  | Reasoning, planning, tool selection, structured proposals | **No.** No operator key, no external route. |
