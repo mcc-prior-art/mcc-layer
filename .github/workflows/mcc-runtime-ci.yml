@@ -17,6 +17,14 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+          # tests/test_agent_operator_credential_separation.py's non-vacuity
+          # checks run `git show <historical-finding-commit>:<path>` against
+          # a specific ancestor commit to prove the check actually detects
+          # the original vulnerability. A shallow (default depth=1) clone
+          # does not fetch that commit object, so `git show` fails with
+          # "fatal: ... not a valid object name" (exit 128) even though the
+          # commit IS an ancestor of HEAD. Full history is required.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v6
         with:
