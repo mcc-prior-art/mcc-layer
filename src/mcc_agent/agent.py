@@ -4,13 +4,21 @@ The agent is a thin orchestrator:
 
     goal -> planner.plan(goal) -> proposal
          -> client.submit(proposal)            # MCC decides (and the gate executes)
-         -> [ESCALATE] client.approve + execute_after_approval
+         -> [ESCALATE] operator.approve + client.execute_after_approval
          -> AgentResult
 
 It holds no executor, no signing key, and no governance logic. A proposal is
 never treated as permission: the agent executes an external action only via the
 governed client, after MCC-Core authorizes it. The four-line formula holds —
 the model proposes, MCC decides, the gate enforces, the audit chain records.
+
+Authority principal separation: ``self.client`` (the PROPOSER surface) has
+no approve/deny_approval method at all -- see ``GovernanceClient`` in
+``client.py``. Granting a pending ESCALATE requires a SEPARATE
+``OperatorClient`` object, passed in at construction. Without one, this
+agent cannot complete its own authorization path even if its own code
+were compromised: it reports PENDING_APPROVAL and stops, never
+self-approves.
 """
 
 from __future__ import annotations
@@ -18,18 +26,21 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
-from .client import GovernanceClient
+from .client import GovernanceClient, OperatorClient
 from .models import AgentResult, Decision, ExecutionStatus
 from .planner import DeterministicPlanner
 
 
 class GovernedAgent:
     def __init__(self, *, client: GovernanceClient, planner: DeterministicPlanner,
+                 operator: Optional[OperatorClient] = None,
                  auto_approve: bool = True) -> None:
         self.client = client
         self.planner = planner
+        self.operator = operator
         # auto_approve=True lets the pilot demonstrate the full ESCALATE -> approve
-        # -> execute loop end to end; set False to stop at PENDING_APPROVAL.
+        # -> execute loop end to end PROVIDED a separate ``operator`` was given;
+        # set False to stop at PENDING_APPROVAL regardless.
         self.auto_approve = auto_approve
 
     async def arun(
@@ -51,8 +62,12 @@ class GovernedAgent:
         approval_id = outcome.approval_request_id
 
         approve = self.auto_approve if auto_approve is None else auto_approve
-        if decision == Decision.ESCALATE and not outcome.executed and approve and approval_id:
-            await self.client.approve(approval_id)
+        # No separately-credentialed operator configured -> this agent
+        # cannot complete its own authorization path. Report PENDING and
+        # stop; never fall back to approving through its own client.
+        if (decision == Decision.ESCALATE and not outcome.executed and approve
+                and approval_id and self.operator is not None):
+            await self.operator.approve(approval_id)
             outcome = await self.client.execute_after_approval(proposal, approval_id)
             # The governance journey was an ESCALATE that an operator approved;
             # keep the verdict as ESCALATE and reflect the post-approval execution.

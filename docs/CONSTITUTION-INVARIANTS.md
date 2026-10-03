@@ -103,15 +103,29 @@ fixed, outside the Compose scanner's scope** (it only scans
 Enforcement: `tests/test_authority_principal_separation_adversarial_example_scripts.py`
 (Cases A-E for both).
 
-**Known, not-yet-closed finding (flagged, not silently fixed):**
-`src/mcc_agent/agent.py`'s `GovernedAgent.arun()` calls
+**A sixth instance, discovered during this same audit, is also now closed:**
+`src/mcc_agent/agent.py`'s `GovernedAgent.arun()` previously called
 `self.client.approve(approval_id)` directly on the SAME
 `EmbeddedGovernanceClient` object it uses to `submit()` the proposal — the
-same combined-role pattern as the demos above, one level further out. This
-was discovered during this audit but was not in the two explicitly-named
-files for this remediation round; closing it requires either widening
-`GovernedAgent`'s constructor to accept a separately-credentialed operator
-object, or an equivalent restructure, and is tracked as follow-on work.
+same combined-role pattern as the demos above, one level further out, in
+pilot (`src/`) code rather than `examples/`. Fixed the same way: the
+`GovernanceClient` Protocol (`submit`/`execute_after_approval`/
+`verify_audit_chain`) no longer declares `approve`/`deny_approval`; a
+separate `OperatorClient` Protocol does, and `GovernedAgent.__init__` takes
+an optional, separately-constructed `operator: Optional[OperatorClient]`.
+Without one, ESCALATE reports `PENDING_APPROVAL` and stops — `GovernedAgent`
+never falls back to approving through its own client.
+`EmbeddedGovernanceClient.approve`/`deny_approval` were likewise removed in
+favor of a public `.operator` property exposing the same `OperatorConsole`
+it already built internally. All 5 call sites in `src/mcc_agent/demo.py`
+and the shared `_agent()` test factories in `tests/test_mcc_agent.py` /
+`tests/test_pilot_release.py` updated to wire `operator=client.operator`.
+Enforcement: `tests/test_authority_principal_separation_adversarial_mcc_agent.py`
+(Cases A-E).
+
+**Status: zero known combined proposer/authority principals remain**
+across the compose topology, the example/library code, and pilot (`src/`)
+code, as of this audit.
 
 ## INV-01 — No self-authorization
 

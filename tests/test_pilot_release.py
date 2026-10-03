@@ -58,7 +58,8 @@ def _reset():
 def _agent(**kw):
     base = f"http://127.0.0.1:{PORT}"
     client = EmbeddedGovernanceClient(pilot_api_base=base, **kw)
-    return client, GovernedAgent(client=client, planner=DeterministicPlanner(pilot_api_base=base))
+    return client, GovernedAgent(client=client, planner=DeterministicPlanner(pilot_api_base=base),
+                                operator=client.operator)
 
 
 # ---------------- release metadata ----------------
@@ -180,7 +181,8 @@ def test_redis_replay_protection_active():
            "MCC_REDIS_URL": url}
     import uuid
     client = EmbeddedGovernanceClient(pilot_api_base=base, env=env)
-    agent = GovernedAgent(client=client, planner=DeterministicPlanner(pilot_api_base=base))
+    agent = GovernedAgent(client=client, planner=DeterministicPlanner(pilot_api_base=base),
+                          operator=client.operator)
     key = f"rel-{uuid.uuid4().hex}"  # unique per run (Redis state persists across runs)
     first = agent.run("Create a CRM lead for Redis with a campaign budget of 1 EUR",
                       idempotency_key=key)
