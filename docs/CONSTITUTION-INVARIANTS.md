@@ -12,6 +12,24 @@ every invariant is enforced by the **existing** `DecisionEngine` /
 
 ## Authority Principal Separation (deployment-level corollary of INV-01/INV-06/INV-10)
 
+This is a separation-of-powers requirement, not a credential-hygiene
+convenience. Three distinct control planes govern an autonomous system,
+and MCC-Core occupies exactly one of them:
+
+> **Safety** controls model behavior (what the model is inclined to
+> propose). **Containment** controls where the agent can operate (network
+> reachability, process/container boundaries). **Authority** controls
+> whether a consequential action may execute at all — this is MCC-Core's
+> plane, and only its plane.
+>
+> MCC-Core must remain the independent authority boundary even if the
+> agent is fully compromised. A compromised agent may defeat its own
+> safety training and may attempt to defeat its containment — the
+> authority boundary is what must hold regardless, because it never
+> depended on the agent's behavior or location to begin with: it depends
+> on the agent never holding the credential that would let it decide for
+> itself.
+
 This is not a new, eleventh invariant alongside INV-01 through INV-10 below
 — it is the same principle those ten already state, applied one layer
 outward, to **who is allowed to hold which credential at deployment time**,
