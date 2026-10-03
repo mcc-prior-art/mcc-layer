@@ -22,7 +22,7 @@ COPY deploy/pilot/gateway_approval_operator.py /app/gateway_approval_operator.py
 
 ENV PYTHONPATH=/app/src:/app:/app/sdk/python/src
 
-RUN mkdir -p /data && chown -R mcc:mcc /data /app
+RUN mkdir -p /data /pilot-state && chown -R mcc:mcc /data /pilot-state /app
 USER mcc
 
 CMD ["python", "-c", "print('mcc reference agent image')"]

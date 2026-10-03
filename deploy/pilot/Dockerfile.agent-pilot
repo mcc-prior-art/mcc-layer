@@ -20,7 +20,7 @@ COPY deploy/pilot/governed_agent_pilot_operator.py /app/governed_agent_pilot_ope
 
 ENV PYTHONPATH=/app/src:/app
 
-RUN mkdir -p /data && chown -R mcc:mcc /data /app
+RUN mkdir -p /data /pilot-state && chown -R mcc:mcc /data /pilot-state /app
 USER mcc
 
 CMD ["python", "-c", "print('mcc agent pilot image')"]
