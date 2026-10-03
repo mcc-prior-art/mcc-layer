@@ -17,30 +17,54 @@ It proves, end-to-end in real containers:
 remote agent does not hold; those flows are proven in the deterministic tests. The
 agent here reports them BLOCKED for lack of authorization — never a bypass.)
 
+Authority principal separation: this process holds ONLY
+``MCC_GATEWAY_API_KEY``. It never holds, reads, or derives
+``MCC_GATEWAY_OPERATOR_API_KEY`` -- the ``reference-agent-operator`` service
+(``gateway_approval_operator.py``) is a separate process, in a separate
+container, that holds it. The DENY scenario never involves an operator at
+all, so it is driven through ``ReferenceGovernedAgent`` unchanged. The
+ESCALATE scenario is driven here directly with the SDK (the same primitives
+``ReferenceGovernedAgent._escalate`` uses internally -- see
+examples/reference_governed_agent/agent.py) rather than through
+``ReferenceGovernedAgent``'s built-in ``Operator`` hook: that hook is called
+by, and performs its approve() call through, the SAME client object passed
+to the agent -- there is no way for a caller to inject a SEPARATE,
+differently-credentialed client for just the approval step without
+widening that shared reference implementation's constructor (used by 20+
+other tests and proofs elsewhere in this repository), which is out of
+scope here. Driving ESCALATE directly keeps that shared reference
+implementation, and everything built on it, completely unchanged, while
+still proving the real security property for this deployment: this agent
+process cannot grant its own approval, because it never holds the key to.
+
 Prints the markers the E2E workflow asserts; a clean exit alone is NOT success.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
+from pathlib import Path
 
 sys.path.insert(0, "/app/sdk/python/src")
 sys.path.insert(0, "/app/src")
 sys.path.insert(0, "/app")
 
-from mcc_client import MCCClient  # noqa: E402
+from mcc_client import MCCClient, MCCError, Verdict  # noqa: E402
 
 from examples.reference_governed_agent import (  # noqa: E402
     DeterministicProvider,
-    ProgrammaticOperator,
     ReferenceGovernedAgent,
 )
+from examples.reference_governed_agent.models import AgentRunResult  # noqa: E402
 
 GATEWAY = os.environ.get("MCC_GATEWAY_URL", "http://mcc-gateway:8001")
 API_KEY = os.environ.get("MCC_GATEWAY_API_KEY", "demo-key")
-OP_KEY = os.environ.get("MCC_GATEWAY_OPERATOR_API_KEY", "op-key")
+STATE_DIR = Path(os.environ.get("MCC_PILOT_STATE_DIR", "/pilot-state"))
+APPROVAL_WAIT_TIMEOUT_S = float(os.environ.get("MCC_APPROVAL_WAIT_TIMEOUT_S", "60.0"))
+APPROVAL_POLL_INTERVAL_S = float(os.environ.get("MCC_APPROVAL_POLL_INTERVAL_S", "1.0"))
 
 REQUEST = "Notify customer-123 that the appointment is confirmed"
 
@@ -75,8 +99,114 @@ def _print(result) -> None:
         print(f"  detail             : {result.error}")
 
 
+def _escalate_with_separated_operator(client: MCCClient, request: str) -> AgentRunResult:
+    """Drive the ESCALATE path with the same SDK primitives
+    ``ReferenceGovernedAgent._escalate`` uses internally, but WITHOUT ever
+    constructing a client that holds the operator key: the approval is
+    recorded to a shared, non-secret state file and granted by the
+    separate reference-agent-operator process (see module docstring)."""
+    provider = DeterministicProvider(actor_id="agent/unknown", priority="normal",
+                                     channel="email")
+    proposal = provider.propose(request)
+    proposal_dict = proposal.to_dict()
+
+    try:
+        decision = client.evaluate(
+            actor_id=proposal.actor_id, action=proposal.action,
+            resource=proposal.resource, payload=proposal.payload,
+            idempotency_key=proposal.idempotency_key)
+    except MCCError as exc:
+        return AgentRunResult(
+            request=request, proposal=proposal_dict, verdict="ERROR",
+            reason="governance evaluation failed", execution_status="BLOCKED",
+            error=f"{type(exc).__name__}: {exc}")
+
+    if decision.verdict != Verdict.ESCALATE:
+        return AgentRunResult(
+            request=request, proposal=proposal_dict, verdict=decision.verdict.value,
+            reason=decision.reason, execution_status="BLOCKED",
+            error="expected ESCALATE for this scenario")
+
+    try:
+        approval = client.request_approval(decision)
+    except MCCError as exc:
+        return AgentRunResult(
+            request=request, proposal=proposal_dict, verdict="ESCALATE",
+            reason="could not open approval request", approval_status="ERROR",
+            execution_status="BLOCKED", error=f"{type(exc).__name__}: {exc}")
+
+    # This agent has no operator key and cannot grant its own approval. It
+    # records the (non-secret) pending request for the separate
+    # reference-agent-operator process, then polls for its result.
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    result_path = STATE_DIR / "escalation_result.json"
+    try:
+        result_path.unlink()
+    except OSError:
+        pass
+    (STATE_DIR / "escalation.json").write_text(json.dumps({
+        "requestId": approval.request_id,
+        "actor": decision.actor_id,
+        "resource": decision.resource_id,
+        "context": dict(decision.requested_payload),
+        "action": decision.action,
+        "correlationId": proposal.idempotency_key,
+    }), encoding="utf-8")
+
+    outcome = None
+    deadline = time.time() + APPROVAL_WAIT_TIMEOUT_S
+    while time.time() < deadline:
+        if result_path.exists():
+            try:
+                outcome = json.loads(result_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                outcome = None
+            if outcome is not None:
+                break
+        time.sleep(APPROVAL_POLL_INTERVAL_S)
+
+    if outcome is None:
+        return AgentRunResult(
+            request=request, proposal=proposal_dict, verdict="ESCALATE",
+            reason="operator never processed the pending approval (timeout)",
+            approval_status="PENDING", execution_status="BLOCKED")
+
+    if not outcome.get("executed"):
+        return AgentRunResult(
+            request=request, proposal=proposal_dict, verdict="ESCALATE",
+            reason="governed execution after approval did not complete",
+            approval_status=outcome.get("approval_state"),
+            execution_status=outcome.get("status") or "BLOCKED")
+
+    audit_valid = None
+    try:
+        audit_valid = client.verify_audit_chain().get("valid")
+    except MCCError:
+        audit_valid = None
+
+    execution = outcome.get("execution") or {}
+    body = execution.get("body") if isinstance(execution, dict) else None
+    receipt = body if isinstance(body, dict) else (execution if isinstance(execution, dict) else {})
+    receipt_summary = {
+        "receipt_verified": execution.get("receipt_verified") if isinstance(execution, dict) else None,
+        "upstream_status": execution.get("upstream_status") if isinstance(execution, dict) else None,
+        "received": receipt.get("received"),
+        "correlation_id": receipt.get("correlation_id"),
+        "payload_sha256": receipt.get("payload_sha256"),
+    }
+
+    return AgentRunResult(
+        request=request, proposal=proposal_dict, verdict="ESCALATE",
+        reason=decision.reason or "authorized",
+        execution_status=outcome.get("status") or "EXECUTED",
+        approval_status="APPROVED",
+        final_payload=dict(decision.requested_payload),
+        receipt=receipt_summary,
+        audit_valid=audit_valid)
+
+
 def main() -> int:
-    client = MCCClient(GATEWAY, api_key=API_KEY, operator_key=OP_KEY, timeout=15.0)
+    client = MCCClient(GATEWAY, api_key=API_KEY, timeout=15.0)
     _wait_ready(client)
     failures: list[str] = []
 
@@ -97,11 +227,7 @@ def main() -> int:
 
     # --- ESCALATE: operator approval -> governed execution -> confirmed receipt. ---
     print("\n--- Scenario: ESCALATE (operator authorization) ---")
-    esc_agent = ReferenceGovernedAgent(
-        client, provider=DeterministicProvider(actor_id="agent/unknown",
-                                               priority="normal", channel="email"),
-        operator=ProgrammaticOperator(approve=True), authorizer=None)
-    esc = esc_agent.handle(REQUEST)
+    esc = _escalate_with_separated_operator(client, REQUEST)
     _print(esc)
     if esc.verdict != "ESCALATE":
         failures.append(f"ESCALATE: got verdict {esc.verdict}")

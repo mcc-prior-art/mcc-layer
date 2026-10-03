@@ -18,6 +18,7 @@ COPY examples /app/examples
 COPY pilot_notify /app/pilot_notify
 COPY sdk /app/sdk
 COPY deploy/pilot/reference_agent_runner.py /app/reference_agent_runner.py
+COPY deploy/pilot/gateway_approval_operator.py /app/gateway_approval_operator.py
 
 ENV PYTHONPATH=/app/src:/app:/app/sdk/python/src
 

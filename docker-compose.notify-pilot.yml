@@ -15,7 +15,19 @@
 #                        governed executor into a second service would fragment the
 #                        single enforcement path.)
 #   pilot-agent        — the governed agent: uses the SDK; never calls the mock
-#                        service directly.
+#                        service directly. Holds ONLY MCC_GATEWAY_API_KEY -- no
+#                        operator key.
+#   pilot-operator     — SEPARATE process/container/credential holder from
+#                        pilot-agent. Holds the operator key. Watches a shared,
+#                        non-secret state file (the pending approval's
+#                        request_id + the agent's original proposal) and
+#                        grants + executes it under the ORIGINAL
+#                        correlation_id. See gateway_approval_operator.py.
+#
+# Authority principal separation: AGENT_CREDENTIALS ∩ AUTHORITY_CREDENTIALS = ∅.
+# pilot-agent cannot self-approve its own ESCALATE (it has no operator key,
+# even if its own code were compromised); the approval is always granted by
+# a separate process, for the exact action pilot-agent proposed.
 #
 # Trust boundary: the agent shares a network with the gateway only. The mock
 # service is reachable by the gateway (governed executor) but NOT by the agent.
@@ -82,22 +94,42 @@ services:
       timeout: 5s
       retries: 12
 
-  # KNOWN, OUT-OF-SCOPE RELATED FINDING (credential-separation review, see
-  # tests/test_agent_operator_credential_separation.py): `notify_pilot_agent.py`
-  # DOES actively call client.approve() with MCC_GATEWAY_OPERATOR_API_KEY -- by
-  # design, to simulate the ESCALATE->operator-approval step in one process for
-  # a no-second-terminal demo. Removing the key would just break the demo, not
-  # fix a credential leak; a genuinely separate operator process is a design
-  # change beyond this scope. Flagged, not silently fixed.
   pilot-agent:
     build:
       context: .
       dockerfile: deploy/pilot/Dockerfile.notify
     command: ["python", "/app/notify_pilot_agent.py"]
+    # Authority principal separation: no operator key here. This container
+    # cannot self-approve its own ESCALATE even if its own code were
+    # compromised -- only pilot-operator (a separate container, separate
+    # credential) can grant an approval.
+    environment:
+      MCC_GATEWAY_URL: "http://mcc-gateway:8001"
+      MCC_GATEWAY_API_KEY: "demo-key"
+      MCC_PILOT_STATE_DIR: "/pilot-state"
+    volumes:
+      - notify-pilot-state:/pilot-state
+    networks: [agent_edge]
+    depends_on:
+      mcc-gateway:
+        condition: service_healthy
+
+  pilot-operator:
+    build:
+      context: .
+      dockerfile: deploy/pilot/Dockerfile.notify
+    command: ["python", "/app/gateway_approval_operator.py"]
+    # Authority principal separation: holds the operator key. No execute
+    # route to anything the agent didn't itself propose -- it only ever
+    # processes a pending request pilot-agent recorded, under pilot-agent's
+    # own original correlation_id (never a substituted identity).
     environment:
       MCC_GATEWAY_URL: "http://mcc-gateway:8001"
       MCC_GATEWAY_API_KEY: "demo-key"
       MCC_GATEWAY_OPERATOR_API_KEY: "op-key"
+      MCC_PILOT_STATE_DIR: "/pilot-state"
+    volumes:
+      - notify-pilot-state:/pilot-state
     networks: [agent_edge]
     depends_on:
       mcc-gateway:
@@ -105,3 +137,4 @@ services:
 
 volumes:
   notify-audit:
+  notify-pilot-state:

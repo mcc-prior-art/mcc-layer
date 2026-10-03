@@ -38,23 +38,32 @@ container.
 
 **Enforcement point:** `tests/test_agent_operator_credential_separation.py`
 (a specific confirmed finding, with a real runtime reproduction against the
-actual `egress_proxy` application) and
-`tests/test_authority_principal_separation_scanner.py` (a repository-wide
-scanner classifying every service across every `docker-compose*.yml` file
-as `ROLE_AGENT` or not, by name heuristic, and asserting no `ROLE_AGENT`
-service's EFFECTIVE merged environment — env_file content plus explicit
-`environment:`, interpolated — contains an authority-plane secret, unless
-an explicit, reviewed, reasoned exception is recorded in
-`KNOWN_COMBINED_ROLE_EXCEPTIONS`).
+actual `egress_proxy` application), `tests/test_authority_principal_separation_scanner.py`
+(a repository-wide scanner classifying every service across every
+`docker-compose*.yml` file as `ROLE_AGENT` or not, by name heuristic, and
+asserting no `ROLE_AGENT` service's EFFECTIVE merged environment —
+env_file content plus explicit `environment:`, interpolated — contains an
+authority-plane secret, unless an explicit, reviewed, reasoned exception is
+recorded in `KNOWN_COMBINED_ROLE_EXCEPTIONS`), and the adversarial runtime
+proofs in `tests/test_authority_principal_separation_adversarial*.py`
+(compromised-agent-cannot-self-approve, separated-authority-succeeds-
+exactly-once, stolen-credential-rejected, wrong-binding-rejected,
+authority-unavailable-fails-closed — against the real governed stacks, and
+for the reference-agent pilot, against the actual shipped container
+scripts loaded by path).
 
-**Known, documented exceptions:** three single-process reference demos
-(`governed_agent_compose_demo.py`, `notify_pilot_agent.py`,
-`reference_agent_runner.py`) deliberately hold the operator key to simulate
-the full propose→escalate→approve lifecycle without a second terminal.
-These are demo-convenience exceptions, not production topology, and are
-each named in the scanner with a reason — removing them (by introducing a
-genuinely separate operator process for each) is tracked as follow-on work,
-not claimed as done here.
+**Status: no documented exceptions remain.** All three single-process
+reference demos that previously held the operator key
+(`governed_agent_compose_demo.py` / `mcc-agent`, `notify_pilot_agent.py` /
+`pilot-agent`, `reference_agent_runner.py` / `reference-agent`) have been
+refactored into genuinely separate agent/operator process pairs
+(`mcc-operator`, `pilot-operator`, `reference-agent-operator` respectively,
+the latter two sharing `deploy/pilot/gateway_approval_operator.py`), each
+coordinating only through a shared, non-secret state file (a pending
+approval's `request_id` and the original proposal — never a credential).
+`KNOWN_COMBINED_ROLE_EXCEPTIONS` in the scanner is intentionally left as an
+empty dict, not deleted, so a future regression has an obvious place to be
+reviewed and documented rather than silently reintroducing the pattern.
 
 ## INV-01 — No self-authorization
 

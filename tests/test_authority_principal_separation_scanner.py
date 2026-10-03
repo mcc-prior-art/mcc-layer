@@ -37,25 +37,18 @@ from tests.test_agent_operator_credential_separation import (
 ROOT = Path(__file__).resolve().parents[1]
 
 # Every documented, reviewed exception to "ROLE_AGENT holds no
-# ROLE_AUTHORITY_SECRET" in this repository, as of this scan. Each entry is a
-# conscious design choice (a single-process demo simulating the full
-# ESCALATE->approval lifecycle without a second terminal), not an oversight
-# -- and each is marked in its own compose file with a matching comment (see
-# the "KNOWN, OUT-OF-SCOPE RELATED FINDING" comments in those three files).
-KNOWN_COMBINED_ROLE_EXCEPTIONS: Dict[Tuple[str, str], str] = {
-    ("docker-compose.pilot.yml", "mcc-agent"): (
-        "governed_agent_compose_demo.py actively self-approves via "
-        "MCC_EGRESS_OPERATOR_API_KEY by design, for a no-second-terminal demo"
-    ),
-    ("docker-compose.notify-pilot.yml", "pilot-agent"): (
-        "notify_pilot_agent.py actively self-approves via "
-        "MCC_GATEWAY_OPERATOR_API_KEY by design, for a no-second-terminal demo"
-    ),
-    ("docker-compose.reference-agent.yml", "reference-agent"): (
-        "reference_agent_runner.py actively self-approves via "
-        "MCC_GATEWAY_OPERATOR_API_KEY by design, for a no-second-terminal demo"
-    ),
-}
+# ROLE_AUTHORITY_SECRET" in this repository, as of this scan.
+#
+# As of this scan, ALL THREE previously-combined-role demos
+# (docker-compose.pilot.yml's mcc-agent, docker-compose.notify-pilot.yml's
+# pilot-agent, docker-compose.reference-agent.yml's reference-agent) have
+# been refactored into genuinely separate agent/operator process pairs
+# (mcc-operator / pilot-operator / reference-agent-operator) and none
+# appear here. This dict is intentionally empty: it stays, rather than
+# being deleted, so a future regression (a service added back with a
+# combined role) has an obvious place to be reviewed and documented,
+# instead of silently reintroducing the pattern.
+KNOWN_COMBINED_ROLE_EXCEPTIONS: Dict[Tuple[str, str], str] = {}
 
 
 def _discover_compose_files():
@@ -69,10 +62,17 @@ def _discover_compose_files():
 
 
 def _agent_services(compose_path: Path):
+    """ROLE_AGENT heuristic: name contains "agent" -- EXCEPT a service whose
+    name also contains "operator" (e.g. "reference-agent-operator"), which
+    is the separated authority counterpart, not the proposer, even though
+    its name happens to embed its paired agent's name. No agent service in
+    this repository is named with "operator" in it; this is an explicit
+    allow/deny classification, not a bare substring match."""
     doc = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
     services = (doc or {}).get("services") or {}
     for name in services:
-        if "agent" in name.lower():
+        lname = name.lower()
+        if "agent" in lname and "operator" not in lname:
             yield name
 
 

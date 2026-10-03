@@ -5,22 +5,41 @@
 #       python /app/governed_agent_compose_demo.py
 #
 # Services:
-#   redis       — Redis-backed nonce/idempotency/velocity/approval state.
-#   pilot-api   — the EXTERNAL enterprise API the agent acts upon.
-#   mcc-gateway — the MCC-Core governed gateway (the egress proxy): authority +
-#                 execution gate + governed HTTPS executor + audit. The ONLY
-#                 service that performs the outbound call to pilot-api.
-#   mcc-agent   — the governed agent runner: proposes + submits to mcc-gateway.
+#   redis         — Redis-backed nonce/idempotency/velocity/approval state.
+#   pilot-api     — the EXTERNAL enterprise API the agent acts upon.
+#   mcc-gateway   — the MCC-Core governed gateway (the egress proxy): authority +
+#                   execution gate + governed HTTPS executor + audit. The ONLY
+#                   service that performs the outbound call to pilot-api.
+#   mcc-agent     — the governed agent runner: proposes + submits to mcc-gateway.
+#                   Holds ONLY the agent api key -- no operator key.
+#   mcc-operator  — SEPARATE process/container/credential holder from
+#                   mcc-agent. Holds ONLY the operator key. Watches a shared,
+#                   non-secret state file (the pending approval's request_id)
+#                   and grants the approval; it never executes anything
+#                   itself (no agent api key, no /v1/http/execute route used).
+#                   See governed_agent_pilot_operator.py.
+#
+# Authority principal separation: AGENT_CREDENTIALS ∩ AUTHORITY_CREDENTIALS = ∅.
+# mcc-agent cannot self-approve its own ESCALATE (it has no operator key, even
+# if its own code were compromised); mcc-operator cannot execute anything on
+# the agent's behalf (it has no agent api key). Compromising one does not
+# imply compromising the other.
 #
 # Network boundary (a PILOT boundary — see "production hardening" in
 # docs/MCC_CORE_PILOT_V0_1.md): production isolation additionally requires
 # network policies, service identity, and workload isolation.
-#   * agent_edge   — mcc-agent <-> mcc-gateway only.
-#   * gov_internal — mcc-gateway <-> pilot-api <-> redis. mcc-agent is NOT here,
-#                    so it has no governed-bypass route to the external API.
+#   * agent_edge   — mcc-agent, mcc-operator <-> mcc-gateway only (they do not
+#                    talk to each other; both only reach the gateway).
+#   * gov_internal — mcc-gateway <-> pilot-api <-> redis. mcc-agent and
+#                    mcc-operator are NOT here, so neither has a
+#                    governed-bypass route to the external API.
 networks:
   agent_edge:
   gov_internal:
+
+volumes:
+  mcc-agent-audit:
+  mcc-pilot-state:
 
 services:
   redis:
@@ -84,29 +103,44 @@ services:
       timeout: 5s
       retries: 12
 
-  # KNOWN, OUT-OF-SCOPE RELATED FINDING (credential-separation review, see
-  # tests/test_agent_operator_credential_separation.py): unlike the other
-  # agent containers in this repo's compose files, `governed_agent_compose_demo.py`
-  # DOES actively call the approve endpoint with MCC_EGRESS_OPERATOR_API_KEY --
-  # by design, to simulate the ESCALATE->operator-approval step in one process
-  # for a no-second-terminal demo. Removing the key would just break the demo,
-  # not fix a credential leak; giving it a genuinely separate operator process
-  # is a design change beyond this scope. Flagged, not silently fixed.
   mcc-agent:
     build:
       context: .
       dockerfile: deploy/pilot/Dockerfile.agent-pilot
     command: ["python", "/app/governed_agent_compose_demo.py"]
+    # Authority principal separation: no operator key here. This container
+    # cannot self-approve its own ESCALATE even if its own code were
+    # compromised -- only mcc-operator (a separate container, separate
+    # credential) can grant an approval.
     environment:
       MCC_GATEWAY_URL: "http://mcc-gateway:8090"
       PILOT_API_BASE: "http://pilot-api:9100"
       MCC_EGRESS_API_KEY: "agent-key"
-      MCC_EGRESS_OPERATOR_API_KEY: "op-key"
       MCC_EGRESS_EGRESS_ACTOR_MANDATE: "agent/crm"
+      MCC_PILOT_STATE_DIR: "/pilot-state"
+    volumes:
+      - mcc-pilot-state:/pilot-state
     networks: [agent_edge]
     depends_on:
       mcc-gateway:
         condition: service_healthy
 
-volumes:
-  mcc-agent-audit:
+  mcc-operator:
+    build:
+      context: .
+      dockerfile: deploy/pilot/Dockerfile.agent-pilot
+    command: ["python", "/app/governed_agent_pilot_operator.py"]
+    # Authority principal separation: holds ONLY the operator key. No
+    # MCC_EGRESS_API_KEY here -- this process grants approvals; it never
+    # calls /v1/http/execute, so it cannot actuate anything on the agent's
+    # behalf even if compromised.
+    environment:
+      MCC_GATEWAY_URL: "http://mcc-gateway:8090"
+      MCC_EGRESS_OPERATOR_API_KEY: "op-key"
+      MCC_PILOT_STATE_DIR: "/pilot-state"
+    volumes:
+      - mcc-pilot-state:/pilot-state
+    networks: [agent_edge]
+    depends_on:
+      mcc-gateway:
+        condition: service_healthy

@@ -16,6 +16,7 @@ COPY egress_proxy /app/egress_proxy
 COPY examples /app/examples
 COPY pilot_api /app/pilot_api
 COPY deploy/pilot/governed_agent_compose_demo.py /app/governed_agent_compose_demo.py
+COPY deploy/pilot/governed_agent_pilot_operator.py /app/governed_agent_pilot_operator.py
 
 ENV PYTHONPATH=/app/src:/app
 
