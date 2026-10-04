@@ -8,12 +8,58 @@
 **Author:** Alexandr Ponomariov / AXLOGIQ Inc.  
 **Repository:** https://github.com/mcc-prior-art/mcc-layer  
 **Version:** `v1.12.0`  
-**Current capability baseline:** through [PR #108 — Phase 2 Live Sandbox Proof](https://github.com/mcc-prior-art/mcc-layer/pull/108)  
-**Live external proof:** [GitHub Actions run #1](https://github.com/mcc-prior-art/mcc-layer/actions/runs/34281506042) — SUCCESS on `main` @ `25c9f857`  
+**Python distribution version:** `0.1.0` (`mcc-core`; single-sourced from `mcc/_version.py` — distinct from the repository version tag above)  
+**Current repository capability baseline:** through [PR #119 — Independent Authority Separation](https://github.com/mcc-prior-art/mcc-layer/pull/119)  
+**PR #119 exact tested HEAD:** [`b566ef06`](https://github.com/mcc-prior-art/mcc-layer/commit/b566ef06c4cfb28d1ead0be2df796a8196de69ca)  
+**Current `main` baseline commit:** [`6026f13e`](https://github.com/mcc-prior-art/mcc-layer/commit/6026f13e44434881011a215c7bb16154c18aec89)  
+**Baseline date:** `2026-10-04`  
+**Final evidence report:** [PR #119, comment #5979709744](https://github.com/mcc-prior-art/mcc-layer/pull/119#issuecomment-5979709744)  
+**Post-merge Runtime CI:** [run `37207626061`](https://github.com/mcc-prior-art/mcc-layer/actions/runs/37207626061) — SUCCESS  
+**Post-merge Independent Assurance:** [run `37207626074`](https://github.com/mcc-prior-art/mcc-layer/actions/runs/37207626074) — SUCCESS  
+**Historical live external proof:** [GitHub Actions run #1](https://github.com/mcc-prior-art/mcc-layer/actions/runs/34281506042) — SUCCESS on `main` @ `25c9f857` ([PR #108](https://github.com/mcc-prior-art/mcc-layer/pull/108) era; historical baseline commit `c75372c`; preserved in full below)  
 **Live external target:** [`mcc-prior-art/mcc-phase2-sandbox` Issue #1](https://github.com/mcc-prior-art/mcc-phase2-sandbox/issues/1)  
-**Baseline commit:** [`c75372c`](https://github.com/mcc-prior-art/mcc-layer/commit/c75372c694d7e1482fe26e2e46904e1ddb987113)  
-**Baseline date:** `2026-09-08`  
 **Doctrine record:** `2026-06-02`
+
+## Current Authority-Separation Baseline
+
+The repository's capability baseline now includes the independent authority-separation
+closure merged through [PR #119 — Close independent-authority gap: ESCALATE
+auto-approval was agent-controlled](https://github.com/mcc-prior-art/mcc-layer/pull/119)
+(tested at exact HEAD `b566ef06`, merged into `main` at commit `6026f13e`). This closes
+a gap in which an unattended operator's credential alone was sufficient to approve an
+ESCALATE verdict, without any independent evaluation of the specific operation.
+
+Within this baseline, across the supported, evidence-covered proposer-facing paths
+(the gateway approval API and the egress-proxy `GovernedMCCClient`):
+
+- **Proposal ≠ Permission.**
+- **Proposer ≠ Authorizer.**
+- Proposer-facing paths do not hold the authority primitive required to approve their
+  own proposal, in the supported paths covered by the evidence.
+- Unattended ESCALATE approval is gated by an independently configured, fail-closed
+  `AuthorityPolicy` — never a bare operator credential alone.
+- The authority decision uses the server-stored operation record, never caller-supplied
+  approval metadata.
+- Approval capability is separated from execution capability.
+- Authority is bound to the exact operation and independently verified before
+  execution.
+- Authority-path failure is fail-closed.
+
+**Capability separation vs. policy denial — distinct claims, not substitutes for one
+another.** Capability separation means the proposer-facing code has no import, method,
+credential, or signing key that could issue authority for its own proposal, regardless
+of policy content (verified by static architecture guards, e.g.
+`tests/test_independent_authority_decision_architecture_guards.py`). Policy denial
+means a configured rule refused one specific operation at runtime. Policy denial alone
+does not prove proposer/authorizer separation on its own — both properties are
+evidenced independently in the PR #119 record.
+
+**Evidence boundary:** this baseline is a repository-recorded, self-administered
+engineering assurance result. It is not a third-party security audit, formal
+certification, production-scale reliability proof, or guarantee against all
+implementation or deployment failures.
+
+Full evidence: [PR #119 final evidence report](https://github.com/mcc-prior-art/mcc-layer/pull/119#issuecomment-5979709744).
 
 ## Project provenance
 
@@ -264,7 +310,7 @@ Its reference runtime was implemented with an AI coding agent, tested against do
 
 **Historical evidence:** [PR #4 — Runtime Upgrade Merge](https://github.com/mcc-prior-art/mcc-layer/pull/4)
 
-Runtime upgrade record: PR #4 merged as commit `32d4d3a`, extending the reference runtime with a bounded 10,000-entry cache invariant under public CI verification. This is an early historical milestone; the repository's current capability baseline is tracked in the metadata block above and reflects PR #108.
+Runtime upgrade record: PR #4 merged as commit `32d4d3a`, extending the reference runtime with a bounded 10,000-entry cache invariant under public CI verification. This is an early historical milestone; the repository's current capability baseline is tracked in the metadata block above and reflects PR #119.
 
 ---
 
