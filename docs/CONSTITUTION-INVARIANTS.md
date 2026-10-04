@@ -10,6 +10,123 @@ every invariant is enforced by the **existing** `DecisionEngine` /
 `ExecutionGate` / `AuthorityModel` / `EnforcementCoordinator` /
 `AuditLog` / nonce registries.
 
+## Authority Principal Separation (deployment-level corollary of INV-01/INV-06/INV-10)
+
+This is a separation-of-powers requirement, not a credential-hygiene
+convenience. Three distinct control planes govern an autonomous system,
+and MCC-Core occupies exactly one of them:
+
+> **Safety** controls model behavior (what the model is inclined to
+> propose). **Containment** controls where the agent can operate (network
+> reachability, process/container boundaries). **Authority** controls
+> whether a consequential action may execute at all — this is MCC-Core's
+> plane, and only its plane.
+>
+> MCC-Core must remain the independent authority boundary even if the
+> agent is fully compromised. A compromised agent may defeat its own
+> safety training and may attempt to defeat its containment — the
+> authority boundary is what must hold regardless, because it never
+> depended on the agent's behavior or location to begin with: it depends
+> on the agent never holding the credential that would let it decide for
+> itself.
+
+This is not a new, eleventh invariant alongside INV-01 through INV-10 below
+— it is the same principle those ten already state, applied one layer
+outward, to **who is allowed to hold which credential at deployment time**,
+not only to what the governed code path allows at runtime:
+
+> An autonomous system may propose an operation, but the security principal
+> that controls the proposer MUST NOT possess sufficient capability to
+> issue, approve, sign, or otherwise create executable authority for that
+> same operation.
+>
+> INTELLIGENCE ≠ AUTHORITY. PROPOSER ≠ AUTHORIZER.
+> COMPROMISE OF THE AGENT MUST NOT IMPLY COMPROMISE OF EXECUTION AUTHORITY.
+
+INV-01 (no self-authorization) and INV-06 (executor cannot authorize) prove
+this at the *code* level: the agent/executor's own source never imports or
+constructs `SigningKey`/`AuthorityModel`/`DecisionEngine`. Authority
+Principal Separation is the same claim checked at the *deployment* level:
+even when an agent container's own code never reads a privileged
+credential, that credential must not be reachable from the agent's
+environment, mounts, or process at all — because "my code doesn't use it"
+is not a security boundary against a compromised process, a dependency
+that dumps its environment, or a future code change in that same
+container.
+
+**Enforcement point:** `tests/test_agent_operator_credential_separation.py`
+(a specific confirmed finding, with a real runtime reproduction against the
+actual `egress_proxy` application), `tests/test_authority_principal_separation_scanner.py`
+(a repository-wide scanner classifying every service across every
+`docker-compose*.yml` file as `ROLE_AGENT` or not, by name heuristic, and
+asserting no `ROLE_AGENT` service's EFFECTIVE merged environment —
+env_file content plus explicit `environment:`, interpolated — contains an
+authority-plane secret, unless an explicit, reviewed, reasoned exception is
+recorded in `KNOWN_COMBINED_ROLE_EXCEPTIONS`), and the adversarial runtime
+proofs in `tests/test_authority_principal_separation_adversarial*.py`
+(compromised-agent-cannot-self-approve, separated-authority-succeeds-
+exactly-once, stolen-credential-rejected, wrong-binding-rejected,
+authority-unavailable-fails-closed — against the real governed stacks, and
+for the reference-agent pilot, against the actual shipped container
+scripts loaded by path).
+
+**Status: no documented exceptions remain in the Docker Compose topology.**
+All three single-process reference demos that previously held the operator
+key (`governed_agent_compose_demo.py` / `mcc-agent`, `notify_pilot_agent.py`
+/ `pilot-agent`, `reference_agent_runner.py` / `reference-agent`) have been
+refactored into genuinely separate agent/operator process pairs
+(`mcc-operator`, `pilot-operator`, `reference-agent-operator` respectively,
+the latter two sharing `deploy/pilot/gateway_approval_operator.py`), each
+coordinating only through a shared, non-secret state file (a pending
+approval's `request_id` and the original proposal — never a credential).
+`KNOWN_COMBINED_ROLE_EXCEPTIONS` in the scanner is intentionally left as an
+empty dict, not deleted, so a future regression has an obvious place to be
+reviewed and documented rather than silently reintroducing the pattern.
+
+**Two single-process reference library/example files were also found and
+fixed, outside the Compose scanner's scope** (it only scans
+`docker-compose*.yml`, not Python call sites):
+
+- `examples/governed_agent/mcc_client.py`'s `GovernedMCCClient` has no
+  `approve`/`deny_approval` method at all; only a new, separate
+  `OperatorConsole` class does. This module is reused as a real, in-process
+  embedded runtime dependency in two other places, not only as a demo —
+  `egress_proxy/runtime.py` (the actual egress proxy gateway) and
+  `src/mcc_agent/client.py`'s `EmbeddedGovernanceClient` — both updated to
+  construct a separate `OperatorConsole` internally rather than calling
+  `approve`/`deny_approval` on the client object directly.
+- `examples/agent_runtime_mcc.py`'s agent and MCC authority are now
+  genuinely separate OS processes (`multiprocessing`), not merely separate
+  objects in one process; the agent-side `AgentRuntimeClient` never
+  imports or constructs `SigningKey` / `DecisionEngine` / `ExecutionGate`.
+
+Enforcement: `tests/test_authority_principal_separation_adversarial_example_scripts.py`
+(Cases A-E for both).
+
+**A sixth instance, discovered during this same audit, is also now closed:**
+`src/mcc_agent/agent.py`'s `GovernedAgent.arun()` previously called
+`self.client.approve(approval_id)` directly on the SAME
+`EmbeddedGovernanceClient` object it uses to `submit()` the proposal — the
+same combined-role pattern as the demos above, one level further out, in
+pilot (`src/`) code rather than `examples/`. Fixed the same way: the
+`GovernanceClient` Protocol (`submit`/`execute_after_approval`/
+`verify_audit_chain`) no longer declares `approve`/`deny_approval`; a
+separate `OperatorClient` Protocol does, and `GovernedAgent.__init__` takes
+an optional, separately-constructed `operator: Optional[OperatorClient]`.
+Without one, ESCALATE reports `PENDING_APPROVAL` and stops — `GovernedAgent`
+never falls back to approving through its own client.
+`EmbeddedGovernanceClient.approve`/`deny_approval` were likewise removed in
+favor of a public `.operator` property exposing the same `OperatorConsole`
+it already built internally. All 5 call sites in `src/mcc_agent/demo.py`
+and the shared `_agent()` test factories in `tests/test_mcc_agent.py` /
+`tests/test_pilot_release.py` updated to wire `operator=client.operator`.
+Enforcement: `tests/test_authority_principal_separation_adversarial_mcc_agent.py`
+(Cases A-E).
+
+**Status: zero known combined proposer/authority principals remain**
+across the compose topology, the example/library code, and pilot (`src/`)
+code, as of this audit.
+
 ## INV-01 — No self-authorization
 
 **Constitutional principle:** Authority remains with the owner;

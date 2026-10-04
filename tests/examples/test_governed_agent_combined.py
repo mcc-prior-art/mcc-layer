@@ -35,7 +35,7 @@ from mcc_core import (
 
 from examples.governed_agent.agent import Agent
 from examples.governed_agent.consensus_support import FAR_FUTURE, EvaluatorPool
-from examples.governed_agent.mcc_client import GovernedMCCClient
+from examples.governed_agent.mcc_client import GovernedMCCClient, OperatorConsole
 from examples.governed_agent.mock_executor import MockExecutor
 from tests._fakeredis import FakeRedis
 
@@ -65,7 +65,7 @@ def _escalating_proposal(**kw):
 
 async def _approved(client, proposed):
     rid = await client.request_approval(proposed)
-    assert await client.approve(rid)
+    assert await OperatorConsole(client).approve(rid)
     return rid
 
 
@@ -147,7 +147,7 @@ def test_denied_approval_cannot_execute():
     p = _escalating_proposal()
     ch = run(c.issue_challenge(p)); v = _votes(pool, c, p, ch)
     rid = run(c.request_approval(p))
-    assert run(c.deny_approval(rid))
+    assert run(OperatorConsole(c).deny_approval(rid))
     assert not run(c.execute_with_approval(p, rid, challenge=ch, votes=v)).executed
     assert ex.count() == 0
 

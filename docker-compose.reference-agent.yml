@@ -14,7 +14,21 @@
 #                        EXECUTED means a genuine, matching external receipt.
 #   reference-agent    — the framework-neutral reference agent: uses the SDK only;
 #                        never calls the mock service directly. There is no second
-#                        or bypass execution path.
+#                        or bypass execution path. Holds ONLY MCC_GATEWAY_API_KEY --
+#                        no operator key.
+#   reference-agent-operator — SEPARATE process/container/credential holder from
+#                        reference-agent. Holds the operator key. Watches a
+#                        shared, non-secret state file (the pending approval's
+#                        request_id + the agent's original proposal) and
+#                        grants + executes it under the ORIGINAL
+#                        correlation_id. See gateway_approval_operator.py
+#                        (shared with docker-compose.notify-pilot.yml).
+#
+# Authority principal separation: AGENT_CREDENTIALS ∩ AUTHORITY_CREDENTIALS = ∅.
+# reference-agent cannot self-approve its own ESCALATE (it has no operator
+# key, even if its own code were compromised); the approval is always
+# granted by a separate process, for the exact action reference-agent
+# proposed. (The DENY scenario never involves an operator at all.)
 #
 # Trust boundary: the agent shares a network with the gateway only. The mock
 # service is reachable by the gateway (governed executor) but NOT by the agent.
@@ -53,6 +67,13 @@ services:
     environment:
       MCC_GATEWAY_API_KEY: "demo-key"
       MCC_GATEWAY_OPERATOR_API_KEY: "op-key"
+      # Independent authority-side policy (PROPOSAL != PERMISSION): an
+      # authenticated operator key alone no longer suffices to grant an
+      # ESCALATE approval -- this exact, independently configured policy
+      # must also ALLOW the operation. Set only here (mcc-gateway); neither
+      # reference-agent nor reference-agent-operator reads or supplies this
+      # file.
+      MCC_AUTHORITY_POLICY_CONFIG: "/app/authority_policy.notify.json"
       MCC_GATEWAY_MODE: "inline"
       MCC_GATEWAY_AUDIT_LOG_PATH: "/data/audit.jsonl"
       # The governed executor: perform the outbound call and require a confirmed,
@@ -85,10 +106,38 @@ services:
       context: .
       dockerfile: deploy/pilot/Dockerfile.reference-agent
     command: ["python", "/app/reference_agent_runner.py"]
+    # Authority principal separation: no operator key here. This container
+    # cannot self-approve its own ESCALATE even if its own code were
+    # compromised -- only reference-agent-operator (a separate container,
+    # separate credential) can grant an approval.
     environment:
       MCC_GATEWAY_URL: "http://mcc-gateway:8001"
       MCC_GATEWAY_API_KEY: "demo-key"
+      MCC_PILOT_STATE_DIR: "/pilot-state"
+    volumes:
+      - refagent-pilot-state:/pilot-state
+    networks: [agent_edge]
+    depends_on:
+      mcc-gateway:
+        condition: service_healthy
+
+  reference-agent-operator:
+    build:
+      context: .
+      dockerfile: deploy/pilot/Dockerfile.reference-agent
+    command: ["python", "/app/gateway_approval_operator.py"]
+    # Authority principal separation: holds ONLY the operator key. No
+    # MCC_GATEWAY_API_KEY here -- this process grants approvals; it never
+    # calls /approvals/{id}/execute, so it cannot actuate anything on the
+    # agent's behalf even if compromised (AUTHORITY_CREDENTIALS ∩
+    # EXECUTION_CREDENTIALS = ∅). reference-agent performs its own execute
+    # call with its own key once a mandate is granted.
+    environment:
+      MCC_GATEWAY_URL: "http://mcc-gateway:8001"
       MCC_GATEWAY_OPERATOR_API_KEY: "op-key"
+      MCC_PILOT_STATE_DIR: "/pilot-state"
+    volumes:
+      - refagent-pilot-state:/pilot-state
     networks: [agent_edge]
     depends_on:
       mcc-gateway:
@@ -96,3 +145,4 @@ services:
 
 volumes:
   refagent-audit:
+  refagent-pilot-state:

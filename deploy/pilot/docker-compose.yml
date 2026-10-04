@@ -172,15 +172,24 @@ services:
 
   # Reference agent: on app_frontend ONLY -> no route to the upstream except via
   # the proxy. Proves direct egress is blocked and governed egress works.
+  #
+  # Credential separation: this service intentionally does NOT use `env_file`.
+  # `egress_agent.py` (its entire implementation) reads only MCC_EGRESS_PROXY_URL,
+  # MCC_EGRESS_API_KEY, MCC_UPSTREAM_DIRECT, MCC_UPSTREAM_VIA_PROXY -- it has no
+  # code path that reads or uses an operator key, a signing key, or any upstream
+  # credential. A blanket `env_file: [.env]` previously handed this container
+  # every variable in .env, including MCC_EGRESS_OPERATOR_API_KEY and
+  # MCC_GATEWAY_OPERATOR_API_KEY -- credentials this agent never needs and must
+  # never hold. Pulling only MCC_EGRESS_API_KEY by name keeps the effective
+  # environment to exactly what the agent's own code requires.
   reference-egress-agent:
     build:
       context: ../..
       dockerfile: deploy/pilot/Dockerfile.egress
     command: ["python", "/app/egress_agent.py"]
-    env_file:
-      - .env
     environment:
       MCC_EGRESS_PROXY_URL: "http://mcc-egress-proxy:8090"
+      MCC_EGRESS_API_KEY: "${MCC_EGRESS_API_KEY:?MCC_EGRESS_API_KEY must be set in deploy/pilot/.env}"
       MCC_UPSTREAM_DIRECT: "http://upstream-echo:9100/charge"
       MCC_UPSTREAM_VIA_PROXY: "http://upstream-echo:9100/charge"
     networks: [app_frontend]

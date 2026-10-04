@@ -128,11 +128,22 @@ services:
     build:
       context: .
       dockerfile: integrations/voltagent/docker/Dockerfile.agent
-    env_file: [.env.pilot]
+    # Credential separation: explicit allowlist, not `env_file: [.env.pilot]`.
+    # clinic-cli.ts/clinic-agent.ts (this container's code) never read
+    # MCC_GATEWAY_OPERATOR_API_KEY. A blanket env_file previously handed this
+    # container the operator key purely because it lived in the same
+    # .env.pilot as the agent's own key -- the comment below already said
+    # "No operator key"; the wiring now actually matches it.
     environment:
+      MCC_GATEWAY_URL: "${MCC_GATEWAY_URL:-http://mcc-gateway:8001}"
+      MCC_QUORUM_URL: "${MCC_QUORUM_URL:-http://evaluator-quorum:8080}"
+      MCC_GATEWAY_API_KEY: "${MCC_GATEWAY_API_KEY:?MCC_GATEWAY_API_KEY must be set in .env.pilot}"
       MCC_CLINIC_ACTOR: "agent/axflow-clinic"
       MCC_CLINIC_ID: "clinic-1"
       MCC_VOLTAGENT_MODEL_PROVIDER: "deterministic"
+      MCC_VOLTAGENT_MODEL: "${MCC_VOLTAGENT_MODEL:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      MCC_PILOT_STATE_DIR: "${MCC_PILOT_STATE_DIR:-/pilot-state}"
     # Wait until MCC + quorum are READY, then idle. The operator drives scenarios
     # with `docker compose exec` (make targets). No operator key; no clinic route.
     command:

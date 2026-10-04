@@ -34,6 +34,10 @@ _EXPORTS: dict[str, str] = {
     "ActionPolicy": "authority", "AuthorityDecision": "authority",
     "AuthorityModel": "authority", "Mandate": "authority",
     "MandateRegistry": "authority", "apply_constraints": "authority",
+    # authority_policy (independent authority-side ESCALATE auto-approval policy)
+    "AuthorityPolicy": "authority_policy", "AuthorityPolicyDecision": "authority_policy",
+    "AuthorityPolicyError": "authority_policy", "AuthorityRule": "authority_policy",
+    "authority_policy_from_env": "authority_policy",
     # challenge
     "ChallengeConfigError": "challenge", "ChallengeRecord": "challenge",
     "ChallengeService": "challenge", "ChallengeState": "challenge",
@@ -132,6 +136,13 @@ if TYPE_CHECKING:  # help static type-checkers see the re-exported names
         Mandate,
         MandateRegistry,
         apply_constraints,
+    )
+    from .authority_policy import (  # noqa: F401
+        AuthorityPolicy,
+        AuthorityPolicyDecision,
+        AuthorityPolicyError,
+        AuthorityRule,
+        authority_policy_from_env,
     )
     from .challenge import (  # noqa: F401
         ChallengeConfigError,

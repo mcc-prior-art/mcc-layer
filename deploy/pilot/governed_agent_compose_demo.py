@@ -6,6 +6,18 @@ gateway's governed HTTPS executor performs the real request to the separate
 ``pilot-api`` service. The agent container has **no** route to ``pilot-api`` —
 only the gateway does — so a direct call is impossible (the bypass check).
 
+Authority principal separation: this process holds ONLY
+``MCC_EGRESS_API_KEY``. It never holds, reads, or derives an operator key --
+the ``mcc-operator`` service (``governed_agent_pilot_operator.py``) is a
+separate process, running in a separate container, that holds
+``MCC_EGRESS_OPERATOR_API_KEY``. For ESCALATE, this agent only writes a
+non-secret pending-approval record (the approval ``request_id``, never a
+credential) to a shared state file and then polls by resubmitting its own
+original proposal -- a resubmission against a not-yet-approved request fails
+cleanly (``APPROVAL_INVALID``, not an error), so this is a safe retry loop,
+not a bypass. The agent cannot self-approve: it has no operator key to do so
+even if its own code were compromised.
+
 This runner is deployment glue, not part of the ``mcc_agent`` package: it uses
 an HTTP client to reach the gateway. It reuses ``mcc_agent.DeterministicPlanner``
 to build proposal bodies/URLs. Verdicts come from the gateway's MCC-Core
@@ -15,9 +27,11 @@ plus a bypass attempt over a real network boundary.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
+from pathlib import Path
 
 import httpx
 
@@ -29,12 +43,13 @@ from mcc_agent import DeterministicPlanner  # noqa: E402
 GATEWAY = os.environ.get("MCC_GATEWAY_URL", "http://mcc-gateway:8090")
 PILOT_API = os.environ.get("PILOT_API_BASE", "http://pilot-api:9100")
 API_KEY = os.environ.get("MCC_EGRESS_API_KEY", "agent-key")
-OP_KEY = os.environ.get("MCC_EGRESS_OPERATOR_API_KEY", "op-key")
 TRUSTED = os.environ.get("MCC_EGRESS_EGRESS_ACTOR_MANDATE", "agent/crm")
 RESTRICTED = "agent/intern"
+STATE_DIR = Path(os.environ.get("MCC_PILOT_STATE_DIR", "/pilot-state"))
+APPROVAL_WAIT_TIMEOUT_S = float(os.environ.get("MCC_APPROVAL_WAIT_TIMEOUT_S", "60.0"))
+APPROVAL_POLL_INTERVAL_S = float(os.environ.get("MCC_APPROVAL_POLL_INTERVAL_S", "1.0"))
 
 H = {"x-api-key": API_KEY}
-OPH = {"x-operator-key": OP_KEY}
 
 
 def _wait(client: httpx.Client, url: str, *, timeout: float = 60.0) -> None:
@@ -90,17 +105,35 @@ def main() -> int:
         failures += [] if (out.get("executed") and sent == 5000) else ["CONSTRAIN not clamped"]
 
         # ESCALATE — restricted identity holds no mandate -> approval required.
+        # This agent does not hold the operator key and cannot self-approve.
+        # It records the (non-secret) request_id for the separate mcc-operator
+        # process, then polls by resubmitting its OWN original proposal.
         p = planner.plan("Increase campaign budget to 4000 EUR")
         out = _execute(client, method="POST", url=p.url, body=p.body, actor=RESTRICTED,
                        resource=p.resource, idem="escalate-1")
         rid = out.get("approval_request_id")
         print(f"[ESCALATE ] outcome={out['outcome']} approval={rid}")
-        if rid and OP_KEY:
-            client.post(f"{GATEWAY}/v1/approvals/{rid}/approve", headers=OPH, timeout=10.0)
-            out2 = _execute(client, method="POST", url=p.url, body=p.body, actor=RESTRICTED,
-                            resource=p.resource, idem="escalate-1", approval_id=rid)
-            print(f"[ESCALATE ] after approval executed={out2.get('executed')}")
-            failures += [] if out2.get("executed") else ["ESCALATE did not execute after approval"]
+        if rid:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            (STATE_DIR / "escalation.json").write_text(
+                json.dumps({"requestId": rid}), encoding="utf-8"
+            )
+            print(f"[ESCALATE ] recorded pending approval for the operator sidecar: {rid}")
+
+            out2 = None
+            deadline = time.time() + APPROVAL_WAIT_TIMEOUT_S
+            while time.time() < deadline:
+                out2 = _execute(client, method="POST", url=p.url, body=p.body, actor=RESTRICTED,
+                                resource=p.resource, idem="escalate-1", approval_id=rid)
+                if out2.get("executed"):
+                    break
+                if out2.get("error_code") != "APPROVAL_INVALID":
+                    # Not a "still pending" response -- a real denial/failure.
+                    break
+                time.sleep(APPROVAL_POLL_INTERVAL_S)
+
+            print(f"[ESCALATE ] after approval executed={out2.get('executed') if out2 else None}")
+            failures += [] if (out2 and out2.get("executed")) else ["ESCALATE did not execute after approval"]
         else:
             failures.append("ESCALATE produced no approval request")
 

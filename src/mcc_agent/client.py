@@ -57,7 +57,7 @@ from egress_proxy.runtime import build_executor
 from egress_proxy.ssrf import SSRFError, validate_destination
 
 from examples.governed_agent.agent import Agent
-from examples.governed_agent.mcc_client import GovernedMCCClient
+from examples.governed_agent.mcc_client import GovernedMCCClient, OperatorConsole
 
 from .errors import GovernanceClientError
 from .models import ActionProposal, Decision, GovernanceOutcome
@@ -108,16 +108,28 @@ def build_pilot_authority(*, max_budget: int = DEFAULT_MAX_BUDGET) -> AuthorityM
 
 
 class GovernanceClient(Protocol):
-    """The supported client surface the agent depends on (transport-agnostic)."""
+    """The supported client surface the agent (the PROPOSER) depends on
+    (transport-agnostic). Deliberately has no approve/deny_approval method:
+    the proposer must never be able to complete its own authorization
+    path. See ``OperatorClient`` below for the separate authority surface."""
 
     async def submit(self, proposal: ActionProposal) -> GovernanceOutcome: ...
-    async def approve(self, approval_request_id: str) -> bool: ...
-    async def deny_approval(self, approval_request_id: str) -> bool: ...
     async def execute_after_approval(
         self, proposal: ActionProposal, approval_request_id: str) -> GovernanceOutcome: ...
     def verify_audit_chain(self) -> bool: ...
     @property
     def audit_path(self) -> str: ...
+
+
+class OperatorClient(Protocol):
+    """The separate authority surface: grant or deny a pending ESCALATE
+    approval. A caller holding only a ``GovernanceClient`` has no access
+    to this -- even a fully compromised agent process cannot complete its
+    own authorization path, because it never holds an object with these
+    methods."""
+
+    async def approve(self, approval_request_id: str) -> bool: ...
+    async def deny_approval(self, approval_request_id: str) -> bool: ...
 
 
 class EmbeddedGovernanceClient:
@@ -171,6 +183,12 @@ class EmbeddedGovernanceClient:
             consensus_required=False,
             **registries,
         )
+        # GovernedMCCClient itself has no approve()/deny_approval() method --
+        # that capability lives only on this separate OperatorConsole. See
+        # GovernedAgent.arun() in agent.py for the known, not-yet-closed
+        # finding this pilot client still has: it is itself one object that
+        # both proposes (submit) and grants (approve) its own ESCALATE.
+        self._operator = OperatorConsole(self._mcc)
         # Share the audit chain so the executor appends post-actuation evidence to
         # the SAME hash chain (the durable pre-actuation record is the
         # coordinator's responsibility).
@@ -290,11 +308,17 @@ class EmbeddedGovernanceClient:
                                               decision=Decision.ESCALATE, r=r, authorized=None))
         return self._outcome(r, proposed, canonical)
 
-    async def approve(self, approval_request_id: str) -> bool:
-        return await self._mcc.approve(approval_request_id)
-
-    async def deny_approval(self, approval_request_id: str) -> bool:
-        return await self._mcc.deny_approval(approval_request_id)
+    @property
+    def operator(self) -> OperatorClient:
+        """The SEPARATE authority surface, sharing this client's underlying
+        ApprovalService. Deliberately not exposed as approve()/
+        deny_approval() methods on this class itself -- the client the
+        agent holds (``self`` here, as ``GovernedAgent.client``) has no
+        such methods; only this distinct object does. Callers that need
+        to act as the operator (GovernedAgent's own constructor, or a
+        test acting as the operator directly) use this property, never a
+        method on the agent's own client object."""
+        return self._operator
 
     async def execute_after_approval(
         self, proposal: ActionProposal, approval_request_id: str) -> GovernanceOutcome:

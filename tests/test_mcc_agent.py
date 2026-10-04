@@ -55,7 +55,8 @@ def _base() -> str:
 def _agent(**kw):
     base = _base()
     client = EmbeddedGovernanceClient(pilot_api_base=base, **kw)
-    return client, GovernedAgent(client=client, planner=DeterministicPlanner(pilot_api_base=base))
+    return client, GovernedAgent(client=client, planner=DeterministicPlanner(pilot_api_base=base),
+                                operator=client.operator)
 
 
 # ---------------- deterministic planning + proposal construction ----------------
@@ -116,7 +117,7 @@ def test_escalate_pending_then_executes_after_valid_approval():
     assert pend.decision == "ESCALATE" and pend.execution_status == "PENDING_APPROVAL"
     assert pend.approval_request_id and recorded_operations() == []
     # Operator approves, then execution proceeds through the existing approval path.
-    assert run(client.approve(pend.approval_request_id)) is True
+    assert run(client.operator.approve(pend.approval_request_id)) is True
     proposal = DeterministicPlanner(pilot_api_base=_base()).plan(
         "Increase campaign budget to 5000 EUR", idempotency_key="e1", transaction_id="t-e1")
     out = run(client.execute_after_approval(proposal, pend.approval_request_id))
@@ -144,7 +145,7 @@ def test_approval_bound_to_other_operation_does_not_execute():
     plan = DeterministicPlanner(pilot_api_base=_base()).plan
     a = plan("Increase campaign budget to 5000 EUR", idempotency_key="A")
     rid = run(_open_and_request(client, a))
-    assert run(client.approve(rid)) is True
+    assert run(client.operator.approve(rid)) is True
     # A different operation (different payload/transaction) must not be authorized
     # by an approval minted for operation A.
     b = plan("Increase campaign budget to 4000 EUR", idempotency_key="B")
@@ -157,7 +158,7 @@ def test_denied_approval_does_not_execute():
     a = DeterministicPlanner(pilot_api_base=_base()).plan(
         "Increase campaign budget to 5000 EUR", idempotency_key="D")
     rid = run(_open_and_request(client, a))
-    assert run(client.deny_approval(rid)) is True
+    assert run(client.operator.deny_approval(rid)) is True
     out = run(client.execute_after_approval(a, rid))
     assert not out.executed and recorded_operations() == []
 

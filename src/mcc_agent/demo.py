@@ -82,7 +82,8 @@ async def run_scenarios(base: str, *, audit_dir: str) -> List[Dict[str, Any]]:
     reset_state()
     client = EmbeddedGovernanceClient(pilot_api_base=base)
     planner = DeterministicPlanner(pilot_api_base=base)
-    agent = GovernedAgent(client=client, planner=planner, auto_approve=True)
+    agent = GovernedAgent(client=client, planner=planner, operator=client.operator,
+                         auto_approve=True)
     records: List[Dict[str, Any]] = []
 
     def before() -> int:
@@ -195,7 +196,8 @@ async def run_scenarios(base: str, *, audit_dir: str) -> List[Dict[str, Any]]:
     }
     redis_client = EmbeddedGovernanceClient(pilot_api_base=base, env=down_env,
                                             audit_path=str(Path(audit_dir) / "redis_audit.jsonl"))
-    redis_agent = GovernedAgent(client=redis_client, planner=planner, auto_approve=True)
+    redis_agent = GovernedAgent(client=redis_client, planner=planner,
+                               operator=redis_client.operator, auto_approve=True)
     rr = await redis_agent.arun("Create a CRM lead for Dora with a campaign budget of 50 EUR",
                                 idempotency_key="redis-1")
     changed = len(recorded_operations()) > n
@@ -214,7 +216,7 @@ async def run_scenarios(base: str, *, audit_dir: str) -> List[Dict[str, Any]]:
         pilot_api_base="https://pilot-api.internal", allow_loopback=False,
         audit_path=str(Path(audit_dir) / "ssrf_audit.jsonl"))
     ssrf_agent = GovernedAgent(client=ssrf_client, planner=DeterministicPlanner(
-        pilot_api_base="https://pilot-api.internal"))
+        pilot_api_base="https://pilot-api.internal"), operator=ssrf_client.operator)
     unsafe = [
         "http://127.0.0.1/x", "http://localhost/x", "http://169.254.169.254/latest/meta-data/",
         "https://[::1]/x", "http://10.0.0.5/x", "http://[fd00::1]/x",
@@ -244,7 +246,8 @@ async def run_scenarios(base: str, *, audit_dir: str) -> List[Dict[str, Any]]:
         raise OSError("audit persistence failure (simulated)")
 
     audit_client._mcc.audit.append = _boom  # type: ignore[attr-defined]
-    audit_agent = GovernedAgent(client=audit_client, planner=planner, auto_approve=True)
+    audit_agent = GovernedAgent(client=audit_client, planner=planner,
+                               operator=audit_client.operator, auto_approve=True)
     ra = await audit_agent.arun("Create a CRM lead for Carol with a campaign budget of 10 EUR",
                                 idempotency_key="audit-1")
     changed = len(recorded_operations()) > n
@@ -323,7 +326,8 @@ async def run_four_verdicts(base: str) -> int:
     reset_state()
     client = EmbeddedGovernanceClient(pilot_api_base=base)
     planner = DeterministicPlanner(pilot_api_base=base)
-    agent = GovernedAgent(client=client, planner=planner, auto_approve=True)
+    agent = GovernedAgent(client=client, planner=planner, operator=client.operator,
+                         auto_approve=True)
 
     flows = [
         ("ALLOW", "Create a CRM lead for Alice with a campaign budget of 500 EUR"),

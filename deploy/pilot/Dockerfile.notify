@@ -16,10 +16,15 @@ COPY examples /app/examples
 COPY pilot_notify /app/pilot_notify
 COPY sdk /app/sdk
 COPY deploy/pilot/notify_pilot_agent.py /app/notify_pilot_agent.py
+COPY deploy/pilot/gateway_approval_operator.py /app/gateway_approval_operator.py
+# Independent authority-side policy for unattended ESCALATE auto-approval
+# (read only by mcc-gateway via MCC_AUTHORITY_POLICY_CONFIG; the agent and
+# operator processes in this same image never read or set that env var).
+COPY deploy/pilot/authority_policy.notify.json /app/authority_policy.notify.json
 
 ENV PYTHONPATH=/app/src:/app:/app/sdk/python/src
 
-RUN mkdir -p /data && chown -R mcc:mcc /data /app
+RUN mkdir -p /data /pilot-state && chown -R mcc:mcc /data /pilot-state /app
 USER mcc
 
 CMD ["python", "-c", "print('mcc notify pilot image')"]

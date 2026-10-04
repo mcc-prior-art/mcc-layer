@@ -46,7 +46,7 @@ from examples._demo_server import DemoServers, free_port  # noqa: E402
 
 from examples.governed_agent.agent import Agent  # noqa: E402
 from examples.governed_agent.consensus_support import EvaluatorPool  # noqa: E402
-from examples.governed_agent.mcc_client import GovernedMCCClient  # noqa: E402
+from examples.governed_agent.mcc_client import GovernedMCCClient, OperatorConsole  # noqa: E402
 from pilot.outbound_executor import OutboundHTTPExecutor, UnauthorizedExecution  # noqa: E402
 
 # Ephemeral port (never hardcoded) so repeated/back-to-back runs never collide.
@@ -113,7 +113,9 @@ async def run_scenarios(base_url: str) -> list[str]:
     print(f"[ESCALATE]  round1 verdict={re_.verdict} executed={re_.executed} (consensus alone cannot execute)")
     check(re_.verdict == "ESCALATE" and not re_.executed, "ESCALATE did not block at round 1")
     aid = await client.request_approval(pe)
-    await client.approve(aid)
+    # client (the agent) has no approve() method at all -- a separate
+    # OperatorConsole, never held by the agent, grants the approval.
+    await OperatorConsole(client).approve(aid)
     rea = await client.execute_with_approval(pe, aid, challenge=che, votes=ve)
     print(f"[ESCALATE]  after approval+consensus executed={rea.executed} upstream_calls={ex.count()}")
     check(rea.executed and ex.count() == 2, "approved ESCALATE did not execute")

@@ -53,16 +53,25 @@ def test_no_forbidden_network_imports(path):
 
 
 def test_supported_client_has_no_direct_execute_method():
-    # The supported client exposes propose(submit)/approve/execute_after_approval,
-    # never a method that performs the external request directly.
-    from mcc_agent.client import EmbeddedGovernanceClient, GovernanceClient
+    # The supported client exposes propose(submit)/execute_after_approval and
+    # a SEPARATE .operator surface for approve/deny_approval -- never a
+    # method that performs the external request directly, and never an
+    # approve/deny_approval method on the proposer-facing object itself
+    # (authority principal separation: the agent's own client object must
+    # not be able to complete its own authorization path).
+    from mcc_agent.client import EmbeddedGovernanceClient, GovernanceClient, OperatorClient
 
-    for name in ("send", "request", "http", "fetch", "call_external", "raw_execute"):
+    for name in ("send", "request", "http", "fetch", "call_external", "raw_execute",
+                 "approve", "deny_approval"):
         assert not hasattr(GovernanceClient, name)
     methods = {m for m in dir(EmbeddedGovernanceClient) if not m.startswith("_")}
     # The only execution entry points are governed (submit / execute_after_approval).
     assert "submit" in methods and "execute_after_approval" in methods
-    assert "approve" in methods
+    assert "approve" not in methods and "deny_approval" not in methods
+    # The separate authority surface exists only via .operator, a distinct object.
+    assert "operator" in methods
+    operator_methods = {m for m in dir(OperatorClient) if not m.startswith("_")}
+    assert {"approve", "deny_approval"} <= operator_methods
 
 
 def test_agent_exposes_no_executor_or_signing_key():

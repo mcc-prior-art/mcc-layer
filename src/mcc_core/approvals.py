@@ -36,6 +36,7 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Dict, Mapping, Optional
 
+from .authority_policy import AuthorityPolicy
 from .mandate import issue_mandate
 from .signing import SigningKey, hash_action
 
@@ -66,6 +67,15 @@ class ApprovalRecord:
     state: str
     created_at: int
     expires_at: int
+    # Independent-authority-policy binding data (PROPOSAL != PERMISSION): the
+    # trusted tenant identity and the ACTUAL requested payload, stored
+    # verbatim so ``ApprovalService.approve()`` can evaluate an independently
+    # configured ``AuthorityPolicy`` against the exact operation rather than
+    # trusting any caller-supplied field at approval time. Both default to
+    # the pre-existing shape (``None`` / ``{}``) so old callers/records are
+    # unaffected when no authority_policy is configured.
+    tenant_id: Optional[str] = None
+    payload: Dict[str, Any] = field(default_factory=dict)
 
     def is_expired(self, now: int) -> bool:
         return now >= self.expires_at
@@ -253,17 +263,27 @@ class ApprovalService:
     """
 
     def __init__(self, registry, approver_key: SigningKey, *,
-                 issuer: str = "mcc/approvals", default_ttl_seconds: int = DEFAULT_TTL_SECONDS) -> None:
+                 issuer: str = "mcc/approvals", default_ttl_seconds: int = DEFAULT_TTL_SECONDS,
+                 authority_policy: Optional[AuthorityPolicy] = None) -> None:
         self.registry = registry
         self.approver_key = approver_key
         self.issuer = issuer
         self.default_ttl = default_ttl_seconds
+        # Independent authority-side policy (PROPOSAL != PERMISSION): when set,
+        # ``approve()`` below REQUIRES this policy's own ALLOW before minting a
+        # mandate -- the caller of approve() (an operator, attended or not)
+        # never supplies the decision, only the request_id pointer. When
+        # None, approve() behaves exactly as before this module was extended
+        # (the bare "an authenticated human/operator says so" model) -- the
+        # right choice for a genuinely attended human-approval deployment.
+        self.authority_policy = authority_policy
 
     async def request(
         self, *, actor: str, action: str, resource: Optional[str] = None,
         transaction_id: Optional[str] = None, policy_hash: Optional[str] = None,
         payload_hash: Optional[str] = None, constraints: Optional[Dict[str, Any]] = None,
         ttl_seconds: Optional[int] = None, now: Optional[int] = None,
+        tenant_id: Optional[str] = None, payload: Optional[Dict[str, Any]] = None,
     ) -> str:
         now = int(now if now is not None else time.time())
         ttl = ttl_seconds or self.default_ttl
@@ -274,6 +294,7 @@ class ApprovalService:
             transaction_id=transaction_id, policy_hash=policy_hash,
             payload_hash=payload_hash, constraints=dict(constraints or {}),
             state=ApprovalState.PENDING.value, created_at=now, expires_at=now + ttl,
+            tenant_id=tenant_id, payload=dict(payload or {}),
         )
         if not await self.registry.create(rec):
             raise RuntimeError("could not create approval request")
@@ -297,11 +318,38 @@ class ApprovalService:
     async def approve(self, request_id: str, *, now: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """Approve a PENDING request and mint a scoped, single-use, signed
         approval mandate bound to the exact operation. Returns the mandate, or
-        None if the request is not approvable (expired / already decided)."""
+        None if the request is not approvable (expired / already decided), OR
+        if an independent authority policy is configured and does not ALLOW
+        this exact operation (request remains PENDING -- the caller gets no
+        signal distinguishing "denied by policy" from "not yet decided",
+        which is intentional: an unattended caller must not be able to probe
+        policy internals by state-machine side channel)."""
         now = int(now if now is not None else time.time())
         rec = await self.registry.get(request_id, now=now)
         if rec is None or rec.state != ApprovalState.PENDING.value or rec.is_expired(now):
             return None
+        if self.authority_policy is not None:
+            # The ONLY fields consulted are the record's own server-stored,
+            # authoritative values -- never anything supplied by the caller
+            # of approve() at this call site. A compromised proposer that
+            # created this record (directly or via forged coordination
+            # state) gains nothing beyond what the independently configured
+            # policy already permits for this exact tenant/actor/action/
+            # resource/payload/logical_operation_id.
+            decision = self.authority_policy.decide(
+                tenant_id=rec.tenant_id, actor=rec.actor, action=rec.action,
+                resource=rec.resource, payload=rec.payload, payload_hash=rec.payload_hash,
+                policy_hash=rec.policy_hash,
+                # The approval request_id itself: server-generated
+                # (uuid4), never agent-chosen, never empty for any record
+                # that genuinely exists. ``transaction_id`` is a distinct,
+                # often-unset field with its own separate binding meaning at
+                # actuation time (see EnforcementCoordinator.consume), so it
+                # is deliberately NOT reused here.
+                logical_operation_id=request_id, now=now,
+            )
+            if decision.verdict != "ALLOW":
+                return None
         if not await self.registry.set_state(
             request_id, expect=[ApprovalState.PENDING], to=ApprovalState.APPROVED
         ):

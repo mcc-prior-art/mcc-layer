@@ -1,0 +1,15 @@
+{
+  "rules": [
+    {
+      "action": "http.request",
+      "tenant": "governed-agent-demo",
+      "actors": ["agent/intern"],
+      "resource_pattern": "crm:campaign:*",
+      "payload_bounds": {
+        "method": {"eq": "POST"},
+        "body.currency": {"eq": "EUR"},
+        "body.amount": {"max": 5000}
+      }
+    }
+  ]
+}

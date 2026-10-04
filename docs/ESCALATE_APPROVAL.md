@@ -95,6 +95,50 @@ is therefore tied to *execution*, not merely to re-evaluation.
    → token → gate → coordinator consumes the approval → execute.
 4. Audit records every transition and an audit-before-actuation entry.
 
+## Independent authority-side policy (unattended ESCALATE)
+
+`approve(request_id)` has exactly two legitimate authority models:
+
+1. **Explicit human approval** — an authenticated operator reviews the
+   request and decides. This is the operator workflow above, unchanged.
+2. **Independent authority-side policy** — for an unattended deployment with
+   no human in the loop (e.g. a demo sidecar that polls for pending
+   escalations), `ApprovalService` can be constructed with an
+   `authority_policy: AuthorityPolicy` (`mcc_core.authority_policy`). When
+   set, `approve()` additionally requires the policy's own `ALLOW` for the
+   record's exact, server-stored `tenant_id`/`actor`/`action`/`resource`/
+   `payload`/`policy_hash` and its `request_id` as the logical-operation
+   identity — never anything the caller of `approve()` supplies. No
+   matching rule (including an unconfigured policy) is `DENY`; the record
+   stays `PENDING`.
+
+This closes a gap an unattended operator sidecar would otherwise have: an
+operator key alone authenticates *who* may call approve, not *whether this
+exact operation* should be approved. Holding the operator key must never be
+sufficient by itself to rubber-stamp whatever a (possibly compromised)
+proposer caused to be escalated — `AGENT-CONTROLLED INPUT != AUTHORITY
+DECISION`.
+
+`AuthorityPolicy.from_file(path)` loads a small JSON ruleset (`rules`: each
+with `action`, `tenant`, `actors`, `resource_pattern`, and optional
+`payload_bounds` with `in`/`eq`/`max`/`min` operators). It is deliberately
+narrow and explicit — there is no implicit "any actor"/"any tenant" wildcard,
+an empty `rules` list is rejected at load time (ambiguous, not "unrestricted"),
+and a missing/malformed file raises `AuthorityPolicyError` rather than
+silently proceeding without one. See `deploy/pilot/authority_policy.notify.json`
+/ `authority_policy.egress.json` for the shape the three pilot demos ship,
+and `MCC_AUTHORITY_POLICY_CONFIG` / `MCC_EGRESS_AUTHORITY_POLICY_CONFIG` for
+how each gateway loads it — set ONLY on the gateway service, never on an
+agent or operator container.
+
+The unattended operator scripts (`deploy/pilot/gateway_approval_operator.py`,
+`deploy/pilot/governed_agent_pilot_operator.py`) read only the pending
+request's `request_id` from agent-written coordination state and call
+`approve`; they never read or trust any other field in that file, and they
+never hold an execute-capable credential (approving mints a mandate, it does
+not actuate — the proposer that owns the original operation performs its own
+subsequent `execute` call with its own credential).
+
 ## Deployment
 
 | Env | Default | Notes |
