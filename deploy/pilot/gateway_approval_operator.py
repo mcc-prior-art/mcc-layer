@@ -2,33 +2,39 @@
 """Operator sidecar for gateway/governance_api.py-backed pilot demos.
 
 Shared by TWO compose demos that use the identical gateway approval HTTP
-shape (``/approvals/{id}/approve`` then ``/approvals/{id}/execute``):
-``docker-compose.notify-pilot.yml`` (``pilot-operator``, paired with
-``notify_pilot_agent.py``) and ``docker-compose.reference-agent.yml``
-(``reference-agent-operator``, paired with ``reference_agent_runner.py``'s
-ESCALATE scenario). Runs inside its OWN container, SEPARATE from the agent.
-Holds ``MCC_GATEWAY_OPERATOR_API_KEY`` (plus the shared, non-privileged
-``MCC_GATEWAY_API_KEY`` every governed participant needs just to call the
-gateway at all); the agent container holds neither form of the operator key.
+shape (``/approvals/{id}/approve``): ``docker-compose.notify-pilot.yml``
+(``pilot-operator``, paired with ``notify_pilot_agent.py``) and
+``docker-compose.reference-agent.yml`` (``reference-agent-operator``, paired
+with ``reference_agent_runner.py``'s ESCALATE scenario). Runs inside its OWN
+container, SEPARATE from the agent. Holds ONLY
+``MCC_GATEWAY_OPERATOR_API_KEY`` -- not ``MCC_GATEWAY_API_KEY``.
+
+Credential separation (AUTHORITY_CREDENTIALS ∩ EXECUTION_CREDENTIALS = ∅):
+this process GRANTS an approval mandate; it never calls
+``/approvals/{id}/execute``. Actuation is performed by the agent that
+proposed the operation, under its own api key, with the exact payload it
+already has -- the authority plane never needs the ability to actuate
+anything itself. (An earlier version of this script also called ``execute``
+using the agent's own api key, which it additionally held -- collapsing
+proposer-execution and authority into one credential holder. That is the
+combined-privilege shape this split removes.)
+
+Approving does NOT by itself grant permission: ``/approvals/{id}/approve``
+is, server-side, gated by an independently configured ``AuthorityPolicy``
+(see ``gateway/governance_api.py``'s ``build_governance_service`` and
+``MCC_AUTHORITY_POLICY_CONFIG``) that this process cannot read, write, or
+influence -- it only calls the endpoint and reports whatever the server
+decides. An approve() call for an operation the policy does not allow
+returns a non-200/absent-mandate response; this operator reports that
+faithfully (no mandate) rather than fabricating one.
 
 Coordination is via a shared, non-secret state file the agent writes BEFORE
-any operator action -- the pending escalation's ``request_id``, actor,
-resource, action, context (the proposed payload), and the ORIGINAL
-``correlation_id`` (never a credential, never derived or substituted after
-the fact). This mirrors the established pattern in
-integrations/voltagent/mcc_side/operator_cli.py, adapted to run as an
-unattended sidecar (this compose file has no second terminal / `make
-pilot-approve` step): rather than a human running it once via `docker compose
-exec`, it polls for the agent's recorded escalation and processes it as soon
-as it appears.
-
-Round 27 invariant preserved exactly as in operator_cli.py: the execute call
-uses ``idempotency_key=correlation_id`` -- the ORIGINAL logical-operation
-identity the agent minted before any operator action -- never the
-approval's own ``request_id`` (a distinct object, from a distinct subsystem,
-minted at a distinct time, never proven equivalent to the original
-operation). A state file missing ``correlationId`` fails closed here, before
-anything is approved or executed.
+any operator action -- the pending escalation's ``request_id`` only. (Any
+OTHER field in that file -- actor/resource/context/correlationId -- is
+agent-controlled and is NOT trusted for the approval decision; this operator
+reads none of them. The request_id is a pointer, not evidence: the record
+``/approve`` acts on is the server's own authoritative stored record, keyed
+by request_id, never anything this file claims about it.)
 """
 
 from __future__ import annotations
@@ -43,7 +49,6 @@ from typing import Any, Dict
 import httpx
 
 GATEWAY = os.environ.get("MCC_GATEWAY_URL", "http://mcc-gateway:8001")
-API_KEY = os.environ.get("MCC_GATEWAY_API_KEY", "")
 OP_KEY = os.environ.get("MCC_GATEWAY_OPERATOR_API_KEY", "")
 STATE_DIR = Path(os.environ.get("MCC_PILOT_STATE_DIR", "/pilot-state"))
 STATE_PATH = STATE_DIR / "escalation.json"
@@ -52,40 +57,21 @@ POLL_INTERVAL_S = float(os.environ.get("MCC_OPERATOR_POLL_INTERVAL_S", "1.0"))
 
 
 def _process_one(client: httpx.Client, state: Dict[str, Any]) -> Dict[str, Any]:
+    # The ONLY field trusted from the agent-written state file: a pointer to
+    # the server's own authoritative pending-approval record.
     request_id = state["requestId"]
-    actor, resource, context = state["actor"], state["resource"], state["context"]
-    action = state.get("action", "send_notification")
-    agent_h = {"x-api-key": API_KEY}
-    op_h = {"x-api-key": API_KEY, "x-operator-key": OP_KEY}
-
-    # See module docstring: the request_id is never substituted for the
-    # original logical-operation identity.
-    correlation_id = state.get("correlationId")
-    if not isinstance(correlation_id, str) or not correlation_id.strip():
-        print(f"[operator] FAILED: escalation state for {request_id} is missing its "
-              "original correlationId; refusing to continue (fail-closed).")
-        return {"approval_state": None, "status": None, "execution": None, "executed": False}
+    op_h = {"x-operator-key": OP_KEY}
 
     r = client.post(f"{GATEWAY}/approvals/{request_id}/approve", json={}, headers=op_h)
     if r.status_code != 200:
-        print(f"[operator] FAILED: approve returned HTTP {r.status_code}: {r.text[:200]}")
-        return {"approval_state": None, "status": None, "execution": None, "executed": False}
+        print(f"[operator] approve({request_id}) -> HTTP {r.status_code}: {r.text[:200]} "
+              "(not approvable, or the independent authority policy did not allow this "
+              "exact operation)")
+        return {"approval_state": None, "mandate": None}
     granted = r.json()
-    mandate = granted.get("mandate")
-
-    body = {"mandate": mandate, "actor": actor, "action": action, "resource": resource,
-            "context": context, "idempotency_key": correlation_id}
-    r = client.post(f"{GATEWAY}/approvals/{request_id}/execute", json=body, headers=agent_h)
-    if r.status_code != 200:
-        print(f"[operator] FAILED: execute returned HTTP {r.status_code}: {r.text[:200]}")
-        return {"approval_state": granted.get("state"), "status": None, "execution": None,
-                "executed": False}
-    out = r.json()
-    status = out.get("status")
     print(f"[operator] escalation {request_id}: approval={granted.get('state')} "
-          f"execution={status}")
-    return {"approval_state": granted.get("state"), "status": status,
-            "execution": out.get("execution"), "executed": status == "EXECUTED"}
+          "(grant only -- this process never executes)")
+    return {"approval_state": granted.get("state"), "mandate": granted.get("mandate")}
 
 
 def main() -> int:
@@ -95,9 +81,9 @@ def main() -> int:
         return 1
 
     print("=" * 64)
-    print("MCC-Core governed pilot: operator sidecar")
+    print("MCC-Core governed pilot: operator sidecar (approve-only)")
     print(f"  watching {STATE_PATH} for pending escalations")
-    print("  holds the operator key only -- pilot-agent never holds it")
+    print("  holds the operator key only -- no MCC_GATEWAY_API_KEY, no execute route")
     print("=" * 64)
 
     with httpx.Client(timeout=15.0) as client:

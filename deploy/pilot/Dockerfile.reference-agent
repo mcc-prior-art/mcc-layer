@@ -19,6 +19,10 @@ COPY pilot_notify /app/pilot_notify
 COPY sdk /app/sdk
 COPY deploy/pilot/reference_agent_runner.py /app/reference_agent_runner.py
 COPY deploy/pilot/gateway_approval_operator.py /app/gateway_approval_operator.py
+# Independent authority-side policy for unattended ESCALATE auto-approval
+# (read only by mcc-gateway via MCC_AUTHORITY_POLICY_CONFIG; the agent and
+# operator processes in this same image never read or set that env var).
+COPY deploy/pilot/authority_policy.notify.json /app/authority_policy.notify.json
 
 ENV PYTHONPATH=/app/src:/app:/app/sdk/python/src
 

@@ -52,7 +52,7 @@ sys.path.insert(0, "/app/sdk/python/src")
 sys.path.insert(0, "/app/src")
 sys.path.insert(0, "/app")
 
-from mcc_client import MCCClient, MCCError, Verdict  # noqa: E402
+from mcc_client import Approval, MCCClient, MCCError, Verdict  # noqa: E402
 
 from examples.reference_governed_agent import (  # noqa: E402
     DeterministicProvider,
@@ -170,6 +170,32 @@ def _escalate_with_separated_operator(client: MCCClient, request: str) -> AgentR
             request=request, proposal=proposal_dict, verdict="ESCALATE",
             reason="operator never processed the pending approval (timeout)",
             approval_status="PENDING", execution_status="BLOCKED")
+
+    if not outcome.get("mandate"):
+        # The operator holds ONLY the ability to grant; it never executes.
+        # No mandate means either still-pending or the independently
+        # configured authority policy did not allow this exact operation --
+        # either way, zero actuation from this agent.
+        return AgentRunResult(
+            request=request, proposal=proposal_dict, verdict="ESCALATE",
+            reason="approval not granted (operator denied/not approvable)",
+            approval_status=outcome.get("approval_state"), execution_status="BLOCKED")
+
+    # The operator GRANTED a mandate; this agent -- the proposer that
+    # already holds the exact payload -- resubmits it with its OWN api key
+    # via the supported public SDK call, under the SAME approval_id.
+    # Execution is still re-evaluated and bound to action/transaction/
+    # payload server-side.
+    granted = Approval(request_id=approval.request_id,
+                       state=outcome.get("approval_state") or "APPROVED",
+                       mandate=outcome["mandate"])
+    exec_result = client.execute_after_approval(decision, granted)
+    outcome = {
+        "approval_state": outcome.get("approval_state"),
+        "status": exec_result.status,
+        "executed": exec_result.executed,
+        "execution": exec_result.execution,
+    }
 
     if not outcome.get("executed"):
         return AgentRunResult(

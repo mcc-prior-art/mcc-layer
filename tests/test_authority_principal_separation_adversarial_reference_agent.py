@@ -117,13 +117,14 @@ class TestCaseB_SeparatedAuthoritySucceedsExactlyOnce:
 
 class TestCaseC_StolenOrWrongCredentialRejected:
     """C: the real operator script, misconfigured with a wrong operator
-    key, has its approve() call rejected server-side; it reports failure,
-    and the agent sees a non-executed outcome. Zero actuation."""
+    key, has its approve() call rejected server-side; it reports no
+    mandate. The operator script ALSO never executes anything now (it holds
+    no api key and calls no execute route), so this proves the approval
+    half fails closed, not merely that execution happened to fail too."""
 
     def test_operator_script_with_wrong_key_cannot_approve(self, hz, tmp_path, monkeypatch):
         monkeypatch.setenv("MCC_PILOT_STATE_DIR", str(tmp_path))
         monkeypatch.setenv("MCC_GATEWAY_OPERATOR_API_KEY", "stolen-or-guessed-key")
-        monkeypatch.setenv("MCC_GATEWAY_API_KEY", API_KEY)
         monkeypatch.setenv("MCC_GATEWAY_URL", hz.base_url)
         bad_operator = _load("gateway_approval_operator_badkey",
                              "deploy/pilot/gateway_approval_operator.py")
@@ -137,25 +138,27 @@ class TestCaseC_StolenOrWrongCredentialRejected:
                                   idempotency_key="corr-case-c")
         approval = agent_client.request_approval(d)
 
-        state = {"requestId": approval.request_id, "actor": d.actor_id,
-                 "resource": d.resource_id, "context": dict(d.requested_payload),
-                 "action": d.action, "correlationId": "corr-case-c"}
+        state = {"requestId": approval.request_id}
         with bad_operator.httpx.Client(timeout=15.0) as hc:
             result = bad_operator._process_one(hc, state)
 
-        assert result["executed"] is False
+        assert result["mandate"] is None
         assert recorded_receipts() == []
 
 
-class TestCaseD_WrongBindingRejected:
-    """D: if the agent-written state file were tampered with to claim a
-    DIFFERENT actor than the one actually evaluated for that request_id,
-    the real operator script's execute call is rejected server-side (the
-    gate binds the mandate to the original actor/action/resource, not to
-    whatever the state file claims) -- the operator script itself adds no
-    bypass."""
+class TestCaseD_StateFileContentIsNeverTrustedForTheDecision:
+    """D: the agent-written state file carries ONLY a request_id pointer --
+    the real operator script reads no other field from it at all. Tampering
+    the file to claim a different actor/resource/payload therefore has NO
+    EFFECT on the operator's behavior one way or the other: approve() still
+    evaluates (and the mandate it mints is still bound to) the gateway's
+    own stored record for that request_id, never anything the file claims.
+    This is a STRONGER property than "the gate rejects a mismatched
+    execute": the operator never had a chance to be misled in the first
+    place. Mandate-granting alone is still not execution -- this test
+    performs no execute call, so zero actuation either way."""
 
-    def test_operator_script_rejects_a_tampered_actor_binding(self, hz, operator_module):
+    def test_tampered_state_fields_are_never_read(self, hz, operator_module):
         agent_client = _agent_client(hz)
         d = agent_client.evaluate(actor_id="agent/unknown", action="send_notification",
                                   resource="notification-service",
@@ -165,15 +168,24 @@ class TestCaseD_WrongBindingRejected:
                                   idempotency_key="corr-case-d")
         approval = agent_client.request_approval(d)
 
-        # Tampered: claims a different actor than the one MCC-Core actually
-        # evaluated for this request_id.
+        # Tampered: claims a different actor/resource/action/payload than
+        # the one MCC-Core actually evaluated for this request_id. Only
+        # requestId is real.
         tampered_state = {"requestId": approval.request_id, "actor": "agent/ATTACKER",
-                          "resource": d.resource_id, "context": dict(d.requested_payload),
-                          "action": d.action, "correlationId": "corr-case-d"}
+                          "resource": "attacker-resource", "context": {"forged": True},
+                          "action": "send_payment", "correlationId": "corr-case-d"}
         with operator_module.httpx.Client(timeout=15.0) as hc:
             result = operator_module._process_one(hc, tampered_state)
 
-        assert result["executed"] is False
+        # The approval succeeds -- but bound to the REAL stored record
+        # (agent/unknown, send_notification, notification-service), which is
+        # exactly what the independent AuthorityPolicy (when configured) or
+        # bare operator-trust (when not) evaluates. The tampered fields were
+        # never consulted at all, not merely "rejected".
+        assert result["mandate"] is not None
+        assert result["mandate"]["subject"] == "agent/unknown"
+        assert result["mandate"]["action_scope"] == ["send_notification"]
+        # No execute call happens anywhere in this test -- zero actuation.
         assert recorded_receipts() == []
 
 

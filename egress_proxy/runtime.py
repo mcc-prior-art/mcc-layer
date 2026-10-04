@@ -147,6 +147,15 @@ class EgressRuntime:
                     "refusing fail-open startup")
             trusted_evaluators = _load_trusted_evaluators(settings.consensus_trust_config)
 
+        # Independent authority-side policy for unattended ESCALATE
+        # auto-approval (PROPOSAL != PERMISSION): None unless
+        # MCC_EGRESS_AUTHORITY_POLICY_CONFIG is set. Fails closed at startup
+        # (raises) if set but the file is missing/malformed.
+        from mcc_core import authority_policy_from_env
+
+        authority_policy = authority_policy_from_env(
+            env, var_name="MCC_EGRESS_AUTHORITY_POLICY_CONFIG")
+
         # Registries from the environment (Redis with no silent fallback; missing
         # required Redis refuses startup inside these builders).
         self.client = GovernedMCCClient(
@@ -164,6 +173,7 @@ class EgressRuntime:
             consensus_required=settings.require_consensus,
             consensus_threshold=settings.consensus_threshold,
             trusted_evaluators=trusted_evaluators,
+            authority_policy=authority_policy,
         )
         # The operator-approve/deny capability is a SEPARATE object from
         # ``self.client`` (the proposer-facing surface: evaluate/request_approval/

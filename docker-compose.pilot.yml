@@ -73,6 +73,12 @@ services:
       # Governed gateway config (the verdict comes from MCC-Core authority).
       MCC_EGRESS_API_KEY: "agent-key"
       MCC_EGRESS_OPERATOR_API_KEY: "op-key"
+      # Independent authority-side policy (PROPOSAL != PERMISSION): an
+      # authenticated operator key alone no longer suffices to grant an
+      # ESCALATE approval -- this exact, independently configured policy
+      # must also ALLOW the operation. Set only here (mcc-gateway); neither
+      # mcc-agent nor mcc-operator reads or supplies this file.
+      MCC_EGRESS_AUTHORITY_POLICY_CONFIG: "/app/authority_policy.egress.json"
       MCC_EGRESS_EGRESS_ACTOR_MANDATE: "agent/crm"
       MCC_EGRESS_ALLOWED_HOSTS: "pilot-api"
       MCC_EGRESS_ALLOWED_METHODS: "get,post"

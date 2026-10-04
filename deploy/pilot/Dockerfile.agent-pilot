@@ -17,6 +17,11 @@ COPY examples /app/examples
 COPY pilot_api /app/pilot_api
 COPY deploy/pilot/governed_agent_compose_demo.py /app/governed_agent_compose_demo.py
 COPY deploy/pilot/governed_agent_pilot_operator.py /app/governed_agent_pilot_operator.py
+# Independent authority-side policy for unattended ESCALATE auto-approval
+# (read only by mcc-gateway via MCC_EGRESS_AUTHORITY_POLICY_CONFIG; the
+# agent and operator processes in this same image never read/set that
+# env var).
+COPY deploy/pilot/authority_policy.egress.json /app/authority_policy.egress.json
 
 ENV PYTHONPATH=/app/src:/app
 

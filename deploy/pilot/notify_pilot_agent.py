@@ -33,7 +33,7 @@ sys.path.insert(0, "/app/src")
 sys.path.insert(0, "/app")
 
 from mcc_client import (  # noqa: E402
-    MCCClient, Verdict, MCCDeniedError, MCCError,
+    Approval, MCCClient, Verdict, MCCDeniedError, MCCError,
 )
 
 GATEWAY = os.environ.get("MCC_GATEWAY_URL", "http://mcc-gateway:8001")
@@ -131,12 +131,29 @@ def main() -> int:
 
             if result is None:
                 failures.append("ESCALATE: operator never processed the pending approval (timeout)")
+            elif not result.get("mandate"):
+                # Not approved -- either still pending, or the independent
+                # authority policy did not allow this exact operation. Either
+                # way: zero actuation. Never treated as a bypass/retry path.
+                print(f"  approval state     : {result.get('approval_state')} (no mandate granted)")
+                failures.append("ESCALATE: approval not granted (operator denied/not approvable)")
             else:
+                # The operator GRANTED a mandate; it never executes. This
+                # agent -- the proposer that already holds the exact payload
+                # -- resubmits it with its OWN api key via the supported
+                # public SDK call, under the SAME approval_id. Execution is
+                # still re-evaluated and bound to action/transaction/payload
+                # server-side; a mismatched or replayed mandate fails closed
+                # there regardless of what this agent sends.
+                granted = Approval(request_id=approval.request_id,
+                                   state=result.get("approval_state") or "APPROVED",
+                                   mandate=result["mandate"])
+                exec_result = client.execute_after_approval(d, granted)
                 print(f"  approval state     : {result.get('approval_state')} (operator granted)")
                 print(f"  final payload      : {payload}")
-                print(f"  execution result   : {result.get('status')}")
-                print(f"  external receipt   : {result.get('execution')}")
-                if not result.get("executed"):
+                print(f"  execution result   : {exec_result.status}")
+                print(f"  external receipt   : {exec_result.execution}")
+                if not exec_result.executed:
                     failures.append("ESCALATE approved but not executed")
 
     print("\n--- Audit chain ---")

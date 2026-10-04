@@ -91,6 +91,11 @@ class ApprovalCreateRequest(_Strict):
     payload_hash: Optional[str] = None
     constraints: Optional[Dict[str, Any]] = None
     ttl_seconds: Optional[int] = Field(default=None, ge=1)
+    # The exact proposed operation payload, stored verbatim on the record so
+    # an independently configured AuthorityPolicy (never supplied by this
+    # caller) can evaluate it at approve()-time. Creating this record is
+    # still only ever a REQUEST -- it never by itself grants anything.
+    payload: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ApprovalCreateResponse(_Strict):
@@ -259,12 +264,18 @@ def mount_approval_routes(app: FastAPI, service: GovernanceService, *, api_key: 
     require_agent, require_operator = _auth_deps(api_key, operator_key, tenant_id)
 
     @app.post("/approvals", response_model=ApprovalCreateResponse)
-    async def create_approval(req: ApprovalCreateRequest, _=Depends(require_agent)):
+    async def create_approval(req: ApprovalCreateRequest, tenant: str = Depends(require_agent)):
         out = await service.create_approval(
             actor=req.actor, action=req.action, resource=req.resource,
             transaction_id=req.transaction_id, policy_hash=req.policy_hash,
             payload_hash=req.payload_hash, constraints=req.constraints,
             ttl_seconds=req.ttl_seconds,
+            # The trusted, server-resolved tenant identity (never a request
+            # field -- see require_agent) and the exact requested payload,
+            # stored verbatim so a configured independent AuthorityPolicy can
+            # evaluate the real operation at approve()-time rather than
+            # trusting anything supplied there.
+            tenant_id=tenant, payload=req.payload,
         )
         return ApprovalCreateResponse(**out)
 
@@ -413,7 +424,17 @@ def build_governance_service(
         policy_hash=policy_hash,
     )
     revocation = revocation_registry_from_env(env)
-    approvals = ApprovalService(approval_registry_from_env(env), approver_key)
+    # Independent authority-side policy for unattended ESCALATE auto-approval
+    # (PROPOSAL != PERMISSION): None unless MCC_AUTHORITY_POLICY_CONFIG is
+    # set, in which case approve() below requires its own ALLOW -- an
+    # authenticated operator key alone is no longer sufficient. Fails closed
+    # at startup (raises) if the env var is set but the file is missing or
+    # malformed -- never silently falls back to "no restriction".
+    from mcc_core import authority_policy_from_env
+
+    authority_policy = authority_policy_from_env(env)
+    approvals = ApprovalService(approval_registry_from_env(env), approver_key,
+                                authority_policy=authority_policy)
 
     limits = {pat: [VelocityLimit.from_config(i) for i in items]
               for pat, items in PILOT_VELOCITY.items()}

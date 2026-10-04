@@ -135,7 +135,15 @@ class MCCClient:
         if decision.verdict != Verdict.ESCALATE:
             raise MCCInvalidDecisionError(
                 f"request_approval is only valid for ESCALATE (got {decision.verdict.value})")
-        body: Dict[str, Any] = {"actor": decision.actor_id, "action": decision.action}
+        body: Dict[str, Any] = {
+            "actor": decision.actor_id, "action": decision.action,
+            # The exact proposed operation payload, stored verbatim server-side
+            # so an independently configured authority policy (never supplied
+            # by this caller) can evaluate it at approve()-time. Without this,
+            # every escalation record would carry an empty payload and any
+            # policy bound on a payload field would always fail closed.
+            "payload": dict(decision.requested_payload or {}),
+        }
         if decision.resource_id is not None:
             body["resource"] = decision.resource_id
         if decision.transaction_id is not None:

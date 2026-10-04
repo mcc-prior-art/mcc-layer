@@ -1,0 +1,24 @@
+{
+  "rules": [
+    {
+      "action": "send_notification",
+      "tenant": "pilot",
+      "actors": ["agent/unknown"],
+      "resource_pattern": "crm",
+      "payload_bounds": {
+        "channel": {"in": ["email", "sms"]},
+        "priority": {"max": 3}
+      }
+    },
+    {
+      "action": "send_notification",
+      "tenant": "pilot",
+      "actors": ["agent/unknown"],
+      "resource_pattern": "notification-service",
+      "payload_bounds": {
+        "channel": {"in": ["email", "sms"]},
+        "priority": {"max": 3}
+      }
+    }
+  ]
+}

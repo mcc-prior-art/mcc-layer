@@ -133,6 +133,12 @@ class GovernedMCCClient:
         # here) -- tenant_id is therefore a fixed, deployment-level identity,
         # never taken from ``ProposedAction``/model-controlled input.
         tenant_id: str = "governed-agent-demo",
+        # Independent authority-side policy for unattended ESCALATE
+        # auto-approval (PROPOSAL != PERMISSION). None (default) preserves
+        # the bare "authenticated operator says so" model used by every
+        # existing attended-human test/demo of this client. When set, the
+        # shared ``ApprovalService.approve()`` below REQUIRES its own ALLOW.
+        authority_policy: Optional[Any] = None,
     ) -> None:
         self.executor = executor
         self.authority = authority or default_demo_authority()
@@ -150,7 +156,8 @@ class GovernedMCCClient:
             nonce_registry=nonce_registry or InMemoryNonceRegistry(), policy_hash=policy_hash)
         self._velocity_limits = list(velocity_limits or [])
         self.approvals = ApprovalService(
-            approval_registry or InMemoryApprovalRegistry(), SigningKey.generate("mcc-demo-approver"))
+            approval_registry or InMemoryApprovalRegistry(), SigningKey.generate("mcc-demo-approver"),
+            authority_policy=authority_policy)
 
         # Consensus wiring — fail closed if required but unconfigured (no silent
         # fallback to a non-consensus path).
@@ -332,7 +339,13 @@ class GovernedMCCClient:
         return await self.approvals.request(
             actor=proposed.actor, action=proposed.action, resource=proposed.resource,
             transaction_id=proposed.transaction_id, policy_hash=self.policy_hash,
-            payload_hash=hash_payload(proposed.payload))
+            payload_hash=hash_payload(proposed.payload),
+            # Stored verbatim (server-side, bound to the real canonical
+            # action already evaluated above -- never a client-callable
+            # "create arbitrary approval" path) so a configured
+            # AuthorityPolicy can evaluate the exact operation at
+            # approve()-time.
+            tenant_id=self.tenant_id, payload=dict(proposed.payload))
 
     async def execute_with_approval(self, proposed: ProposedAction, approval_id: str, *,
                                     challenge: Optional[Any] = None,

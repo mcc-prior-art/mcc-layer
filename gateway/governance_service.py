@@ -296,12 +296,13 @@ class GovernanceService:
         self, *, actor: str, action: str, resource: Optional[str] = None,
         transaction_id: Optional[str] = None, policy_hash: Optional[str] = None,
         payload_hash: Optional[str] = None, constraints: Optional[Dict[str, Any]] = None,
-        ttl_seconds: Optional[int] = None,
+        ttl_seconds: Optional[int] = None, tenant_id: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         request_id = await self.approvals.request(
             actor=actor, action=action, resource=resource, transaction_id=transaction_id,
             policy_hash=policy_hash, payload_hash=payload_hash, constraints=constraints,
-            ttl_seconds=ttl_seconds,
+            ttl_seconds=ttl_seconds, tenant_id=tenant_id, payload=payload,
         )
         rec = await self.approvals.get(request_id)
         return {"request_id": request_id, "state": rec.state}

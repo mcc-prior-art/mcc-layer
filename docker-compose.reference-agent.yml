@@ -67,6 +67,13 @@ services:
     environment:
       MCC_GATEWAY_API_KEY: "demo-key"
       MCC_GATEWAY_OPERATOR_API_KEY: "op-key"
+      # Independent authority-side policy (PROPOSAL != PERMISSION): an
+      # authenticated operator key alone no longer suffices to grant an
+      # ESCALATE approval -- this exact, independently configured policy
+      # must also ALLOW the operation. Set only here (mcc-gateway); neither
+      # reference-agent nor reference-agent-operator reads or supplies this
+      # file.
+      MCC_AUTHORITY_POLICY_CONFIG: "/app/authority_policy.notify.json"
       MCC_GATEWAY_MODE: "inline"
       MCC_GATEWAY_AUDIT_LOG_PATH: "/data/audit.jsonl"
       # The governed executor: perform the outbound call and require a confirmed,
@@ -119,14 +126,14 @@ services:
       context: .
       dockerfile: deploy/pilot/Dockerfile.reference-agent
     command: ["python", "/app/gateway_approval_operator.py"]
-    # Authority principal separation: holds the operator key. No execute
-    # route to anything the agent didn't itself propose -- it only ever
-    # processes a pending request reference-agent recorded, under
-    # reference-agent's own original correlation_id (never a substituted
-    # identity).
+    # Authority principal separation: holds ONLY the operator key. No
+    # MCC_GATEWAY_API_KEY here -- this process grants approvals; it never
+    # calls /approvals/{id}/execute, so it cannot actuate anything on the
+    # agent's behalf even if compromised (AUTHORITY_CREDENTIALS ∩
+    # EXECUTION_CREDENTIALS = ∅). reference-agent performs its own execute
+    # call with its own key once a mandate is granted.
     environment:
       MCC_GATEWAY_URL: "http://mcc-gateway:8001"
-      MCC_GATEWAY_API_KEY: "demo-key"
       MCC_GATEWAY_OPERATOR_API_KEY: "op-key"
       MCC_PILOT_STATE_DIR: "/pilot-state"
     volumes:
