@@ -38,7 +38,7 @@ from typing import Any, Dict, Mapping, Optional
 
 from .authority_policy import AuthorityPolicy
 from .mandate import issue_mandate
-from .signing import SigningKey, hash_action
+from .signing import SigningKey, hash_action, hash_payload
 
 DEFAULT_TTL_SECONDS = 300
 DEFAULT_OP_TIMEOUT_SECONDS = 0.5
@@ -136,11 +136,42 @@ class InMemoryApprovalRegistry:
         return ConsumeResult(True, "consumed", rec.state)
 
 
+_SET_STATE_LUA = """
+-- Security fix (red-team finding, 2026-10-24): set_state() used to be a
+-- plain Lua-free GET -> (check in Python) -> SET, which is a classic
+-- non-atomic read-modify-write: two concurrent transitions on the SAME
+-- request_id (e.g. approve() racing deny()/invalidate()) could both
+-- observe the pre-transition state before either write landed, and
+-- whichever write happened to land LAST would silently clobber the
+-- other's -- including a legitimate deny() being overwritten back to
+-- APPROVED by a concurrently-racing approve() that read stale state.
+-- This script performs the read, membership check, and write as ONE
+-- atomic Redis operation (Redis executes Lua scripts without
+-- interleaving other commands), closing that race deterministically.
+local cur = redis.call('GET', KEYS[1])
+if not cur then return 0 end
+local rec = cjson.decode(cur)
+local expect = cjson.decode(ARGV[1])
+local matched = false
+for _, v in ipairs(expect) do
+    if rec['state'] == v then matched = true end
+end
+if not matched then return 0 end
+rec['state'] = ARGV[2]
+local ttl = tonumber(rec['expires_at']) - tonumber(rec['created_at'])
+if ttl < 1 then ttl = 1 end
+redis.call('SET', KEYS[1], cjson.encode(rec), 'EX', ttl)
+return 1
+"""
+
+
 class RedisApprovalRegistry:
     """Durable, multi-instance approval store. The record is a JSON value with a
     TTL; the single-use consume is an atomic ``SET NX`` on a separate consume
-    key so exactly one caller can consume an approved request. Fail-closed on
-    any Redis error/timeout."""
+    key so exactly one caller can consume an approved request. State
+    transitions (``deny``/``invalidate``/the approve half-step) are an atomic
+    Lua compare-and-swap (see ``_SET_STATE_LUA``), not a separate GET/SET pair.
+    Fail-closed on any Redis error/timeout."""
 
     def __init__(self, redis_client: Any, *, namespace: str = "mcc:appr:",
                  op_timeout_seconds: float = DEFAULT_OP_TIMEOUT_SECONDS) -> None:
@@ -202,11 +233,14 @@ class RedisApprovalRegistry:
             return False
 
     async def set_state(self, request_id: str, *, expect, to: ApprovalState) -> bool:
-        rec = await self._load(request_id)
-        if rec is None or rec.state not in {s.value for s in expect}:
+        expect_json = json.dumps([s.value for s in expect])
+        try:
+            res = await self._c(self._redis.eval(
+                _SET_STATE_LUA, 1, self._k(request_id), expect_json, to.value,
+            ))
+            return int(res) == 1
+        except Exception:
             return False
-        rec.state = to.value
-        return await self._save(rec)
 
     async def consume(self, request_id: str, *, now: int) -> ConsumeResult:
         rec = await self._load(request_id)
@@ -288,13 +322,34 @@ class ApprovalService:
         now = int(now if now is not None else time.time())
         ttl = ttl_seconds or self.default_ttl
         request_id = f"req-{uuid.uuid4().hex}"
+        canonical_payload = dict(payload or {})
+        # Security fix (red-team finding, 2026-10-24): the stored
+        # ``payload_hash`` binding MUST be computed here, server-side, from
+        # the SAME trusted ``payload`` this record stores -- never trusted
+        # verbatim from a caller-supplied value (which may be omitted,
+        # forged, or simply unrelated to ``payload``). Before this fix, a
+        # caller that omitted ``payload_hash`` (the real, shipped
+        # ``mcc_client.MCCClient.request_approval()`` never sends one) left
+        # ``consume()``'s payload-binding check unenforceable, and a caller
+        # that supplied a MISMATCHED ``payload_hash`` (hashing some other,
+        # not-yet-proposed payload) could get an operation approved under
+        # one payload while pre-arranging the hash of a different, later-
+        # substituted one -- in both cases the independent authority
+        # decision over THIS payload became disconnected from what the
+        # resulting mandate could actually be used to execute. The
+        # ``payload_hash`` parameter is kept for wire/API backward
+        # compatibility (so an old caller that still sends it is not
+        # rejected) but its value is now always ignored in favor of the
+        # recomputed one. See tests/test_independent_authority_decision_adversarial.py
+        # Case L (mandatory, non-vacuity) for the adversarial proof.
+        payload_hash = hash_payload(canonical_payload)
         rec = ApprovalRecord(
             request_id=request_id, actor=actor, action=action,
             action_hash=hash_action(action), resource=resource,
             transaction_id=transaction_id, policy_hash=policy_hash,
             payload_hash=payload_hash, constraints=dict(constraints or {}),
             state=ApprovalState.PENDING.value, created_at=now, expires_at=now + ttl,
-            tenant_id=tenant_id, payload=dict(payload or {}),
+            tenant_id=tenant_id, payload=canonical_payload,
         )
         if not await self.registry.create(rec):
             raise RuntimeError("could not create approval request")
@@ -385,6 +440,15 @@ class ApprovalService:
             return ConsumeResult(False, "ACTION_HASH_MISMATCH: approval not for this action")
         if rec.transaction_id != transaction_id:
             return ConsumeResult(False, "TRANSACTION_MISMATCH: approval not for this transaction")
-        if rec.payload_hash is not None and rec.payload_hash != payload_hash:
+        # Security fix (red-team finding, 2026-10-24): fail closed, never
+        # skip. ``request()`` now always computes a real ``payload_hash``
+        # (see above), so a stored record with ``payload_hash is None`` can
+        # only mean a record created by code that bypassed ``request()``
+        # (e.g. a pre-fix durable record, or a direct ``ApprovalRecord``
+        # construction) -- treat that ambiguity as a mismatch, never as
+        # "nothing to check". A one-sided ``is not None`` guard here was
+        # exactly what let an omitted/empty stored hash bypass this
+        # binding entirely.
+        if rec.payload_hash is None or rec.payload_hash != payload_hash:
             return ConsumeResult(False, "PAYLOAD_MISMATCH: approval not for this payload")
         return await self.registry.consume(request_id, now=now)

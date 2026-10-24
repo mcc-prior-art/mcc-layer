@@ -128,7 +128,7 @@ def test_full_escalate_loop_executes(tmp_path):
     context = {"amount": 100}
     # proposal -> ESCALATE -> request approval
     rid = run(svc.request(actor=actor, action=action, resource=resource, transaction_id="txn-1",
-                          policy_hash=POLICY_HASH, payload_hash=hash_payload(context),
+                          policy_hash=POLICY_HASH, payload=context,
                           constraints={"max_amount": 5000}, now=NOW))
     mandate = run(svc.approve(rid, now=NOW))
     token, _ = _token_from_mandate(engine, authority, mandate, actor=actor, action=action,
@@ -151,7 +151,7 @@ def test_approval_is_single_use_replay_blocked(tmp_path):
     context = {"amount": 100}
     rid = run(svc.request(actor="agent/x", action="send_payment", resource="acct-1",
                           transaction_id="txn-1", policy_hash=POLICY_HASH,
-                          payload_hash=hash_payload(context), now=NOW))
+                          payload=context, now=NOW))
     mandate = run(svc.approve(rid, now=NOW))
 
     async def ex():
