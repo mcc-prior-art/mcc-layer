@@ -311,7 +311,8 @@ def scenario_escalate_then_approve(rt: DemoRuntime) -> ScenarioResult:
     transaction_id = unique_idem("control-room-escalate")
     policy_hash = client.health()["policy_hash"]
     req = client.request_approval(actor=identity, action=action, resource=resource,
-                                  transaction_id=transaction_id, policy_hash=policy_hash)
+                                  transaction_id=transaction_id, policy_hash=policy_hash,
+                                  payload=context)
     stages.append(StageResult("approval_requested", "Approval Requested (ESCALATE loop)", True, req))
 
     approved = client.approve(req["request_id"])

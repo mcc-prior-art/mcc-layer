@@ -168,7 +168,7 @@ def test_approval_execute_with_logical_operation_id_still_executes():
     svc, _ik, _evals, client, calls = _build()
     rid = client.post("/approvals", headers=AGENT, json={
         "actor": "agent/x", "action": ACTION, "resource": RESOURCE,
-        "policy_hash": POLICY}).json()["request_id"]
+        "policy_hash": POLICY, "payload": CTX}).json()["request_id"]
     mandate = client.post(f"/approvals/{rid}/approve", headers=OP).json()["mandate"]
     r = client.post(f"/approvals/{rid}/execute", headers=AGENT, json={
         "mandate": mandate, "actor": "agent/x", "action": ACTION,

@@ -154,7 +154,8 @@ def test_escalate_refund_requires_single_use_approval(stack):
     assert d.decision.value == "ESCALATE"
     assert clinic.recorded_actions() == []  # nothing executed before approval
 
-    appr = stack.client.request_approval(actor=ACTOR, action="refund_request", resource=CLINIC)
+    appr = stack.client.request_approval(actor=ACTOR, action="refund_request", resource=CLINIC,
+                                         payload=ctx)
     granted = stack.client.approve(appr["request_id"])
     first = stack.client.execute_with_approval(
         appr["request_id"], mandate=granted["mandate"], actor=ACTOR, action="refund_request",
