@@ -18,7 +18,7 @@ import { agentEnv, buildGovernedAgentFromEnv } from "./agent.js";
 import type { GovernedOutcome } from "./mcc-client.js";
 import { MccClient } from "./mcc-client.js";
 import { resolveModel } from "./model.js";
-import { buildProposal } from "./schemas.js";
+import { ACTION } from "./schemas.js";
 
 const failures: string[] = [];
 
@@ -134,17 +134,20 @@ async function main(): Promise<number> {
   check(Boolean(escalate?.approvalRequestId), "ESCALATE: no approval request opened");
 
   if (escalate?.approvalRequestId) {
-    // Operator (separate authority) approves and the governed execution continues.
-    const proposal = buildProposal(
-      {
-        recipient: "customer-321",
-        message: "your appointment is confirmed.",
-        priority: "normal",
-        channel: "email",
-        correlationId: escalate.correlationId,
-      },
-      { actor: "agent/unknown", resource: cfg.identity.resource },
-    );
+    // Operator (separate authority) approves and the governed execution
+    // continues the SAME escalated operation -- reusing escalate.finalPayload
+    // (the exact content that was escalated and approved) rather than
+    // hand-typing a new message here. The gateway now binds the approval to
+    // the exact server-stored payload (see src/mcc_core/approvals.py), so
+    // even a cosmetically-different re-typed payload for "the same" action
+    // is correctly rejected as a substitution -- this demo continues the
+    // real approved operation, not a reconstruction of it.
+    const proposal = {
+      actor: "agent/unknown",
+      action: ACTION,
+      resource: cfg.identity.resource,
+      context: escalate.finalPayload ?? {},
+    };
     const granted = await operator.approveAsOperator(
       escalate.approvalRequestId,
       escalate.correlationId,

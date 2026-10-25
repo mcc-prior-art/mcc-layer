@@ -39,7 +39,6 @@ from mcc_core import (  # noqa: E402
     RedisRevocationRegistry,
     RedisVelocityRegistry,
     SigningKey,
-    hash_payload,
     issue_mandate,
 )
 
@@ -107,7 +106,7 @@ async def main() -> int:
     # --- cross-instance single-use approval ---
     rid = await a.create_approval(actor="agent/x", action="generic_op", resource="res-1",
                                   transaction_id=f"t-{run_id}", policy_hash=POLICY,
-                                  payload_hash=hash_payload(ctx))
+                                  payload=ctx)
     mandate = await a.approve(rid["request_id"])
     first = await a.execute_with_approval(mandate=mandate, actor="agent/x", action="generic_op",
                                           resource="res-1", context=ctx, transaction_id=f"t-{run_id}",
