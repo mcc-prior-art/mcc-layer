@@ -205,12 +205,18 @@ class MCCGatewayClient:
     def request_approval(
         self, *, actor: str, action: str, resource: Optional[str] = None,
         transaction_id: Optional[str] = None, policy_hash: Optional[str] = None,
-        payload_hash: Optional[str] = None, constraints: Optional[Dict[str, Any]] = None,
+        payload: Optional[Dict[str, Any]] = None, payload_hash: Optional[str] = None,
+        constraints: Optional[Dict[str, Any]] = None,
         ttl_seconds: Optional[int] = None,
     ) -> Dict[str, Any]:
+        """``payload`` is the exact intended operation content, stored verbatim
+        server-side and bound at execute()-time: the server derives the
+        authoritative payload binding from it, not from ``payload_hash``
+        (an unsupplied/forged hash can never stand in for the real content)."""
         body = {"actor": actor, "action": action}
         for k, v in (("resource", resource), ("transaction_id", transaction_id),
-                     ("policy_hash", policy_hash), ("payload_hash", payload_hash),
+                     ("policy_hash", policy_hash), ("payload", payload),
+                     ("payload_hash", payload_hash),
                      ("constraints", constraints), ("ttl_seconds", ttl_seconds)):
             if v is not None:
                 body[k] = v

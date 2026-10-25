@@ -41,7 +41,9 @@ import pytest
 from mcc_client import MCCClient, Verdict
 from mcc_client.exceptions import MCCAuthenticationError
 from mcc_core import (
+    ApprovalRecord,
     ApprovalService,
+    ApprovalState,
     AuthorityPolicy,
     AuthorityPolicyError,
     InMemoryApprovalRegistry,
@@ -142,6 +144,23 @@ def _escalate(hz, *, actor="agent/unknown", action="send_notification",
 def _approve_raw(hz, request_id: str, *, operator_key: str = OPERATOR_KEY):
     return httpx.post(f"{hz.base_url}/approvals/{request_id}/approve",
                       headers={"x-api-key": API_KEY, "x-operator-key": operator_key},
+                      timeout=10.0)
+
+
+def _execute_raw(hz, request_id: str, *, mandate, actor, action, resource, context,
+                 transaction_id=None, idem=None, api_key: str = API_KEY):
+    """Drive ``/approvals/{id}/execute`` directly over HTTP with a
+    caller-chosen ``context`` -- the exact attacker-controlled surface Case L
+    exploits: a real client can send ANY ``context`` here, independent of
+    whatever payload was actually proposed/approved. Never goes through
+    ``MCCClient.execute()`` (which would honestly resubmit the original
+    proposal's own payload) -- this is deliberately the raw request a
+    compromised proposer, not the well-behaved SDK, would send."""
+    return httpx.post(f"{hz.base_url}/approvals/{request_id}/execute",
+                      headers={"x-api-key": api_key},
+                      json={"mandate": mandate, "actor": actor, "action": action,
+                           "resource": resource, "context": context,
+                           "transaction_id": transaction_id, "idempotency_key": idem},
                       timeout=10.0)
 
 
@@ -382,22 +401,27 @@ class TestCaseG_ForgedAuthority:
 
 class TestCaseH_Replay:
     def test_single_use_consume(self):
-        from mcc_core import hash_action
+        from mcc_core import hash_action, hash_payload
 
         async def _go():
+            # The stored payload_hash is now ALWAYS server-recomputed from
+            # ``payload`` (see Case L) -- consume() must therefore be
+            # driven with that same payload's real hash, not an arbitrary
+            # placeholder.
+            payload = {"channel": "email", "priority": 1}
             svc = ApprovalService(InMemoryApprovalRegistry(), SigningKey.generate("k"),
                                   authority_policy=AuthorityPolicy.from_config(_POLICY_CONFIG))
             rid = await svc.request(actor="agent/unknown", action="send_notification",
                                     resource="notification-service", tenant_id="pilot",
-                                    payload={"channel": "email", "priority": 1},
-                                    transaction_id="op-h", payload_hash="sha256:bbbb")
+                                    payload=payload, transaction_id="op-h")
             mandate = await svc.approve(rid)
             assert mandate is not None
             ah = hash_action("send_notification")
+            ph = hash_payload(payload)
             first = await svc.consume(rid, action_hash=ah, transaction_id="op-h",
-                                      payload_hash="sha256:bbbb")
+                                      payload_hash=ph)
             second = await svc.consume(rid, action_hash=ah, transaction_id="op-h",
-                                       payload_hash="sha256:bbbb")
+                                       payload_hash=ph)
             return first, second
 
         first, second = run(_go())
@@ -507,6 +531,140 @@ class TestCaseK_CompromisedAgentAutoApprovalRegression:
             "non-vacuity check failed: the old unattended-blind-approval "
             "architecture was expected to approve this forged/out-of-policy "
             "escalation, which is exactly the vulnerability this suite fixes"
+        )
+
+
+# ===========================================================================
+# CASE L -- red-team finding (2026-10-24, mandatory): independent authority
+# decided over proposed operation A (and a genuine, correctly-signed mandate
+# was minted for it), but the proposer never holds the approver signing key
+# and controls only the raw execute request. Does presenting that genuine
+# mandate while substituting a DIFFERENT payload B (same actor/action/
+# resource/transaction -- the fields the mandate's own scope DOES bind) let
+# B reach the actuator?
+#
+#     INDEPENDENT AUTHORITY DECIDED A != EXECUTION MAY BE ANYTHING
+#
+# Before the fix: ``mcc_client.MCCClient.request_approval()`` (the real,
+# shipped SDK) never sends a ``payload_hash`` at all, and
+# ``ApprovalService.request()`` stored whatever (or nothing) it was given
+# verbatim. ``ApprovalService.consume()``'s payload binding check
+# (``if rec.payload_hash is not None and rec.payload_hash != payload_hash``)
+# then skipped itself entirely for every such record, and the resulting
+# mandate's ``constraints`` (bound from the caller-supplied, independently-
+# unchecked ``ApprovalCreateRequest.constraints`` field, not from
+# ``AuthorityPolicy``'s own ``payload_bounds``) left execution-time payload
+# content completely unconstrained. The fix (``src/mcc_core/approvals.py``):
+# ``request()`` now always computes ``payload_hash`` server-side from the
+# SAME trusted ``payload`` the independent policy evaluated, and
+# ``consume()`` fails closed (never skips) when the stored hash is absent.
+# ===========================================================================
+
+class TestCaseL_PayloadSubstitutionAfterApproval:
+    def test_payload_substitution_after_approval_without_hash_is_blocked(self, hz_gated):
+        """Escalate A (priority=1, within the independent policy's bound),
+        get it genuinely approved (no payload_hash sent -- exactly what the
+        real shipped SDK does), then attempt to execute B (priority=9,
+        independently disallowed) using that SAME genuine mandate. Must be
+        BLOCKED before the actuator is ever reached."""
+        client, d, approval = _escalate(
+            hz_gated, payload={"recipient": "cust-1", "message": "Hi",
+                               "priority": 1, "channel": "email"},
+            idem="case-l-1")
+        r = _approve_raw(hz_gated, approval.request_id)
+        assert r.status_code == 200
+        mandate = r.json()["mandate"]
+        assert mandate is not None, "setup failed: A should have been approved"
+
+        substituted = _execute_raw(
+            hz_gated, approval.request_id, mandate=mandate, actor="agent/unknown",
+            action="send_notification", resource="notification-service",
+            # correlation_id matches the ORIGINAL escalated payload so the
+            # mock notify service's own receipt-correlation check (an
+            # unrelated harness mechanic) cannot accidentally mask whether
+            # GOVERNANCE itself blocked this -- without it, a prior version
+            # of this test passed even pre-fix because the executor raised
+            # on a missing correlation_id, not because anything in the
+            # approval/payload-binding chain rejected the substitution; the
+            # governed stack reached (and called) the real executor pre-fix,
+            # it just failed for an unrelated reason that happened to also
+            # prevent a recorded receipt. See commit history for the before/
+            # after evidence this gap produced.
+            context={"recipient": "cust-1", "message": "Hi", "priority": 9,
+                     "channel": "email", "correlation_id": "case-l-1"},
+            idem="case-l-1-exec")
+        body = substituted.json()
+        assert body.get("status") == "BLOCKED", (
+            f"PAYLOAD SUBSTITUTION SUCCEEDED (or failed for an unrelated reason "
+            f"instead of being genuinely BLOCKED by governance): {body}"
+        )
+        assert "PAYLOAD_MISMATCH" in (body.get("reason") or ""), (
+            f"blocked for the wrong reason -- expected the payload-binding "
+            f"check specifically, got: {body}"
+        )
+        assert recorded_receipts() == [], "the substituted payload must never reach the actuator"
+
+    def test_forged_mismatched_payload_hash_does_not_bind_to_stored_payload(self, hz_gated):
+        """Even when a payload_hash IS supplied, it must never be trusted
+        verbatim: a caller-supplied hash that does not actually correspond
+        to the stored ``payload`` field must not pre-authorize execution of
+        whatever that forged hash happens to match later. The server must
+        recompute the hash from the trusted payload, never from caller input."""
+        from mcc_core import hash_payload
+
+        forged_hash_of_a_different_payload = hash_payload(
+            {"recipient": "cust-1", "message": "Hi", "priority": 9, "channel": "email"}
+        )
+        # In-process ApprovalService (not hz_gated): isolates request()'s own
+        # hash-recomputation behavior from the HTTP/operator/policy layers
+        # already covered by the previous test.
+        svc = ApprovalService(InMemoryApprovalRegistry(), SigningKey.generate("k-forge"))
+        rid2 = run(svc.request(
+            actor="agent/unknown", action="send_notification", resource="notification-service",
+            tenant_id="pilot", payload={"recipient": "cust-1", "message": "Hi",
+                                        "priority": 1, "channel": "email"},
+            payload_hash=forged_hash_of_a_different_payload,
+        ))
+        rec = run(svc.get(rid2))
+        assert rec.payload_hash != forged_hash_of_a_different_payload, (
+            "the caller-supplied payload_hash must never be trusted verbatim; "
+            "the server must recompute it from the stored payload"
+        )
+        assert rec.payload_hash == hash_payload(rec.payload)
+
+    def test_non_vacuity_consume_fails_closed_when_stored_hash_is_absent(self):
+        """Direct, service-level proof of the exact mechanism this fix
+        touches: a record with ``payload_hash=None`` (the precise condition
+        every pre-fix real-SDK-created approval reached) must be REFUSED at
+        consume() -- never treated as 'nothing to check'. Constructs the
+        ApprovalRecord directly (bypassing request(), which after the fix
+        can no longer produce such a record on its own) to isolate and
+        pin down consume()'s own fail-closed behavior."""
+        from mcc_core import hash_action, hash_payload
+
+        async def _go():
+            svc = ApprovalService(InMemoryApprovalRegistry(), SigningKey.generate("k2"))
+            rid = "req-bypass-1"
+            bypassing_record = ApprovalRecord(
+                request_id=rid, actor="agent/unknown", action="send_notification",
+                action_hash=hash_action("send_notification"), resource="notification-service",
+                transaction_id=None, policy_hash=None,
+                payload_hash=None,  # the exact pre-fix-reachable condition
+                constraints={}, state=ApprovalState.PENDING.value,
+                created_at=0, expires_at=10_000,
+                tenant_id="pilot", payload={"priority": 1, "channel": "email"},
+            )
+            await svc.registry.create(bypassing_record)
+            await svc.registry.set_state(rid, expect=[ApprovalState.PENDING], to=ApprovalState.APPROVED)
+            return await svc.consume(
+                rid, action_hash=hash_action("send_notification"), transaction_id=None,
+                payload_hash=hash_payload({"priority": 9, "channel": "email"}),
+            )
+
+        result = run(_go())
+        assert result.ok is False, (
+            "a stored record with payload_hash=None must fail closed at "
+            "consume(), never be treated as having nothing to bind"
         )
 
 

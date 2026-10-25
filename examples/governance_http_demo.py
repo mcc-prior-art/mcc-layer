@@ -129,7 +129,7 @@ def main() -> int:
         rid = client.post(base + "/approvals", headers=AGENT, json={
             "actor": "agent/x", "action": "generic_op", "resource": "res-1",
             "transaction_id": "txn-1", "policy_hash": gw.gateway.policy_hash,
-            "payload_hash": __import__("mcc_core").hash_payload(CTX)}).json()["request_id"]
+            "payload": CTX}).json()["request_id"]
         appr = client.post(base + f"/approvals/{rid}/approve", headers=OP).json()
         before = len(SEEN)
         ex = client.post(base + f"/approvals/{rid}/execute", headers=AGENT, json={

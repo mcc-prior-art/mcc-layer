@@ -78,7 +78,7 @@ def create(client, *, policy_hash=POLICY, actor="agent/x", action="generic_op",
     r = client.post("/approvals", headers=AGENT, json={
         "actor": actor, "action": action, "resource": resource,
         "transaction_id": transaction_id, "policy_hash": policy_hash,
-        "payload_hash": hash_payload(CTX)})
+        "payload": CTX})
     assert r.status_code == 200
     return r.json()["request_id"]
 

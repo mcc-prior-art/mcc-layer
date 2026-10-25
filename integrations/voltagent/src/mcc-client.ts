@@ -295,11 +295,23 @@ export class MccClient {
   async requestApproval(
     decision: Decision,
     correlationId: string,
+    payload: Record<string, unknown>,
   ): Promise<{ requestId: string; state: string }> {
+    // ``payload`` must be the ORIGINAL proposed content (the caller's own
+    // ``proposal.context``), never ``decision.forwardContext`` -- for an
+    // ESCALATE verdict no authority has rewritten/authorized a forward
+    // context yet, so the gateway's /evaluate response leaves it `{}` (see
+    // src/mcc_core/authority.py: only ALLOW/CONSTRAIN populate it). The
+    // gateway now always derives its payload binding from this field
+    // server-side (never from a caller-supplied hash), so sending `{}` here
+    // would bind the approval to an empty payload and fail-closed reject
+    // the real, non-empty operation at execute() time.
+    // See src/mcc_core/approvals.py.
     const data = await this.request(`${this.gatewayUrl}/approvals`, "POST", correlationId, {
       actor: decision.actor,
       action: decision.action,
       resource: decision.resource,
+      payload,
     });
     return { requestId: String(data.request_id), state: String(data.state ?? "") };
   }
@@ -463,7 +475,7 @@ export class MccClient {
     if (decision.verdict === "ESCALATE") {
       let approval: { requestId: string; state: string };
       try {
-        approval = await this.requestApproval(decision, correlationId);
+        approval = await this.requestApproval(decision, correlationId, proposal.context);
       } catch (err) {
         return this.errorOutcome(correlationId, `could not open approval request: ${String(err)}`);
       }

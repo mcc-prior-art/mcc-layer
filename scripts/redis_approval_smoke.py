@@ -23,6 +23,7 @@ from mcc_core import (  # noqa: E402
     RedisApprovalRegistry,
     SigningKey,
     hash_action,
+    hash_payload,
 )
 
 URL = os.environ.get("MCC_REDIS_URL", "redis://127.0.0.1:6379/0")
@@ -45,8 +46,12 @@ async def main() -> int:
         print("FAILED: approve returned no mandate")
         return 1
 
-    # Two instances race to consume the same approval.
-    args = dict(action_hash=hash_action(action), transaction_id="txn-1", payload_hash=None, now=NOW)
+    # Two instances race to consume the same approval. request() above was
+    # given no explicit payload, so the server-side binding is the hash of
+    # the default empty payload ({}) -- the consume call must match that
+    # same real binding, never an arbitrary placeholder.
+    args = dict(action_hash=hash_action(action), transaction_id="txn-1",
+                payload_hash=hash_payload({}), now=NOW)
     a, b = await asyncio.gather(svc_a.consume(rid, **args), svc_b.consume(rid, **args))
     wins = [r for r in (a, b) if r.ok]
     print(f"instance A consume ok={a.ok} ({a.reason})")
