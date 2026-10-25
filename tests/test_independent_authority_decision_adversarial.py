@@ -579,11 +579,28 @@ class TestCaseL_PayloadSubstitutionAfterApproval:
         substituted = _execute_raw(
             hz_gated, approval.request_id, mandate=mandate, actor="agent/unknown",
             action="send_notification", resource="notification-service",
-            context={"recipient": "cust-1", "message": "Hi", "priority": 9, "channel": "email"},
+            # correlation_id matches the ORIGINAL escalated payload so the
+            # mock notify service's own receipt-correlation check (an
+            # unrelated harness mechanic) cannot accidentally mask whether
+            # GOVERNANCE itself blocked this -- without it, a prior version
+            # of this test passed even pre-fix because the executor raised
+            # on a missing correlation_id, not because anything in the
+            # approval/payload-binding chain rejected the substitution; the
+            # governed stack reached (and called) the real executor pre-fix,
+            # it just failed for an unrelated reason that happened to also
+            # prevent a recorded receipt. See commit history for the before/
+            # after evidence this gap produced.
+            context={"recipient": "cust-1", "message": "Hi", "priority": 9,
+                     "channel": "email", "correlation_id": "case-l-1"},
             idem="case-l-1-exec")
         body = substituted.json()
-        assert body.get("status") != "EXECUTED", (
-            f"PAYLOAD SUBSTITUTION SUCCEEDED: {body}"
+        assert body.get("status") == "BLOCKED", (
+            f"PAYLOAD SUBSTITUTION SUCCEEDED (or failed for an unrelated reason "
+            f"instead of being genuinely BLOCKED by governance): {body}"
+        )
+        assert "PAYLOAD_MISMATCH" in (body.get("reason") or ""), (
+            f"blocked for the wrong reason -- expected the payload-binding "
+            f"check specifically, got: {body}"
         )
         assert recorded_receipts() == [], "the substituted payload must never reach the actuator"
 
