@@ -174,7 +174,25 @@ class RedisTimeSource(TrustedTimeSource):
         self._last_seen: Optional[int] = None
 
     async def now(self) -> int:
-        t_before = time.time()
+        # Two independent clock pairs are sampled around the SAME Redis
+        # call, each used only for the comparison it is actually valid
+        # for:
+        #   * wall_before/wall_after (time.time()): a genuine UTC/epoch
+        #     sample, required to compare against Redis TIME's own
+        #     epoch-based reply for the skew check below. Monotonic time
+        #     has no epoch and cannot stand in for this.
+        #   * mono_before/mono_after (time.monotonic()): a pure DURATION
+        #     measurement for the round-trip/freshness check. Using
+        #     time.time() for a duration is unsafe: an NTP step or manual
+        #     wall-clock adjustment DURING the round trip would corrupt
+        #     the measured elapsed time -- a backward step could make a
+        #     genuinely slow (stale) round trip look instantaneous
+        #     (silently accepting a stale sample), and a forward step
+        #     could make a genuinely fast round trip look like it
+        #     exceeded the bound (a spurious CLOCK_UNTRUSTED). monotonic()
+        #     is immune to both by definition: it never jumps.
+        wall_before = time.time()
+        mono_before = time.monotonic()
         try:
             secs, _micros = await asyncio.wait_for(
                 self._redis.time(), timeout=self._op_timeout
@@ -183,9 +201,10 @@ class RedisTimeSource(TrustedTimeSource):
             raise TimeTrustError(
                 "CLOCK_UNTRUSTED", f"redis TIME unavailable: {exc}"
             ) from exc
-        t_after = time.time()
+        wall_after = time.time()
+        mono_after = time.monotonic()
 
-        round_trip = t_after - t_before
+        round_trip = mono_after - mono_before
         if round_trip > self._max_round_trip:
             raise TimeTrustError(
                 "CLOCK_UNTRUSTED",
@@ -195,10 +214,12 @@ class RedisTimeSource(TrustedTimeSource):
             )
 
         redis_now = int(secs)
-        # Midpoint estimate of this process's own clock at the moment the
-        # sample was in flight -- a fairer comparison than either endpoint
-        # alone for a round trip that took measurable time.
-        local_reference = (t_before + t_after) / 2.0
+        # Midpoint estimate of this process's own wall clock at the moment
+        # the sample was in flight -- a fairer comparison than either
+        # endpoint alone for a round trip that took measurable time. This
+        # MUST be wall-clock (not monotonic): it is compared directly
+        # against Redis TIME's epoch-seconds reply.
+        local_reference = (wall_before + wall_after) / 2.0
         skew = abs(redis_now - local_reference)
         if skew > self._max_skew:
             raise TimeTrustError(

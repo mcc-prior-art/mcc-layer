@@ -87,6 +87,7 @@ class EnforcementCoordinator:
         challenges: Optional[Any] = None,
         require_challenge: bool = False,
         time_source: Optional[TrustedTimeSource] = None,
+        max_dispatch_staleness_seconds: Optional[float] = None,
     ) -> None:
         self.gate = gate
         self.idempotency = idempotency
@@ -94,6 +95,25 @@ class EnforcementCoordinator:
         self.audit = audit
         self.profiles = profiles or ProfileRegistry()
         self.velocity_limits_for = velocity_limits_for or (lambda action: [])
+        # Clock-skew hardening (PR #122 round 5): bounds the real-time gap
+        # between the trusted `now` this call authorized gate/consensus/
+        # challenge/approval AGAINST (resolved once, near the top of
+        # ``enforce()``) and the point of durable dispatch commit (step f)
+        # below. Every authorization check above is correctly evaluated
+        # against ONE consistent, trusted timestamp -- but a slow
+        # idempotency/velocity/audit backend between that resolution and
+        # actual dispatch could otherwise let a token/mandate/approval that
+        # was valid at the moment it was checked reach actuation long after
+        # it would have genuinely expired by true wall-clock time. This
+        # does NOT re-verify or re-consume the token/mandate/approval/
+        # challenge (that would mean a second consumption of a single-use
+        # grant) -- it only re-samples the SAME trusted time source and
+        # measures elapsed real time, failing closed (and releasing
+        # whatever capacity/logical-operation reservation is still safely
+        # releasable -- see ``_release``) if that gap is excessive. ``None``
+        # (default) disables the check entirely, matching this class's
+        # pre-existing behavior exactly.
+        self.max_dispatch_staleness_seconds = max_dispatch_staleness_seconds
         # Clock-skew hardening (PR #122 round 4): the trusted-time source
         # this coordinator resolves ITS OWN `now` from, for its internal
         # fan-out to consensus/challenge verification below, WHEN THE
@@ -162,7 +182,8 @@ class EnforcementCoordinator:
         # this always resolves via ``self.time_source`` in production;
         # fails closed (BLOCKED) rather than falling back to an unchecked
         # local clock.
-        if now is not None:
+        now_was_explicit = now is not None
+        if now_was_explicit:
             trusted_now = int(now)
         else:
             try:
@@ -400,6 +421,42 @@ class EnforcementCoordinator:
             return ActuationResult(
                 ActuationStatus.BLOCKED, "audit-before-actuation failed; fail-closed"
             )
+
+        # Clock-skew hardening (PR #122 round 5): the LAST safe point to
+        # check staleness -- still strictly before step (f)'s point of no
+        # return, so releasing is still safe, and as close to actual
+        # dispatch as this method gets. Every authorization check above
+        # (gate/consensus/challenge/approval) was evaluated against
+        # ``trusted_now``, resolved once near the top of this call; the
+        # idempotency reserve, velocity reserve, and audit write just
+        # above may each have taken real wall-clock time (a slow backend,
+        # contention, a network hiccup). This re-samples the SAME trusted
+        # time source -- never re-verifies or re-consumes the token,
+        # mandate, approval, or challenge themselves -- and measures how
+        # much real time has passed since authorization was checked. Only
+        # active when ``max_dispatch_staleness_seconds`` is configured and
+        # this call resolved its own trusted ``now`` (``now_was_explicit``
+        # is False) -- a caller that supplied an explicit ``now`` (tests,
+        # or any future direct caller) is using its own clock contract and
+        # is not second-guessed here.
+        if self.max_dispatch_staleness_seconds is not None and not now_was_explicit:
+            try:
+                dispatch_now = await self.time_source.now()
+            except TimeTrustError as exc:
+                await self._release(reserved_limits, descriptor, idem_key, tenant_id, idem_fence, now)
+                reason = f"{exc.reason}: {exc.detail}"
+                self._record(kind="actuation_rejected", action=action, reason=reason)
+                return ActuationResult(ActuationStatus.BLOCKED, reason)
+            staleness = dispatch_now - trusted_now
+            if staleness > self.max_dispatch_staleness_seconds:
+                await self._release(reserved_limits, descriptor, idem_key, tenant_id, idem_fence, now)
+                reason = (
+                    f"AUTHORIZATION_STALE: {staleness}s elapsed between authorization "
+                    f"(trusted_now={trusted_now}) and dispatch (dispatch_now={dispatch_now}), "
+                    f"exceeding the {self.max_dispatch_staleness_seconds}s bound; fail-closed"
+                )
+                self._record(kind="actuation_rejected", action=action, reason=reason)
+                return ActuationResult(ActuationStatus.BLOCKED, reason)
 
         # (f) durably commit dispatch ownership -- THE point of no return.
         # From here on, no failure (exception, timeout, disconnect, process

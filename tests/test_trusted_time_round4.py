@@ -17,6 +17,8 @@ isolated test-clock override.
 from __future__ import annotations
 
 import asyncio
+import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -277,30 +279,178 @@ def test_challenge_service_issue_and_consume_fail_closed_when_time_source_untrus
 
 
 def test_pre_execution_control_fails_closed_when_time_source_untrusted():
+    """Round 5 fix: the ORIGINAL version of this test (see git history)
+    exercised only the NOT_REQUIRED short-circuit, which returns before
+    PreExecutionControl.evaluate() ever reaches its own clock resolution --
+    the untrusted time source it constructed was never actually consulted.
+    This version configures a REAL AttestationRequirement for the action
+    under test (so `for_action()` returns non-None and the NOT_REQUIRED
+    short-circuit is not taken) and supplies a real-shaped attestation
+    payload (so the ATTESTATION_REQUIRED "none supplied" short-circuit is
+    not taken either) -- forcing control flow into the clock-resolution
+    block at gateway/pre_execution_control.py's `now is not None` branch.
+    """
     from gateway.pre_execution_control import (
         AttestationControlReason,
+        AttestationRequirement,
         AttestationRequirementRegistry,
         PreExecutionControl,
     )
     from mcc_attestation import AttesterTrustStore
 
     async def _go():
+        requirement = AttestationRequirement(
+            action_pattern="payment.*", evidence_type="risk_assessment",
+            scope_template="payment:{resource}",
+        )
         control = PreExecutionControl(
-            requirements=AttestationRequirementRegistry([]), trust_store=AttesterTrustStore([]),
-            nonce_registry=None, time_source=_AlwaysUntrusted(),
+            requirements=AttestationRequirementRegistry([requirement]),
+            trust_store=AttesterTrustStore([]), nonce_registry=InMemoryNonceRegistry(),
+            time_source=_AlwaysUntrusted(),
         )
-        # NOT_REQUIRED short-circuits before the clock is ever consulted
-        # (no configured requirement for this action) -- use an action
-        # that nothing requires, confirming the untrusted clock only
-        # matters once a requirement actually exists. Since no requirement
-        # is configured at all here, assert the no-requirement path still
-        # works (sanity), then exercise the clock-dependent branch with a
-        # real requirement below.
+        # A real-shaped (not necessarily cryptographically valid) raw
+        # attestation dict -- clock resolution happens BEFORE
+        # verify_attestation() is ever called, so an untrusted clock must
+        # deny here regardless of whether the attestation itself would
+        # otherwise have verified.
+        raw_attestation = {
+            "evidence_type": "risk_assessment", "attester_id": "attester.payment-risk.v1",
+            "claims": {"risk_class": "low"}, "action_hash": "sha256:" + "0" * 64,
+            "scope": "payment:res-1", "nonce": "att-nonce-1",
+        }
         result = await control.evaluate(
-            action="unrequired_action", forward_context={}, resource=None,
-            raw_attestation=None,
+            action="payment.send", forward_context={"amount": 100}, resource="res-1",
+            raw_attestation=raw_attestation,
         )
-        assert result.reason_code == AttestationControlReason.NOT_REQUIRED
+        assert result.ok is False
+        assert result.reason_code == AttestationControlReason.CLOCK_UNTRUSTED
+        assert "CLOCK_UNTRUSTED" in result.reason
+        # Fail-closed also means no evidence_digest and no nonce consumption
+        # -- an untrusted clock must never produce anything a caller could
+        # mistake for verified evidence or burn the single-use attestation
+        # nonce on a check that was never actually performed.
+        assert result.evidence_digest is None
+        assert result.verification is None
+
+    run(_go())
+
+
+def test_pre_execution_control_untrusted_clock_blocks_full_execution_with_zero_actuator_calls():
+    """Round 5: the SAME untrusted-clock scenario, driven through the real
+    production call path (GovernanceService.execute_with_mandate, exactly
+    what gateway/governance_api.py's /mandates/execute route calls) with a
+    REAL AttestationRequirement configured and a REAL, independently
+    counted upstream actuator -- confirming no execution occurs.
+
+    Residual finding (documented, not a defect): GovernanceService always
+    resolves its OWN trusted `now` first (`self._now()`, at the top of
+    execute_with_mandate) and forwards it explicitly into
+    `_attestation_gate()` -> `PreExecutionControl.evaluate(now=now)`.
+    `pre_execution_control.evaluate()`'s *own* internal
+    `self.time_source.now()` resolution (exercised directly, in isolation,
+    by the test above) is therefore never reached via this -- or any other
+    -- real caller: `_attestation_gate` is PreExecutionControl.evaluate()'s
+    ONLY production call site, and it always supplies `now` explicitly.
+    The net security property (no token, no execution, when the clock
+    cannot be trusted) still holds -- it is enforced one step earlier, at
+    GovernanceService._now(), before _attestation_gate is ever reached --
+    but PreExecutionControl's own clock-resolution branch is presently
+    unreachable dead code in production. This test proves the END-TO-END
+    guarantee the task asks for; the unit test above proves
+    PreExecutionControl's branch is correct in isolation, in case a future
+    caller ever does omit `now`.
+    """
+    from gateway.governance_service import GovernanceService
+    from gateway.pre_execution_control import (
+        AttestationRequirement,
+        AttestationRequirementRegistry,
+        PreExecutionControl,
+    )
+    from gateway.trust import TrustSet
+    from mcc_attestation import AttesterTrustStore
+    from mcc_core import (
+        ApprovalService,
+        InMemoryApprovalRegistry,
+        InMemoryRevocationRegistry,
+        issue_mandate,
+    )
+
+    async def _go():
+        action = "payment.send"
+        resource = "vendor-1"
+        untrusted = _AlwaysUntrusted()
+
+        requirement = AttestationRequirement(
+            action_pattern=action, evidence_type="risk_assessment",
+            scope_template="payment:{resource}",
+        )
+        pre_execution_control = PreExecutionControl(
+            requirements=AttestationRequirementRegistry([requirement]),
+            trust_store=AttesterTrustStore([]), nonce_registry=InMemoryNonceRegistry(),
+            time_source=untrusted,
+        )
+
+        mandate_key = SigningKey.generate("issuer-1")
+        dk = SigningKey.generate("dk")
+        engine = DecisionEngine(signing_key=dk, issuer="mcc/test", audience="gate",
+                                policy_id="pilot/v1", policy_hash=POLICY_HASH)
+        gate = ExecutionGate(trusted_keys={dk.kid: dk.public_key()}, audience="gate",
+                             nonce_registry=InMemoryNonceRegistry(), policy_hash=POLICY_HASH)
+        audit_dir = tempfile.mkdtemp(prefix="mcc-round5-pec-")
+        audit = AuditLog(str(Path(audit_dir) / "audit.jsonl"))
+        coordinator = EnforcementCoordinator(
+            gate=gate, idempotency=InMemoryIdempotencyRegistry(),
+            velocity=InMemoryVelocityRegistry(), audit=audit,
+            profiles=ProfileRegistry.default_pilot(),
+        )
+        trust_set = TrustSet()
+        trust_set.add_runtime_issuer("axlogiq/pilot", mandate_key.kid, mandate_key.public_key())
+        approver_key = SigningKey.generate("approver-1")
+
+        actuator_calls: list = []
+
+        async def upstream(act, payload):
+            actuator_calls.append((act, payload))
+            return {"ok": True}
+
+        service = GovernanceService(
+            engine=engine, coordinator=coordinator, trust_set=trust_set,
+            revocation_registry=InMemoryRevocationRegistry(),
+            approvals=ApprovalService(InMemoryApprovalRegistry(), approver_key),
+            profiles=ProfileRegistry.default_pilot(), upstream=upstream,
+            policy_hash=POLICY_HASH, pre_execution_control=pre_execution_control,
+            time_source=untrusted,
+        )
+
+        # The mandate's own validity window is independent of the untrusted
+        # time_source (issued directly with a real now, not resolved
+        # through it) -- isolating the test to the clock-trust failure path
+        # alone, not a coincidental mandate-expiry rejection.
+        real_now = int(time.time())
+        mandate = issue_mandate(
+            mandate_key, issuer="axlogiq/pilot", subject="agent/payments-bot",
+            action_scope=[action], resource_scope=[resource], constraints={},
+            not_before=real_now - 10, not_after=real_now + 3600, issued_at=real_now,
+        )
+
+        out = await service.execute_with_mandate(
+            mandate=mandate, actor="agent/payments-bot", action=action, resource=resource,
+            context={"source": "acct-1", "beneficiary_id": resource, "amount": 100, "currency": "eur"},
+            attestation={
+                "evidence_type": "risk_assessment", "attester_id": "attester.payment-risk.v1",
+                "claims": {"risk_class": "low"}, "nonce": "att-nonce-2",
+            },
+            idempotency_key="op-round5-pec-untrusted", tenant_id="tenant-round5-pec",
+        )
+
+        assert out.status == "BLOCKED"
+        assert out.decision == "DENY"
+        assert "CLOCK_UNTRUSTED" in out.reason
+        assert actuator_calls == [], (
+            "the upstream actuator must never be invoked when the shared "
+            "trusted-time source cannot vouch for `now`, regardless of "
+            "which component's clock check is the one that actually fires"
+        )
 
     run(_go())
 

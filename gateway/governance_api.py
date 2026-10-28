@@ -488,6 +488,7 @@ def build_governance_service(
         consensus_verifier=consensus_verifier, require_consensus=require_consensus,
         challenges=challenge_service, require_challenge=require_challenge,
         time_source=time_source,
+        max_dispatch_staleness_seconds=_max_dispatch_staleness_from_env(env),
     )
 
     if upstream is None:
@@ -512,6 +513,33 @@ def build_governance_service(
 
 def _env_flag(env, name: str) -> bool:
     return env.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# Clock-skew hardening (PR #122 round 5): the default bound on real-time
+# staleness between EnforcementCoordinator.enforce()'s authorization checks
+# and its durable dispatch commit -- generous enough to never trip under
+# normal backend latency, tight enough to catch a stuck/attacked backend
+# letting a token/mandate/approval reach dispatch long after it was checked.
+DEFAULT_MAX_DISPATCH_STALENESS_SECONDS = 30.0
+
+
+def _max_dispatch_staleness_from_env(env) -> Optional[float]:
+    raw = env.get("MCC_MAX_DISPATCH_STALENESS_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_MAX_DISPATCH_STALENESS_SECONDS
+    if raw.lower() in ("0", "off", "disabled", "none"):
+        return None
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"MCC_MAX_DISPATCH_STALENESS_SECONDS={raw!r} is not a valid number"
+        ) from exc
+    if value <= 0:
+        raise RuntimeError(
+            f"MCC_MAX_DISPATCH_STALENESS_SECONDS={value!r} must be positive (or 'off' to disable)"
+        )
+    return value
 
 
 def _build_pre_execution_control(env, nonce_registry, time_source=None):
