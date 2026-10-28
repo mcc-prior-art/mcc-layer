@@ -56,7 +56,7 @@ def test_request_is_pending():
 def test_deny_is_terminal():
     svc = service()
     rid = run(svc.request(actor="agent/x", action="send_payment", now=NOW))
-    assert run(svc.deny(rid))
+    assert run(svc.deny(rid, now=NOW))
     assert run(svc.get(rid, now=NOW)).state == ApprovalState.DENIED.value
     assert run(svc.approve(rid, now=NOW)) is None  # cannot approve a denied request
 
@@ -177,7 +177,7 @@ def test_approval_is_single_use_replay_blocked(tmp_path):
 def test_denied_request_yields_no_authority(tmp_path):
     svc, authority, engine, coord = _e2e(tmp_path)
     rid = run(svc.request(actor="agent/x", action="send_payment", resource="acct-1", now=NOW))
-    run(svc.deny(rid))
+    run(svc.deny(rid, now=NOW))
     assert run(svc.approve(rid, now=NOW)) is None  # denial is terminal
 
 
