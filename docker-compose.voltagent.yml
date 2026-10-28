@@ -65,6 +65,12 @@ services:
     environment:
       MCC_GATEWAY_API_KEY: "demo-key"
       MCC_GATEWAY_OPERATOR_API_KEY: "op-key"
+      # Independent authority-side policy (PROPOSAL != PERMISSION): an
+      # authenticated operator key alone no longer suffices to grant an
+      # ESCALATE approval -- this exact, independently configured policy
+      # must also ALLOW the operation. Set only here (mcc-gateway); the
+      # voltagent-agent never reads or supplies this file.
+      MCC_AUTHORITY_POLICY_CONFIG: "/app/authority_policy.notify.json"
       MCC_GATEWAY_MODE: "inline"
       MCC_GATEWAY_AUDIT_LOG_PATH: "/data/audit.jsonl"
       # Receipt-verifying governed executor: EXECUTED only on a confirmed receipt.

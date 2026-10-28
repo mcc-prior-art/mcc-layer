@@ -92,6 +92,12 @@ services:
         exec uvicorn gateway.app:app --host 0.0.0.0 --port 8001
     environment:
       MCC_GATEWAY_MODE: "inline"
+      # Independent authority-side policy (PROPOSAL != PERMISSION): an
+      # authenticated operator key alone no longer suffices to grant an
+      # ESCALATE approval -- this exact, independently configured policy
+      # must also ALLOW the operation. Set only here (mcc-gateway); the
+      # agent never reads or supplies this file.
+      MCC_AUTHORITY_POLICY_CONFIG: "/app/authority_policy.notify.json"
       # Redis-backed state — fail closed if Redis is down (no in-memory fallback).
       MCC_NONCE_BACKEND: "redis"
       MCC_IDEMPOTENCY_BACKEND: "redis"

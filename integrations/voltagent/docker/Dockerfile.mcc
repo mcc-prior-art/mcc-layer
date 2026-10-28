@@ -18,6 +18,21 @@ COPY pilot_notify /app/pilot_notify
 COPY clinic_service /app/clinic_service
 COPY integrations/voltagent/mcc_side /app/integrations/voltagent/mcc_side
 
+# Independent authority-side policy (PROPOSAL != PERMISSION, PR #119):
+# every VoltAgent-family deployment's ESCALATE approval step
+# (integrations/voltagent/mcc_side/operator_cli.py, run non-interactively
+# via `make pilot-approve` / `make clinic-pilot-approve` -- no per-request
+# confirmation prompt) is, in substance, unattended. Without
+# MCC_AUTHORITY_POLICY_CONFIG set on the gateway, an authenticated
+# operator key alone would be sufficient to approve ANY pending ESCALATE
+# regardless of content -- see gateway/governance_api.py's
+# build_governance_service and src/mcc_core/approvals.py's
+# ApprovalService.approve(). Both policy files are baked into every image
+# built from this Dockerfile; each compose file selects the one it needs
+# via MCC_AUTHORITY_POLICY_CONFIG.
+COPY deploy/pilot/authority_policy.notify.json /app/authority_policy.notify.json
+COPY deploy/pilot/authority_policy.clinic.json /app/authority_policy.clinic.json
+
 ENV PYTHONPATH=/app/src:/app
 
 # Least-privilege sharing of /pilot-state (the ESCALATE pending-approval file):
