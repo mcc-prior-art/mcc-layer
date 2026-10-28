@@ -64,6 +64,7 @@ the DEFAULT when no explicit ``now`` is given.
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Mapping, Optional
@@ -72,6 +73,37 @@ DEFAULT_MAX_SKEW_SECONDS = 5.0
 DEFAULT_MAX_ROUND_TRIP_SECONDS = 2.0
 DEFAULT_ROLLBACK_TOLERANCE_SECONDS = 1.0
 DEFAULT_OP_TIMEOUT_SECONDS = 1.0
+
+# An upper bound past which a configured threshold is not a meaningful
+# trust margin anymore (e.g. years) -- rejected as an unsafe configuration
+# range rather than silently accepted as "basically disables the check".
+_MAX_SAFE_THRESHOLD_SECONDS = 86_400.0  # 24h
+
+
+def _validate_positive_finite(value: Any, field_name: str) -> float:
+    """Fail closed on a NaN, infinite, non-numeric, non-positive, or
+    absurdly large threshold -- any of these would silently disable (NaN/
+    inf: every comparison against them is False; non-positive: the check
+    rejects every real sample) or render meaningless the trust check this
+    value configures. Never clamps or coerces: an unsafe value is a
+    configuration error, raised at construction time, not papered over."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError) as exc:
+        raise TimeTrustConfigError(f"{field_name}={value!r} is not a valid number") from exc
+    if math.isnan(v):
+        raise TimeTrustConfigError(f"{field_name} must not be NaN")
+    if math.isinf(v):
+        raise TimeTrustConfigError(f"{field_name} must not be infinite")
+    if v <= 0:
+        raise TimeTrustConfigError(f"{field_name}={v!r} must be a positive number")
+    if v > _MAX_SAFE_THRESHOLD_SECONDS:
+        raise TimeTrustConfigError(
+            f"{field_name}={v!r} exceeds the safe configuration range "
+            f"(> {_MAX_SAFE_THRESHOLD_SECONDS:.0f}s); refusing a threshold "
+            "wide enough to be meaningless"
+        )
+    return v
 
 
 class TimeTrustError(Exception):
@@ -124,10 +156,21 @@ class RedisTimeSource(TrustedTimeSource):
         op_timeout_seconds: float = DEFAULT_OP_TIMEOUT_SECONDS,
     ) -> None:
         self._redis = redis_client
-        self._max_skew = max_skew_seconds
-        self._max_round_trip = max_round_trip_seconds
-        self._rollback_tolerance = rollback_tolerance_seconds
-        self._op_timeout = op_timeout_seconds
+        # Validated here, not just at the env-parsing boundary, so every
+        # construction path (direct, test, or env-driven) is protected: a
+        # NaN or infinite threshold would make `skew > max_skew` always
+        # False in Python, SILENTLY DISABLING the check it exists to
+        # enforce; a negative or zero one would make every real clock
+        # reading fail the round-trip/skew bound spuriously. Fail closed
+        # at construction time, never at first use.
+        self._max_skew = _validate_positive_finite(max_skew_seconds, "max_skew_seconds")
+        self._max_round_trip = _validate_positive_finite(
+            max_round_trip_seconds, "max_round_trip_seconds"
+        )
+        self._rollback_tolerance = _validate_positive_finite(
+            rollback_tolerance_seconds, "rollback_tolerance_seconds"
+        )
+        self._op_timeout = _validate_positive_finite(op_timeout_seconds, "op_timeout_seconds")
         self._last_seen: Optional[int] = None
 
     async def now(self) -> int:
@@ -202,10 +245,18 @@ def trusted_time_source_from_env(env: Optional[Mapping[str, str]] = None) -> Tru
 
         def _f(key: str, default: float) -> float:
             v = env.get(key)
-            try:
-                return float(v) if v not in (None, "") else default
-            except (TypeError, ValueError):
+            if v in (None, ""):
                 return default
+            # An explicitly-set value that fails to parse as a plain
+            # number is a configuration error, raised here rather than
+            # silently replaced by the default -- RedisTimeSource's own
+            # constructor additionally rejects NaN/infinite/non-positive/
+            # absurdly-large values (the ones a bare ``float()`` parse
+            # would NOT catch, e.g. "nan"/"inf" parse successfully).
+            try:
+                return float(v)
+            except (TypeError, ValueError) as exc:
+                raise TimeTrustConfigError(f"{key}={v!r} is not a valid number") from exc
 
         return RedisTimeSource(
             client,

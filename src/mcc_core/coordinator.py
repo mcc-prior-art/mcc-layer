@@ -38,6 +38,7 @@ from .core import Verdict
 from .idempotency import ReserveStatus
 from .profiles import ProfileRegistry
 from .signing import hash_document
+from .trusted_time import LocalTimeSource, TimeTrustError, TrustedTimeSource
 from .velocity import VelocityLimit, VelocityOutcome
 
 
@@ -85,6 +86,7 @@ class EnforcementCoordinator:
         require_consensus: bool = False,
         challenges: Optional[Any] = None,
         require_challenge: bool = False,
+        time_source: Optional[TrustedTimeSource] = None,
     ) -> None:
         self.gate = gate
         self.idempotency = idempotency
@@ -92,6 +94,20 @@ class EnforcementCoordinator:
         self.audit = audit
         self.profiles = profiles or ProfileRegistry()
         self.velocity_limits_for = velocity_limits_for or (lambda action: [])
+        # Clock-skew hardening (PR #122 round 4): the trusted-time source
+        # this coordinator resolves ITS OWN `now` from, for its internal
+        # fan-out to consensus/challenge verification below, WHEN THE
+        # CALLER passes no explicit `now` (the production case -- see
+        # tests/test_velocity.py's static guard, which forbids
+        # governance_service.py et al. from ever passing an explicit now=
+        # into .enforce()). Deliberately NEVER substituted for the `now`
+        # passed to VelocityRegistry.reserve()/release() below, which keeps
+        # using the caller's own (always-None-in-production) `now`
+        # unchanged, so InMemoryVelocityRegistry's deliberate
+        # time.monotonic() semantics are untouched -- see that same guard's
+        # rationale. Defaults to this process's own clock (pre-existing
+        # behavior) when not configured.
+        self.time_source: TrustedTimeSource = time_source or LocalTimeSource()
         # Mandatory Multi-Context Consensus: when ``require_consensus`` is set, no
         # action reaches actuation unless a valid N-of-M consensus, bound to the
         # token's exact action/actor/payload/resource/policy_hash/nonce, is
@@ -136,6 +152,26 @@ class EnforcementCoordinator:
         evidence: Optional[Dict[str, Any]] = None,
         now: Optional[int] = None,
     ) -> ActuationResult:
+        # Clock-skew hardening (PR #122 round 4): resolve ONE trusted `now`
+        # for this call's gate/consensus/challenge/approval checks below --
+        # never for VelocityRegistry.reserve()/release(), which keeps using
+        # the raw, unresolved `now` parameter exactly as before (see
+        # __init__'s time_source comment / tests/test_velocity.py's static
+        # guard). ``now`` is always None from every production caller
+        # today (governance_service.py never passes it -- same guard), so
+        # this always resolves via ``self.time_source`` in production;
+        # fails closed (BLOCKED) rather than falling back to an unchecked
+        # local clock.
+        if now is not None:
+            trusted_now = int(now)
+        else:
+            try:
+                trusted_now = await self.time_source.now()
+            except TimeTrustError as exc:
+                reason = f"{exc.reason}: {exc.detail}"
+                self._record(kind="actuation_rejected", action=action, reason=reason)
+                return ActuationResult(ActuationStatus.BLOCKED, reason)
+
         # (a) validate token + operation binding + PR-3 evidence-bound
         # execution ticket binding, (b) consume nonce. ``evidence`` is the
         # exact raw evidence artifact for this operation (when the caller
@@ -143,7 +179,7 @@ class EnforcementCoordinator:
         # one -- passing None here for a non-evidence-bound token is a no-op.
         gate_result = await self.gate.verify(
             token, action=action, payload=payload, binding=request_binding,
-            evidence=evidence, now=now,
+            evidence=evidence, now=trusted_now,
         )
         if not gate_result.allowed:
             self._record(kind="actuation_rejected", action=action, reason=gate_result.reason)
@@ -201,7 +237,7 @@ class EnforcementCoordinator:
                 result = self.consensus_verifier.verify(
                     consensus_votes, action=action, payload=payload,
                     actor=token.get("actor_id"), resource=token.get("resource_id"),
-                    policy_hash=token.get("policy_hash"), nonce=token.get("nonce"), now=now)
+                    policy_hash=token.get("policy_hash"), nonce=token.get("nonce"), now=trusted_now)
             if result is None or result.verdict != Verdict.ALLOW:
                 reason = ("consensus required: " +
                           (result.reason if result is not None else
@@ -230,7 +266,7 @@ class EnforcementCoordinator:
                 payload_hash=token.get("payload_hash"),
                 policy_hash=token.get("policy_hash"),
                 nonce=token.get("nonce"),
-                now=now,
+                now=trusted_now,
             )
             if not consumed.ok:
                 reason = f"challenge {challenge_id} not consumable: {consumed.reason}"
@@ -259,7 +295,7 @@ class EnforcementCoordinator:
                 action_hash=token.get("action_hash"),
                 transaction_id=token.get("transaction_id"),
                 payload_hash=token.get("payload_hash"),
-                now=now,
+                now=trusted_now,
             )
             if not consumed.ok:
                 reason = f"approval {approval_id} not consumable: {consumed.reason}"

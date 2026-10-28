@@ -472,13 +472,13 @@ def build_governance_service(
     # store is single-use and TTL-bounded; the coordinator consumes it before
     # actuation. Always available; MCC_REQUIRE_CHALLENGE makes a gateway-issued
     # challenge mandatory for actuation (clients can no longer supply a nonce).
-    challenge_service = ChallengeService(challenge_registry_from_env(env))
+    challenge_service = ChallengeService(challenge_registry_from_env(env), time_source=time_source)
     require_challenge = _env_flag(env, "MCC_REQUIRE_CHALLENGE")
 
     # PR-2: optional Pre-Execution Attestation Control. Disabled (None) unless
     # MCC_ATTESTATION_REQUIREMENTS_CONFIG is set -- every action's behavior is
     # then identical to before PR-2. Reuses shared_nonce_registry (see above).
-    pre_execution_control = _build_pre_execution_control(env, shared_nonce_registry)
+    pre_execution_control = _build_pre_execution_control(env, shared_nonce_registry, time_source)
 
     coordinator = EnforcementCoordinator(
         gate=gate, idempotency=idempotency_registry_from_env(env),
@@ -487,6 +487,7 @@ def build_governance_service(
         revocation_registry=revocation, approvals=approvals,
         consensus_verifier=consensus_verifier, require_consensus=require_consensus,
         challenges=challenge_service, require_challenge=require_challenge,
+        time_source=time_source,
     )
 
     if upstream is None:
@@ -513,7 +514,7 @@ def _env_flag(env, name: str) -> bool:
     return env.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _build_pre_execution_control(env, nonce_registry):
+def _build_pre_execution_control(env, nonce_registry, time_source=None):
     """Build the optional PR-2 Pre-Execution Attestation Control boundary.
 
     Disabled (returns ``None``) unless ``MCC_ATTESTATION_REQUIREMENTS_CONFIG``
@@ -556,7 +557,8 @@ def _build_pre_execution_control(env, nonce_registry):
         ))
     trust_store = AttesterTrustStore(anchors)
 
-    return PreExecutionControl(requirements=registry, trust_store=trust_store, nonce_registry=nonce_registry)
+    return PreExecutionControl(requirements=registry, trust_store=trust_store,
+                               nonce_registry=nonce_registry, time_source=time_source)
 
 
 def _build_consensus_verifier(env):

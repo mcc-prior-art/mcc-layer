@@ -136,7 +136,7 @@ class GovernanceService:
 
     async def _attestation_gate(
         self, *, action: str, forward_context: Dict[str, Any], resource: Optional[str],
-        attestation: Optional[Dict[str, Any]],
+        attestation: Optional[Dict[str, Any]], now: Optional[int] = None,
     ) -> "tuple[Optional[ExecOutcome], Optional[str]]":
         """Shared PR-2/PR-3 gate. Returns ``(blocked, evidence_digest)``:
 
@@ -157,7 +157,7 @@ class GovernanceService:
             return None, None
         result = await self.pre_execution_control.evaluate(
             action=action, forward_context=forward_context, resource=resource,
-            raw_attestation=attestation, policy_hash=self.policy_hash,
+            raw_attestation=attestation, policy_hash=self.policy_hash, now=now,
         )
         if result.ok:
             return None, result.evidence_digest
@@ -268,7 +268,7 @@ class GovernanceService:
         # for a VERIFIED required attestation (None otherwise).
         blocked, evidence_digest = await self._attestation_gate(
             action=action, forward_context=forward_context, resource=resource,
-            attestation=attestation,
+            attestation=attestation, now=now,
         )
         if blocked is not None:
             return blocked
@@ -399,12 +399,12 @@ class GovernanceService:
 
     # ---- multi-context consensus (pre-token authority step) ----
 
-    def _consensus(self, votes, action, context, actor, resource=None, nonce=None):
+    def _consensus(self, votes, action, context, actor, resource=None, nonce=None, now=None):
         profile = self.profiles.for_action(action)
         canonical = profile.canonical_payload(context)  # may raise ProfileError
         result = self.consensus_verifier.verify(
             votes, action=action, payload=canonical, actor=actor,
-            resource=resource, policy_hash=self.policy_hash, nonce=nonce)
+            resource=resource, policy_hash=self.policy_hash, nonce=nonce, now=now)
         return profile, canonical, result
 
     async def verify_consensus(self, *, votes, action, context, actor,
@@ -413,7 +413,12 @@ class GovernanceService:
             return {"verdict": "DENY", "reason": "consensus not configured; fail-closed",
                     "agreement": 0, "threshold": 0, "evaluators": [], "rejected_votes": 0}
         try:
-            _, _, result = self._consensus(votes, action, context, actor, resource, nonce)
+            now = await self._now()
+        except TimeTrustError as exc:
+            return {"verdict": "DENY", "reason": f"{exc.reason}: {exc.detail}", "agreement": 0,
+                    "threshold": 0, "evaluators": [], "rejected_votes": 0}
+        try:
+            _, _, result = self._consensus(votes, action, context, actor, resource, nonce, now)
         except ProfileError as exc:
             return {"verdict": "DENY", "reason": f"PROFILE_ERROR: {exc}", "agreement": 0,
                     "threshold": 0, "evaluators": [], "rejected_votes": 0}
@@ -461,7 +466,7 @@ class GovernanceService:
             auth_claims_extra["challenge_id"] = challenge_id
 
         try:
-            profile, canonical, result = self._consensus(votes, action, context, actor, resource, nonce)
+            profile, canonical, result = self._consensus(votes, action, context, actor, resource, nonce, now)
         except ProfileError as exc:
             return ExecOutcome("BLOCKED", f"PROFILE_ERROR: {exc}", decision="DENY")
         if not result.ok:
@@ -472,7 +477,7 @@ class GovernanceService:
         # the action profile, never the raw caller-supplied context.
         blocked, evidence_digest = await self._attestation_gate(
             action=action, forward_context=canonical, resource=resource,
-            attestation=attestation,
+            attestation=attestation, now=now,
         )
         if blocked is not None:
             return blocked

@@ -58,7 +58,6 @@ from __future__ import annotations
 
 import copy
 import fnmatch
-import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -72,6 +71,7 @@ from mcc_attestation import (
     verify_attestation,
 )
 from mcc_core.signing import hash_action, hash_document, hash_payload
+from mcc_core.trusted_time import LocalTimeSource, TimeTrustError, TrustedTimeSource
 
 
 class AttestationControlReason(str, Enum):
@@ -101,6 +101,10 @@ class AttestationControlReason(str, Enum):
     ATTESTATION_REPLAYED = "ATTESTATION_REPLAYED"
     ATTESTATION_REPLAY_UNAVAILABLE = "ATTESTATION_REPLAY_UNAVAILABLE"
     ATTESTATION_CONTROL_ERROR = "ATTESTATION_CONTROL_ERROR"
+    #: PR #122 round 4: the trusted-time source could not vouch for `now`
+    #: (unavailable / excessive skew / rollback) -- the attestation's own
+    #: validity-window check below cannot be trusted, so it never runs.
+    CLOCK_UNTRUSTED = "CLOCK_UNTRUSTED"
 
 
 #: Reason codes that permit decision-token issuance to proceed. Every other
@@ -287,6 +291,7 @@ class PreExecutionControl:
         nonce_clock_skew_seconds: int = 30,
         max_nonce_ttl_seconds: int = 900,
         min_nonce_ttl_seconds: int = 1,
+        time_source: Optional[TrustedTimeSource] = None,
     ) -> None:
         self.requirements = requirements
         self.trust_store = trust_store
@@ -294,6 +299,12 @@ class PreExecutionControl:
         self.nonce_clock_skew_seconds = nonce_clock_skew_seconds
         self.max_nonce_ttl_seconds = max_nonce_ttl_seconds
         self.min_nonce_ttl_seconds = min_nonce_ttl_seconds
+        # Clock-skew hardening (PR #122 round 4): default source of `now`
+        # for the attestation validity-window check below when the caller
+        # does not supply one explicitly -- see trusted_time.py. Defaults
+        # to this process's own clock (pre-existing behavior) when not
+        # configured.
+        self.time_source: TrustedTimeSource = time_source or LocalTimeSource()
 
     def _nonce_ttl(self, expires_at: int, now: int) -> int:
         """Derive the attestation nonce record's TTL from the attestation's
@@ -359,7 +370,16 @@ class PreExecutionControl:
             # this point can change what gets verified or digested.
             raw_attestation = copy.deepcopy(raw_attestation)
 
-            now_i = int(now if now is not None else time.time())
+            if now is not None:
+                now_i = int(now)
+            else:
+                try:
+                    now_i = await self.time_source.now()
+                except TimeTrustError as exc:
+                    return ControlAttestationResult(
+                        False, AttestationControlReason.CLOCK_UNTRUSTED,
+                        f"{exc.reason}: {exc.detail}",
+                    )
             expected_action_hash = hash_action(action)
             expected_payload_hash = (
                 hash_payload(forward_context) if requirement.require_payload_binding else None
