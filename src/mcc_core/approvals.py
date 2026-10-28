@@ -30,7 +30,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -39,6 +38,7 @@ from typing import Any, Dict, Mapping, Optional
 from .authority_policy import AuthorityPolicy
 from .mandate import issue_mandate
 from .signing import SigningKey, hash_action, hash_payload
+from .trusted_time import LocalTimeSource, TimeTrustError, TrustedTimeSource
 
 DEFAULT_TTL_SECONDS = 300
 DEFAULT_OP_TIMEOUT_SECONDS = 0.5
@@ -417,7 +417,8 @@ class ApprovalService:
 
     def __init__(self, registry, approver_key: SigningKey, *,
                  issuer: str = "mcc/approvals", default_ttl_seconds: int = DEFAULT_TTL_SECONDS,
-                 authority_policy: Optional[AuthorityPolicy] = None) -> None:
+                 authority_policy: Optional[AuthorityPolicy] = None,
+                 time_source: Optional[TrustedTimeSource] = None) -> None:
         self.registry = registry
         self.approver_key = approver_key
         self.issuer = issuer
@@ -430,6 +431,23 @@ class ApprovalService:
         # (the bare "an authenticated human/operator says so" model) -- the
         # right choice for a genuinely attended human-approval deployment.
         self.authority_policy = authority_policy
+        # Clock-skew hardening (PR #122 round 3): the DEFAULT source of
+        # ``now`` whenever a caller does not supply one explicitly. Defaults
+        # to the pre-existing behavior (this process's own clock) when not
+        # configured -- no new dependency for non-Redis deployments. An
+        # explicit ``now=`` argument (the isolated test interface; never
+        # reachable from an HTTP request body) always bypasses this entirely.
+        self.time_source: TrustedTimeSource = time_source or LocalTimeSource()
+
+    async def _resolve_now(self, now: Optional[int]) -> int:
+        """The single place every method below turns an optional caller-
+        supplied ``now`` into a trustworthy one. Never falls back to a bare
+        ``time.time()`` when ``self.time_source`` cannot vouch for the
+        result -- raises :class:`TimeTrustError`, which every caller below
+        turns into its own fail-closed outcome (never a silent ALLOW)."""
+        if now is not None:
+            return int(now)
+        return await self.time_source.now()
 
     async def request(
         self, *, actor: str, action: str, resource: Optional[str] = None,
@@ -438,7 +456,13 @@ class ApprovalService:
         ttl_seconds: Optional[int] = None, now: Optional[int] = None,
         tenant_id: Optional[str] = None, payload: Optional[Dict[str, Any]] = None,
     ) -> str:
-        now = int(now if now is not None else time.time())
+        # Fail closed on untrusted time: a request record's own created_at/
+        # expires_at window is the foundation every later expiry check in
+        # this class relies on -- minting it from an unverified clock would
+        # undermine every check built on top, so this does not silently
+        # fall back; TimeTrustError propagates (mirrors the existing
+        # RuntimeError this method already raises on registry failure).
+        now = await self._resolve_now(now)
         ttl = ttl_seconds or self.default_ttl
         request_id = f"req-{uuid.uuid4().hex}"
         canonical_payload = dict(payload or {})
@@ -475,16 +499,31 @@ class ApprovalService:
         return request_id
 
     async def get(self, request_id: str, *, now: Optional[int] = None) -> Optional[ApprovalRecord]:
-        return await self.registry.get(request_id, now=int(now if now is not None else time.time()))
+        # A read/observability path, not a grant or exercise of authority:
+        # if the trusted clock is unavailable, report the record as stored
+        # rather than refuse the read entirely -- the actual security gates
+        # (approve()/consume() below) fail closed independently and do not
+        # rely on get() having promoted anything here.
+        try:
+            now = await self._resolve_now(now)
+        except TimeTrustError:
+            return await self.registry.get(request_id, now=-1)
+        return await self.registry.get(request_id, now=now)
 
     async def deny(self, request_id: str, *, now: Optional[int] = None) -> bool:
-        now = int(now if now is not None else time.time())
+        try:
+            now = await self._resolve_now(now)
+        except TimeTrustError:
+            return False
         return await self.registry.set_state(
             request_id, expect=[ApprovalState.PENDING], to=ApprovalState.DENIED, now=now,
         )
 
     async def invalidate(self, request_id: str, *, now: Optional[int] = None) -> bool:
-        now = int(now if now is not None else time.time())
+        try:
+            now = await self._resolve_now(now)
+        except TimeTrustError:
+            return False
         return await self.registry.set_state(
             request_id,
             expect=[ApprovalState.PENDING, ApprovalState.APPROVED],
@@ -500,8 +539,13 @@ class ApprovalService:
         this exact operation (request remains PENDING -- the caller gets no
         signal distinguishing "denied by policy" from "not yet decided",
         which is intentional: an unattended caller must not be able to probe
-        policy internals by state-machine side channel)."""
-        now = int(now if now is not None else time.time())
+        policy internals by state-machine side channel). Fails closed (None)
+        if a trustworthy ``now`` cannot be established -- never mints
+        authority against an unverified clock."""
+        try:
+            now = await self._resolve_now(now)
+        except TimeTrustError:
+            return None
         rec = await self.registry.get(request_id, now=now)
         if rec is None or rec.state != ApprovalState.PENDING.value or rec.is_expired(now):
             return None
@@ -552,8 +596,13 @@ class ApprovalService:
     ) -> ConsumeResult:
         """Atomically consume an APPROVED request, binding to the exact
         operation. Mismatched action/transaction/payload, replay, or a non-
-        APPROVED state all fail closed."""
-        now = int(now if now is not None else time.time())
+        APPROVED state all fail closed -- as does an untrusted clock: this
+        is the exact boundary at which authority is exercised, so an
+        unverifiable ``now`` is never treated as "not yet expired"."""
+        try:
+            now = await self._resolve_now(now)
+        except TimeTrustError as exc:
+            return ConsumeResult(False, f"{exc.reason}: {exc.detail}")
         rec = await self.registry.get(request_id, now=now)
         if rec is None:
             return ConsumeResult(False, "approval not found")

@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Mapping, Optional
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .signing import SigningKey, canonical_bytes, verify_token
+from .trusted_time import LocalTimeSource, TimeTrustError, TrustedTimeSource
 
 REQUIRED_FIELDS = (
     "mandate_id", "issuer", "subject", "action_scope", "resource_scope",
@@ -181,9 +182,15 @@ class MandateVerifier:
         *,
         trusted_keys: Dict[str, Ed25519PublicKey],
         revocation_registry: "Optional[RevocationRegistry]" = None,
+        time_source: Optional[TrustedTimeSource] = None,
     ) -> None:
         self.trusted_keys = trusted_keys
         self.revocation_registry = revocation_registry
+        # Clock-skew hardening (PR #122 round 3): default source of ``now``
+        # when a caller does not supply one explicitly -- see
+        # ``trusted_time.py``. Defaults to this process's own clock (the
+        # pre-existing behavior) when not configured.
+        self.time_source: TrustedTimeSource = time_source or LocalTimeSource()
 
     async def verify(
         self,
@@ -217,7 +224,13 @@ class MandateVerifier:
             if required not in mandate:
                 return MandateResult(False, f"MALFORMED_MANDATE: missing {required}")
 
-        ts = int(now if now is not None else time.time())
+        if now is not None:
+            ts = int(now)
+        else:
+            try:
+                ts = await self.time_source.now()
+            except TimeTrustError as exc:
+                return MandateResult(False, f"{exc.reason}: {exc.detail}")
         nbf, exp = mandate.get("nbf"), mandate.get("exp")
         if not isinstance(nbf, int) or not isinstance(exp, int):
             return MandateResult(False, "MALFORMED_MANDATE: invalid validity window")

@@ -95,6 +95,10 @@ services:
       MCC_IDEMPOTENCY_BACKEND: "redis"
       MCC_VELOCITY_BACKEND: "redis"
       MCC_APPROVAL_BACKEND: "redis"
+      # Clock-skew hardening (PR #122): resolve `now` for approval/mandate/
+      # gate validity checks from this SAME shared, validated Redis clock
+      # rather than each gateway instance's own local clock.
+      MCC_TIME_TRUST_BACKEND: "redis"
     networks: [agent_edge, gov_internal]
     volumes:
       - mcc-agent-audit:/data

@@ -86,6 +86,10 @@ services:
       MCC_VELOCITY_BACKEND: "redis"
       MCC_APPROVAL_BACKEND: "redis"
       MCC_CHALLENGE_BACKEND: "redis"
+      # Clock-skew hardening (PR #122): resolve `now` for approval/mandate/
+      # gate validity checks from this SAME shared, validated Redis clock
+      # rather than each gateway instance's own local clock.
+      MCC_TIME_TRUST_BACKEND: "redis"
     volumes:
       - mcc-config:/config
       - voltagent-audit:/data

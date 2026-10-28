@@ -92,6 +92,10 @@ _EXPORTS: dict[str, str] = {
     "InMemoryVelocityRegistry": "velocity", "RedisVelocityRegistry": "velocity",
     "VelocityConfigError": "velocity", "VelocityLimit": "velocity",
     "VelocityOutcome": "velocity", "velocity_registry_from_env": "velocity",
+    # trusted_time (clock-skew hardening)
+    "LocalTimeSource": "trusted_time", "RedisTimeSource": "trusted_time",
+    "TimeTrustConfigError": "trusted_time", "TimeTrustError": "trusted_time",
+    "TrustedTimeSource": "trusted_time", "trusted_time_source_from_env": "trusted_time",
     # signing (pure — no governance engine)
     "SigningKey": "signing", "canonical_bytes": "signing", "hash_action": "signing",
     "hash_document": "signing", "hash_payload": "signing", "is_valid_digest": "signing",

@@ -392,12 +392,20 @@ def build_governance_service(
         revocation_registry_from_env,
         velocity_registry_from_env,
     )
+    from mcc_core.trusted_time import trusted_time_source_from_env
 
     from .pilot_policy import PILOT_VELOCITY
     from .trust import trust_set_from_env
 
     env = os.environ if env is None else env
     trust_set = trust_set_from_env(env)
+    # Clock-skew hardening (PR #122 round 3): ONE shared, validated clock
+    # for this gateway instance -- see mcc_core.trusted_time. Defaults to
+    # this process's own clock (MCC_TIME_TRUST_BACKEND unset/"local"); opts
+    # into a shared, skew/availability/rollback-validated Redis clock via
+    # MCC_TIME_TRUST_BACKEND=redis. Fails closed at startup (raises) on
+    # misconfiguration -- never silently falls back to an unverified clock.
+    time_source = trusted_time_source_from_env(env)
 
     approver_path = env.get("MCC_APPROVER_SIGNING_KEY_PATH", "").strip()
     approver_kid = env.get("MCC_APPROVER_KEY_ID", "mcc-approver-1")
@@ -421,7 +429,7 @@ def build_governance_service(
     gate = ExecutionGate(
         trusted_keys={signing_key.kid: signing_key.public_key()},
         audience=token_audience, nonce_registry=shared_nonce_registry,
-        policy_hash=policy_hash,
+        policy_hash=policy_hash, time_source=time_source,
     )
     revocation = revocation_registry_from_env(env)
     # Independent authority-side policy for unattended ESCALATE auto-approval
@@ -434,7 +442,7 @@ def build_governance_service(
 
     authority_policy = authority_policy_from_env(env)
     approvals = ApprovalService(approval_registry_from_env(env), approver_key,
-                                authority_policy=authority_policy)
+                                authority_policy=authority_policy, time_source=time_source)
 
     limits = {pat: [VelocityLimit.from_config(i) for i in items]
               for pat, items in PILOT_VELOCITY.items()}
@@ -497,7 +505,7 @@ def build_governance_service(
         revocation_registry=revocation, approvals=approvals,
         profiles=ProfileRegistry.default_pilot(), upstream=upstream, policy_hash=policy_hash,
         consensus_verifier=consensus_verifier, challenge_service=challenge_service,
-        pre_execution_control=pre_execution_control,
+        pre_execution_control=pre_execution_control, time_source=time_source,
     )
 
 
