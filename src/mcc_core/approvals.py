@@ -165,13 +165,53 @@ return 1
 """
 
 
+_CONSUME_LUA = """
+-- Security fix (red-team finding, 2026-10-27): consume() used to be
+-- GET -> (check APPROVED in Python) -> SET <id>:consumed NX -> SET <id>
+-- (blind overwrite). The APPROVED check and the state-check-then-NX-claim
+-- were two SEPARATE round trips: a concurrently-racing invalidate()/deny()
+-- (itself an atomic set_state() CAS) could complete in the window between
+-- consume()'s own stale read and its NX claim. consume() would then still
+-- win the (now-uncontested) :consumed key, and its blind final SET would
+-- overwrite the just-invalidated record back to CONSUMED -- destroying the
+-- invalidation and letting the coordinator proceed to actuate an operation
+-- that had just been revoked. This script performs the read, the
+-- single-use/state check, and the write as ONE atomic Redis operation,
+-- closing that window deterministically and eliminating the separate
+-- ":consumed" key (the record's own ``state`` field is now the single
+-- source of truth for single-use consumption, exactly like every other
+-- transition in this file).
+--
+-- Returns one of:
+--   {0}        not found (never existed, or its Redis TTL already expired)
+--   {1}        consumed successfully (was APPROVED; now CONSUMED)
+--   {2}        already consumed (replay) -- was already CONSUMED
+--   {3, state} wrong state (DENIED / INVALIDATED / EXPIRED) -- never
+--              consumable from here regardless of race outcome
+local cur = redis.call('GET', KEYS[1])
+if not cur then return {0} end
+local rec = cjson.decode(cur)
+if rec['state'] == 'CONSUMED' then return {2} end
+if rec['state'] ~= 'APPROVED' then return {3, rec['state']} end
+rec['state'] = 'CONSUMED'
+local ttl = tonumber(rec['expires_at']) - tonumber(rec['created_at'])
+if ttl < 1 then ttl = 1 end
+redis.call('SET', KEYS[1], cjson.encode(rec), 'EX', ttl)
+return {1}
+"""
+
+
 class RedisApprovalRegistry:
-    """Durable, multi-instance approval store. The record is a JSON value with a
-    TTL; the single-use consume is an atomic ``SET NX`` on a separate consume
-    key so exactly one caller can consume an approved request. State
-    transitions (``deny``/``invalidate``/the approve half-step) are an atomic
-    Lua compare-and-swap (see ``_SET_STATE_LUA``), not a separate GET/SET pair.
-    Fail-closed on any Redis error/timeout."""
+    """Durable, multi-instance approval store. The record is a JSON value with
+    a TTL. EVERY state transition -- ``deny``/``invalidate``/the approve
+    half-step (``_SET_STATE_LUA``) and the single-use ``consume`` (
+    ``_CONSUME_LUA``) -- is an atomic Lua compare-and-swap: one Redis
+    round trip that reads the current state, checks it, and writes the new
+    state, with no other command able to interleave. There is no separate
+    read-then-blind-write anywhere in this class, and no separate
+    ``:consumed`` side key -- the record's own ``state`` field is the single
+    source of truth for single-use consumption. Fail-closed on any Redis
+    error/timeout."""
 
     def __init__(self, redis_client: Any, *, namespace: str = "mcc:appr:",
                  op_timeout_seconds: float = DEFAULT_OP_TIMEOUT_SECONDS) -> None:
@@ -243,20 +283,28 @@ class RedisApprovalRegistry:
             return False
 
     async def consume(self, request_id: str, *, now: int) -> ConsumeResult:
-        rec = await self._load(request_id)
-        if rec is None:
-            return ConsumeResult(False, "approval not found")
-        if rec.state != ApprovalState.APPROVED.value:
-            return ConsumeResult(False, f"approval not consumable in state {rec.state}", rec.state)
+        """Atomically transition APPROVED -> CONSUMED, single-use, in ONE
+        Redis round trip (see ``_CONSUME_LUA``). Never reads the state in one
+        step and writes it in another: a concurrently-racing ``invalidate()``
+        (or ``deny()``) either fully precedes or fully follows this call --
+        there is no window in which this method's own write can observe a
+        state older than the current one and clobber it. Fail-closed (never
+        a silent success) on any Redis error/timeout or unexpected reply."""
         try:
-            won = await self._c(self._redis.set(self._k(request_id) + ":consumed", "1", nx=True))
+            res = await self._c(self._redis.eval(_CONSUME_LUA, 1, self._k(request_id)))
         except Exception:
             return ConsumeResult(False, "approval registry unavailable; fail-closed")
-        if won is not True:
+        if not isinstance(res, (list, tuple)) or not res:
+            return ConsumeResult(False, "approval registry unavailable; fail-closed")
+        code = res[0]
+        if code == 1:
+            return ConsumeResult(True, "consumed", ApprovalState.CONSUMED.value)
+        if code == 2:
             return ConsumeResult(False, "approval already consumed (replay)", ApprovalState.CONSUMED.value)
-        rec.state = ApprovalState.CONSUMED.value
-        await self._save(rec)
-        return ConsumeResult(True, "consumed", rec.state)
+        if code == 3:
+            state = res[1] if len(res) > 1 else None
+            return ConsumeResult(False, f"approval not consumable in state {state}", state)
+        return ConsumeResult(False, "approval not found")
 
 
 class ApprovalConfigError(Exception):
