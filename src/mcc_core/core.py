@@ -70,12 +70,32 @@ class DecisionEngine:
         auth_claims: Optional[Dict[str, Any]] = None,
         mandate_id: Optional[str] = None,
         evidence_digest: Optional[str] = None,
+        max_exp: Optional[int] = None,
     ) -> Dict[str, Any]:
         verdict = Verdict(verdict)
         if verdict not in EXECUTABLE_VERDICTS:
             raise TokenNotIssuable(f"{verdict.value} does not authorize execution")
 
         issued_at = int(now if now is not None else time.time())
+        # PR #122 round 6, Finding 1: a decision token must never carry MORE
+        # time-bounded execution authority than the source authority (a
+        # signed mandate or an approval-minted mandate) that justified it.
+        # ``self.token_ttl_seconds`` is a fixed, server-wide default,
+        # independent of any individual mandate/approval's own remaining
+        # validity -- without this clamp, a mandate with (say) 10 seconds
+        # left before its own ``exp`` could still justify a token valid for
+        # the full 60-second default, letting the newly issued token
+        # outlive the authority it was derived from. ``max_exp``, when
+        # supplied by a caller that verified such an authority (see
+        # ``MandateAuthorityDecision.mandate_exp``), only ever LOWERS the
+        # computed expiry, never raises it -- callers that pass no
+        # ``max_exp`` (e.g. the consensus path, which has no single
+        # mandate/approval to clamp against; each vote's own window is
+        # independently re-verified at actuation) get exactly the
+        # pre-existing behavior.
+        computed_exp = issued_at + self.token_ttl_seconds
+        if max_exp is not None:
+            computed_exp = min(computed_exp, int(max_exp))
         claims = {
             "iss": self.issuer,
             "sub": subject,
@@ -83,7 +103,7 @@ class DecisionEngine:
             "jti": str(uuid.uuid4()),
             "iat": issued_at,
             "nbf": issued_at,
-            "exp": issued_at + self.token_ttl_seconds,
+            "exp": computed_exp,
             "decision": verdict.value,
             "action": action,
             "action_hash": hash_action(action),

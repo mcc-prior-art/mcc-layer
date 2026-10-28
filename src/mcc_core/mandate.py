@@ -93,6 +93,12 @@ class MandateAuthorityDecision:
     mandate_id: Optional[str] = None
     forward_context: Dict[str, Any] = field(default_factory=dict)
     applied_changes: List[str] = field(default_factory=list)
+    # PR #122 round 6, Finding 1: the verified mandate's own ``exp``,
+    # carried forward from ``MandateResult.exp`` so a caller issuing a
+    # decision token under this authority (ALLOW/CONSTRAIN only -- DENY
+    # never issues a token) can clamp the token's exp to it. See
+    # ``DecisionEngine.issue_token``'s ``max_exp`` parameter.
+    mandate_exp: Optional[int] = None
 
 
 class MandateAuthority:
@@ -130,7 +136,7 @@ class MandateAuthority:
             return MandateAuthorityDecision(
                 Verdict.ALLOW, f"verified mandate {res.mandate_id}",
                 constraints=res.constraints, mandate_id=res.mandate_id,
-                forward_context=dict(context),
+                forward_context=dict(context), mandate_exp=res.exp,
             )
         constrained, changes = apply_constraints(res.constraints, context)
         if _constraint_violations(res.constraints, constrained):
@@ -142,7 +148,7 @@ class MandateAuthority:
         return MandateAuthorityDecision(
             Verdict.CONSTRAIN, f"mandate {res.mandate_id} bounds applied: {'; '.join(changes)}",
             constraints=res.constraints, mandate_id=res.mandate_id,
-            forward_context=constrained, applied_changes=changes,
+            forward_context=constrained, applied_changes=changes, mandate_exp=res.exp,
         )
 
 
@@ -159,6 +165,14 @@ class MandateResult:
     mandate_id: Optional[str] = None
     subject: Optional[str] = None
     constraints: Dict[str, Any] = field(default_factory=dict)
+    # PR #122 round 6, Finding 1: the verified mandate's own signed ``exp``
+    # (absolute expiry), present whenever ``ok`` is True. Lets a caller that
+    # goes on to issue a decision token under this mandate's authority
+    # clamp the token's OWN exp so it can never carry MORE time-bounded
+    # authority than the mandate that justified it -- see
+    # ``MandateAuthorityDecision.mandate_exp`` and
+    # ``DecisionEngine.issue_token``'s ``max_exp`` parameter.
+    exp: Optional[int] = None
 
 
 def _scope_match(value: Optional[str], scope: List[str]) -> bool:
@@ -267,6 +281,7 @@ class MandateVerifier:
             True, "MANDATE_VERIFIED",
             mandate_id=mandate["mandate_id"], subject=subject,
             constraints=dict(mandate.get("constraints", {})),
+            exp=exp,
         )
 
 

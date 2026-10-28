@@ -535,11 +535,23 @@ def _max_dispatch_staleness_from_env(env) -> Optional[float]:
         raise RuntimeError(
             f"MCC_MAX_DISPATCH_STALENESS_SECONDS={raw!r} is not a valid number"
         ) from exc
-    if value <= 0:
-        raise RuntimeError(
-            f"MCC_MAX_DISPATCH_STALENESS_SECONDS={value!r} must be positive (or 'off' to disable)"
-        )
-    return value
+    # PR #122 round 6, Finding 2: a bare ``value <= 0`` check does NOT catch
+    # NaN or infinity -- ``float("nan")`` and ``float("inf")``/``"Infinity"``
+    # all parse successfully without raising, and ``nan <= 0`` / ``inf <= 0``
+    # are both False, so both would have been ACCEPTED here. Downstream,
+    # ``staleness > nan`` and ``staleness > inf`` are ALWAYS False in Python
+    # -- either value would silently disable the dispatch-staleness
+    # protection entirely while still looking "configured" (as opposed to
+    # the explicit, honest ``off``/``0``/``disabled``/``none`` above).
+    # Delegates to the same helper RedisTimeSource already uses for its own
+    # threshold validation (mcc_core.trusted_time) -- one validated-
+    # positive-finite-seconds contract for every clock-trust threshold.
+    from mcc_core.trusted_time import TimeTrustConfigError, _validate_positive_finite
+
+    try:
+        return _validate_positive_finite(value, "MCC_MAX_DISPATCH_STALENESS_SECONDS")
+    except TimeTrustConfigError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def _build_pre_execution_control(env, nonce_registry, time_source=None):

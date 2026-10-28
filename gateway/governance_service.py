@@ -309,6 +309,11 @@ class GovernanceService:
             tenant_id=tenant_id, actor_id=actor, resource_id=resource,
             auth_claims=auth_claims, mandate_id=decision.mandate_id,
             evidence_digest=evidence_digest, now=now,
+            # PR #122 round 6, Finding 1: never let the issued token outlive
+            # the mandate (or, via execute_with_approval, the approval-
+            # minted mandate) that authorized it -- see
+            # MandateAuthorityDecision.mandate_exp / issue_token's max_exp.
+            max_exp=decision.mandate_exp,
         )
         # PR-3: the exact raw evidence artifact (when this token is
         # evidence-bound) follows the token down the SAME governed execution
