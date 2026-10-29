@@ -1,0 +1,26 @@
+{
+  "mode": "e2e",
+  "authority": "mandate",
+  "backend": "redis",
+  "sample_size": 500,
+  "concurrency": 1,
+  "warm_or_cold": "warmup: 50 discarded operations run first",
+  "actuator_calls_observed": 500,
+  "latency_seconds": {
+    "p50": 0.003462170999910086,
+    "p95": 0.005277874000057636,
+    "p99": 0.008166434999907324,
+    "p99_caveat": null,
+    "min": 0.002200238000000354,
+    "max": 0.009855390999973679
+  },
+  "throughput_ops_per_sec": 270.54349858420346,
+  "throughput_caveat": "computed from summed per-operation wall time under asyncio concurrency, NOT a dedicated-process wall-clock total-run throughput measurement",
+  "environment": {
+    "python_version": "3.11.17",
+    "platform": "Linux-6.18.44-fc-v185-x86_64-with-glibc2.39",
+    "cpu_count": 4,
+    "git_sha": "9f1c8a768a268cd0b534911b14215dab423db09a",
+    "timestamp_utc": "2026-10-29T07:51:25Z"
+  }
+}

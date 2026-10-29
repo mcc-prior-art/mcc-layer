@@ -1,0 +1,26 @@
+{
+  "mode": "auth",
+  "authority": null,
+  "backend": "memory",
+  "sample_size": 2000,
+  "concurrency": 1,
+  "warm_or_cold": "warmup: 200 discarded operations run first",
+  "actuator_calls_observed": null,
+  "latency_seconds": {
+    "p50": 0.00047225599996636447,
+    "p95": 0.0007444089999353309,
+    "p99": 0.0008318769999959841,
+    "p99_caveat": null,
+    "min": 0.00036529999999856955,
+    "max": 0.0034218409999766664
+  },
+  "throughput_ops_per_sec": 1883.9078859428444,
+  "throughput_caveat": "computed from summed per-operation wall time under asyncio concurrency, NOT a dedicated-process wall-clock total-run throughput measurement",
+  "environment": {
+    "python_version": "3.11.17",
+    "platform": "Linux-6.18.44-fc-v185-x86_64-with-glibc2.39",
+    "cpu_count": 4,
+    "git_sha": "9f1c8a768a268cd0b534911b14215dab423db09a",
+    "timestamp_utc": "2026-10-29T07:51:06Z"
+  }
+}
