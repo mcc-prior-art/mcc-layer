@@ -76,7 +76,7 @@ exactly once" assertion counts it too (`seen == ["executed"]`).
 | 9 | Concurrent cross-instance aggregate spend | **Real**: two independent Redis client connections, 10 concurrent reservations | Exactly 5 of 10 admitted against a 500/100 ceiling, every interleaving (`test_concurrent_cross_connection_spend_never_exceeds_aggregate_ceiling`) — extends the same property PR #124 already proved for delegation budgets |
 | 10 | Stale / rolled-back Redis clock | **Partially simulated**: real Redis, but the single `TIME` reply is forged (see §6) | `RedisTimeSource` raises `TimeTrustError`; coordinator BLOCKED before touching idempotency/velocity at all, zero actuator calls, nothing reserved (`test_stale_redis_clock_blocks_before_any_reservation_zero_actuator_calls`) |
 | 11 | Audit-write failure | **Simulated** (a real disk-full condition is impractical/unsafe to construct safely in a shared sandbox — see §6) | BLOCKED, zero actuator calls, reservation released; retry with a fresh authorization succeeds once the backend is healthy (`test_audit_write_failure_blocks_pre_dispatch_and_releases_reservation`) |
-| 12 | Network partition | **Approximation** (single host; see §6) — a real `iptables DROP` on the real redis-server's loopback port | Bounded client timeout → BLOCKED, zero actuator calls; rule removed and connectivity + a fresh operation verified afterward regardless of test outcome (`test_network_partition_approximation_blocks_closed_and_fully_recovers`) |
+| 12 | Network partition | **Approximation** (single host; see §6) — a real `iptables DROP` on the real redis-server's loopback port; **capability-gated** — skipped (not silently passed) on any runner where `iptables` is absent or usable-but-permission-denied (e.g. a standard GitHub Actions job container without `CAP_NET_ADMIN`/root), detected by a real read-only probe call, never by catching and ignoring the permission error | Where runnable (this PR's own dev sandbox, root): bounded client timeout → BLOCKED, zero actuator calls; rule removed and connectivity + a fresh operation verified afterward regardless of test outcome (`test_network_partition_approximation_blocks_closed_and_fully_recovers`) |
 
 Every "zero actuator calls" and "exactly once" claim above is a literal
 `assert seen == []` / `assert seen == ["executed"]` in the test file, not a
@@ -122,6 +122,18 @@ building its own evidence; no equivalent defect surfaced here.)
   fails closed", not "this system is safe under an asymmetric network
   partition between two real hosts, each still able to reach some but not
   all peers." Those are different failure classes.
+* **The iptables-based test is itself environment-capability-gated, and
+  will be skipped (not silently passed) on most CI runners.** A standard
+  GitHub Actions job container runs unprivileged and without
+  `CAP_NET_ADMIN`: `iptables` is present on `PATH` but every real
+  invocation fails with a permission error. `tests/ha/test_fault_matrix.py`
+  detects this with a real, read-only, side-effect-free probe call
+  (`iptables -L -n`) before the test runs — not by catching the permission
+  error inside the test and treating that as success — and skips with an
+  explicit reason when the probe fails. This PR's own dev sandbox ran as
+  root, so the test executed for real there (§3's "where runnable" note);
+  expect it to report as skipped on most CI infrastructure, which is the
+  honest outcome, not a gap this PR papers over.
 * **No Docker Compose multi-container exercise.** The Docker daemon was not
   running in the sandbox this PR was built in (`/var/run/docker.sock`
   absent). Every "two gateway instances" scenario in this PR is either two

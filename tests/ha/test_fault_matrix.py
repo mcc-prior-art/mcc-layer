@@ -60,7 +60,28 @@ from tests.ha._redis_lab import (  # noqa: E402
 
 run = asyncio.run
 pytestmark = pytest.mark.skipif(not REDIS_AVAILABLE, reason="redis-server binary not found on PATH")
-HAS_IPTABLES = shutil.which("iptables") is not None
+def _can_use_iptables() -> bool:
+    """A real, read-only capability PROBE, not just a PATH check:
+    ``shutil.which`` only confirms the binary exists, but a CI runner
+    without CAP_NET_ADMIN (or not running as root) has the binary present
+    and still fails every real invocation with a permission error. This
+    runs one genuinely harmless, side-effect-free call (``-L -n`` lists
+    the current ruleset; it writes nothing) and treats ANY failure --
+    missing binary, permission denied, no netfilter access in this
+    container -- as "cannot use iptables here", never as a reason to
+    weaken the test itself. Where this probe succeeds (this PR's own dev
+    sandbox, run as root), the real test below still runs for real and
+    must still fail on a genuine regression."""
+    if shutil.which("iptables") is None:
+        return False
+    try:
+        result = subprocess.run(["iptables", "-L", "-n"], capture_output=True, timeout=5)
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+HAS_IPTABLES = _can_use_iptables()
 WORKER = [sys.executable, "-m", "tests.ha._crash_worker"]
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -500,7 +521,12 @@ def test_audit_write_failure_blocks_pre_dispatch_and_releases_reservation(redis_
 #    docs/HA_SAFE_DEGRADATION.md -- this is not a true multi-host partition)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(not HAS_IPTABLES, reason="iptables not available in this sandbox")
+@pytest.mark.skipif(
+    not HAS_IPTABLES,
+    reason="iptables is not usable in this environment (missing binary, or present but lacking "
+           "CAP_NET_ADMIN/root -- e.g. a standard GitHub Actions runner job container); "
+           "NOT TESTED here, not a pass -- see docs/HA_SAFE_DEGRADATION.md",
+)
 def test_network_partition_approximation_blocks_closed_and_fully_recovers(redis_server):
     """Genuinely drops every loopback TCP packet to the real redis-server's
     port via a real ``iptables`` rule for the duration of one operation --
