@@ -9,6 +9,7 @@ This directory holds versioned, point-in-time security governance documents that
 | [`MCC_CORE_STRATEGIC_ROADMAP_v1.2.md`](./MCC_CORE_STRATEGIC_ROADMAP_v1.2.md) | v1.2 | 28 October 2026 | Approved working engineering direction, published verbatim |
 | [`MCC_CORE_THREAT_MODEL_v1.0.md`](./MCC_CORE_THREAT_MODEL_v1.0.md) | v1.0 | 28 October 2026 | Proposed for independent review, published verbatim |
 | [`PR122_POST_MERGE_ADDENDUM.md`](./PR122_POST_MERGE_ADDENDUM.md) | — | 29 October 2026 | Post-merge status update to the two documents above; see that file's own scope note |
+| [`PR124_P1_COMPLETION_ADDENDUM.md`](./PR124_P1_COMPLETION_ADDENDUM.md) | — | 29 October 2026 | Post-merge status update: P1 (Verifiable Delegation & Intent Binding, PR #124) merged; P2-A/P2-B next; see that file's own scope note |
 
 ## Relationship to other `docs/` security content
 
