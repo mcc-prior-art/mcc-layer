@@ -1,0 +1,44 @@
+{
+  "label": "before_n100",
+  "seeded_entries": 100,
+  "file_size_bytes_at_start": 26833,
+  "samples": 100,
+  "read_last_entry_seconds": {
+    "sample_size": 100,
+    "p50": 4.1849000012916804e-05,
+    "p95": 7.069700006923085e-05,
+    "p99": 7.408300007227808e-05,
+    "p99_caveat": null,
+    "min": 3.830699995432951e-05,
+    "max": 9.395799997946597e-05,
+    "mean": 4.53003800055285e-05
+  },
+  "append_seconds": {
+    "sample_size": 100,
+    "p50": 0.0003282899999703659,
+    "p95": 0.0005295780000551531,
+    "p99": 0.0005656050000197865,
+    "p99_caveat": null,
+    "min": 0.00022920200001408375,
+    "max": 0.0010692800000242642,
+    "mean": 0.0003515372200058664
+  },
+  "raw_fsync_seconds": {
+    "sample_size": 100,
+    "p50": 0.00015953500007981347,
+    "p95": 0.0002713810000614103,
+    "p99": 0.0004001029999471939,
+    "p99_caveat": null,
+    "min": 0.00010935499994957354,
+    "max": 0.0006220599999551268,
+    "mean": 0.0001723969499937539
+  },
+  "environment": {
+    "python_version": "3.11.17",
+    "platform": "Linux-6.18.44-fc-v185-x86_64-with-glibc2.39",
+    "cpu_count": 4,
+    "git_sha": "6f71950a6e5d85d560f15dc8a01d2f5598523a4f",
+    "audit_py_locally_modified": false,
+    "timestamp_utc": "2026-10-29T15:14:13Z"
+  }
+}

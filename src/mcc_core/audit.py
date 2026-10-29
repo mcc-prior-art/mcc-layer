@@ -12,10 +12,14 @@ appending, and fsyncing. No in-memory ``prev_hash`` is ever authoritative
 across processes -- ``self.prev_hash`` is retained only as a best-effort
 local cache (used for diagnostics and the constructor's initial value);
 every real append re-reads the true chain head from disk while holding
-the lock. A write/flush/fsync failure partway through an append rolls
-back any bytes already handed to the OS before re-raising, so a caller
-that sees a failed append never has to reconcile against a phantom
-record left visible on disk.
+the lock -- via ``_tail_last_nonblank_line()``, a backward-seeking tail
+read (O(size of the last entry), not O(file size); see
+docs/AUDITLOG_OPTIMIZATION.md), never a cached offset or line count
+substituted for actually re-reading the real last line under the lock.
+A write/flush/fsync failure partway through an append rolls back any
+bytes already handed to the OS before re-raising, so a caller that sees
+a failed append never has to reconcile against a phantom record left
+visible on disk.
 """
 
 from __future__ import annotations
@@ -42,6 +46,88 @@ LEGACY_GENESIS_HASH = "genesis"
 # main.py, and src/mcc_core/coordinator.py), not hang the request.
 DEFAULT_LOCK_TIMEOUT_SECONDS = 10.0
 _LOCK_POLL_INTERVAL_SECONDS = 0.02
+
+# Tail-read tuning for _tail_last_nonblank_line(): start small (most audit
+# entries are far smaller than this), double on each backward-seek retry
+# so a pathologically large last entry is still found in O(log n) reads,
+# capped so one retry never reads an unbounded amount in one shot.
+_TAIL_INITIAL_CHUNK_BYTES = 4096
+_TAIL_MAX_CHUNK_BYTES = 1 << 20
+
+
+def _tail_last_nonblank_line(path: str) -> "bytes | None":
+    """Return the last line in ``path`` whose ``.strip()`` is non-empty, as
+    raw bytes, reading only as much of the file's TAIL as needed -- O(size
+    of the last entry + any trailing blank lines), never O(file size).
+    This is the performance-critical replacement for a full forward scan
+    (see docs/AUDITLOG_OPTIMIZATION.md for the before/after measurement
+    and tests/test_audit_tail_read.py for the differential test proving
+    this returns byte-identical results to a full forward scan for every
+    case that matters to _read_last_entry()'s contract).
+
+    Raises ``FileNotFoundError`` / other ``OSError`` exactly as opening
+    and reading the whole file would (same syscalls, just fewer bytes).
+
+    Never returns a line whose start was not actually read from disk: a
+    line is only considered found once it is bounded on both sides by a
+    real ``\\n`` byte actually present in what has been read so far, or by
+    true end-of-file on the right and (after growing to read the whole
+    file) true start-of-file on the left. A chunk-boundary split can
+    never be mistaken for a short line -- it is simply re-read with more
+    context on the next, larger retry.
+
+    Deliberate, documented scope narrowing vs. the old full-file scan:
+    this function does not inspect bytes earlier in the file than the
+    tail it actually needs. If an EARLIER line (not the last non-blank
+    one) contains invalid UTF-8, the old O(n) implementation would
+    incidentally decode-fail on it while scanning past it forward -- a
+    side effect of reading every byte, never a documented guarantee
+    (``AuditCorruptionError``'s own docstring is specifically about the
+    LAST record). That historical-corruption detection is, and remains,
+    ``verify_chain()``'s job (a full, explicit, on-demand scan) -- this
+    function and ``verify_chain()`` are not the same operation and were
+    never meant to be. The decoding of the chosen LAST non-blank line
+    itself is unaffected: this function returns it as raw bytes exactly
+    as the old implementation's line iterator would have handed it to
+    the caller as a (lazily-decoded) str, and the caller decodes it the
+    same way, so a corrupt last line still fails the same way it always
+    did.
+    """
+    with open(path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        file_size = fh.tell()
+        if file_size == 0:
+            return None
+
+        chunk_size = _TAIL_INITIAL_CHUNK_BYTES
+        pos = file_size
+        buf = b""
+        while True:
+            read_size = min(chunk_size, pos)
+            pos -= read_size
+            fh.seek(pos)
+            buf = fh.read(read_size) + buf
+
+            lines = buf.split(b"\n")
+            # lines[0] is only a COMPLETE line if this read reached the
+            # true start of the file (pos == 0); otherwise an earlier,
+            # not-yet-read byte could still belong to it, so it is
+            # skipped until a retry proves otherwise. Every other element
+            # is bounded on the left by a real '\n' actually in `buf`
+            # and on the right by either another real '\n' or true EOF
+            # (the very first iteration always starts the read anchored
+            # at the true end of the file), so all of them are safe.
+            safe_start = 0 if pos == 0 else 1
+            for candidate in reversed(lines[safe_start:]):
+                if candidate.strip():
+                    return candidate
+
+            if pos == 0:
+                # The entire file has now been read and contains nothing
+                # but blank lines.
+                return None
+
+            chunk_size = min(chunk_size * 2, _TAIL_MAX_CHUNK_BYTES) if chunk_size < _TAIL_MAX_CHUNK_BYTES else chunk_size
 
 
 class AuditLockError(Exception):
@@ -85,11 +171,7 @@ class AuditLog:
 
     def _read_last_entry(self, *, tolerate_parse_errors: bool) -> "Dict[str, Any] | None":
         try:
-            last_line = None
-            with open(self.path, "r", encoding="utf-8") as fh:
-                for line in fh:
-                    if line.strip():
-                        last_line = line
+            last_line_bytes = _tail_last_nonblank_line(self.path)
         except FileNotFoundError:
             return None
         except OSError:
@@ -104,8 +186,16 @@ class AuditLog:
                 return None
             raise
 
-        if not last_line:
+        if not last_line_bytes:
             return None
+        # Decoded here, not inside the tail-read helper -- this is exactly
+        # where the old forward-scan's lazy per-line text-mode decoding
+        # would have raised for this same line, so a UnicodeDecodeError
+        # here propagates the same way it always did (raw, NOT wrapped as
+        # AuditCorruptionError below -- that wrapping only ever actually
+        # fires for json.JSONDecodeError; see the class's own history,
+        # unchanged by this optimization).
+        last_line = last_line_bytes.decode("utf-8")
         try:
             return json.loads(last_line)
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
