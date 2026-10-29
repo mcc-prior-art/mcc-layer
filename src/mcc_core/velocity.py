@@ -217,6 +217,19 @@ class VelocityOutcome:
     reason: str
     reserved: bool
     breaches: List[str] = field(default_factory=list)
+    # The exact ``now`` this reservation was actually stored under --
+    # whatever the caller passed, or (when the caller passed ``now=None``,
+    # the production shape) whatever this registry resolved internally.
+    # A caller that must later release THIS SPECIFIC reservation needs to
+    # pass this exact value back to ``release()``, not re-resolve its own:
+    # both registries correlate release-by-timestamp, and two independent
+    # ``time.monotonic()``/``time.time()`` calls microseconds apart are
+    # essentially never equal -- passing a freshly-resolved ``now`` to
+    # ``release()`` instead of this one silently fails to find the event,
+    # leaking the reservation until the sliding window ages it out. Only
+    # populated on a successful reservation (``reserved=True``); ``None``
+    # otherwise (nothing to correlate a release against).
+    now: Optional[float] = None
 
     @property
     def ok(self) -> bool:
@@ -315,7 +328,7 @@ class InMemoryVelocityRegistry:
             "amount": descriptor.amount if use_amount else None,
             "destination": descriptor.destination,
         })
-        return VelocityOutcome(Verdict.ALLOW, f"within velocity limit '{limit.name}'", True)
+        return VelocityOutcome(Verdict.ALLOW, f"within velocity limit '{limit.name}'", True, now=now)
 
     async def release(
         self, limit: VelocityLimit, descriptor: VelocityDescriptor, *, now: Optional[float] = None
@@ -463,7 +476,7 @@ class RedisVelocityRegistry:
                 reserved=False,
             )
         if ok:
-            return VelocityOutcome(Verdict.ALLOW, f"within velocity limit '{limit.name}'", True)
+            return VelocityOutcome(Verdict.ALLOW, f"within velocity limit '{limit.name}'", True, now=now)
         breaches = [b for b in str(detail).split("; ") if b]
         return VelocityOutcome(
             limit.on_exceed,

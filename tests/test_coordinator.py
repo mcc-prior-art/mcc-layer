@@ -21,6 +21,7 @@ from mcc_core import (
     RedisIdempotencyRegistry,
     ReserveStatus,
     SigningKey,
+    VelocityDescriptor,
     VelocityLimit,
     Verdict,
 )
@@ -59,13 +60,13 @@ def build(tmp_path, *, limits=None, idempotency=None, velocity=None):
     return engine, coord, audit
 
 
-def payment(engine, *, idem, amount=1000, actor="actor-1", txn=None, beneficiary="ben-1", tenant="tenant-1"):
+def payment(engine, *, idem, amount=1000, actor="actor-1", txn=None, beneficiary="ben-1", tenant="tenant-1", now=NOW):
     ctx = {"source": "acct-1", "beneficiary_id": beneficiary, "amount": amount, "currency": "usd"}
     payload = PROFILE.canonical_payload(ctx)
     token = engine.issue_token(
         verdict="ALLOW", subject=actor, action="send_payment", payload=payload,
         transaction_id=txn or idem, idempotency_key=idem, actor_id=actor,
-        resource_id="acct-1", auth_claims=PROFILE.auth_claims(ctx), now=NOW,
+        resource_id="acct-1", auth_claims=PROFILE.auth_claims(ctx), now=now,
         tenant_id=tenant,
     )
     return token, payload
@@ -180,6 +181,50 @@ def test_concurrent_aggregate_race_never_overspends(tmp_path):
     results = run(race())
     executed = [r for r in results if r.status == ActuationStatus.EXECUTED]
     assert len(executed) * 3000 <= 10000  # ceiling never bypassed
+
+
+def test_velocity_release_matches_its_own_reservation_in_production_shape(tmp_path):
+    """Regression: reserve()/release() each resolve their OWN fresh clock
+    reading whenever the caller passes ``now=None`` -- the universal
+    production shape (the coordinator is never called with an explicit
+    ``now`` in production; see test_velocity.py's static call-site guard).
+    Both registries correlate a release to its reservation by exact
+    timestamp equality, so re-resolving a fresh ``now`` at release time
+    (instead of carrying back the exact value the reservation was stored
+    under) makes the release silently no-op: it reports success but leaves
+    the reservation in place, leaking budget until the window ages it out.
+
+    This drives TWO limits through the coordinator with ``now`` omitted
+    entirely end-to-end (real wall-clock issuance + real wall-clock
+    enforcement, not the fixed ``NOW`` constant every other test in this
+    file uses). The first limit's reservation succeeds; the second,
+    tiny limit then breaches and aborts the operation pre-dispatch, which
+    must genuinely release the first limit's reservation. A direct
+    follow-up reservation against the first limit for its full ceiling
+    then proves whether the earlier reservation actually went away.
+    """
+    small = VelocityLimit(name="small", window_seconds=3600, max_amount=10_000,
+                          aggregate_by=("actor",))
+    tiny = VelocityLimit(name="tiny", window_seconds=3600, max_amount=1,
+                         aggregate_by=("actor",))
+    engine, coord, audit = build(tmp_path, limits=[small, tiny])
+
+    token, payload = payment(engine, idem="op-1", amount=100, now=None)
+    res = run(coord.enforce(token=token, action="send_payment", payload=payload,
+                            executor=runner([])))  # now omitted: production shape
+    assert res.status == ActuationStatus.BLOCKED
+    assert "tiny" in res.reason.lower()
+
+    # If `small`'s reservation from the blocked attempt above was genuinely
+    # released, its full 10_000 ceiling is still free to reserve in one
+    # shot. If it leaked (the pre-fix bug), this over-reserves and DENYs.
+    descriptor = VelocityDescriptor(
+        dimensions={"actor": "actor-1"}, amount=10_000.0, currency="USD",
+        destination="ben-1",
+    )
+    outcome = run(coord.velocity.reserve(small, descriptor, now=None))
+    assert outcome.verdict == Verdict.ALLOW
+    assert outcome.ok
 
 
 # ---- Fail-closed ----

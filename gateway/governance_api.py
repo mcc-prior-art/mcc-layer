@@ -458,6 +458,16 @@ def build_governance_service(
     # plus an N-of-M threshold. Disabled (None) unless a config is provided.
     consensus_verifier = _build_consensus_verifier(env)
 
+    # Verifiable Delegation (owner-to-agent): a dedicated owner trust root,
+    # loaded from its OWN config file via its OWN env var -- deliberately
+    # never the gateway's mandate/approval ``trust_set`` or the consensus
+    # evaluator trust config built above. This is what makes self-issuance
+    # architecturally impossible for an agent to forge, not merely
+    # discouraged by convention. Disabled (None) unless configured; every
+    # call to ``execute_with_delegation`` then fails closed ("not
+    # configured") rather than falling back to any other trust source.
+    delegation_verifier = _build_delegation_verifier(env, revocation, time_source)
+
     # Mandatory consensus: when MCC_REQUIRE_CONSENSUS is set, the coordinator
     # refuses to actuate any governed action without a valid N-of-M consensus
     # bound to the token. Refuse fail-open startup: require a verifier to exist.
@@ -508,6 +518,7 @@ def build_governance_service(
         profiles=ProfileRegistry.default_pilot(), upstream=upstream, policy_hash=policy_hash,
         consensus_verifier=consensus_verifier, challenge_service=challenge_service,
         pre_execution_control=pre_execution_control, time_source=time_source,
+        delegation_verifier=delegation_verifier,
     )
 
 
@@ -617,4 +628,34 @@ def _build_consensus_verifier(env):
     return ConsensusVerifier(
         trusted_keys=trust.active_trusted_keys(now=int(time.time())),
         policy=ConsensusPolicy(threshold=threshold),
+    )
+
+
+def _build_delegation_verifier(env, revocation, time_source):
+    """Load the owner trust root for Verifiable Delegation from its own,
+    dedicated config file (``MCC_DELEGATION_OWNER_TRUST_CONFIG``) -- reusing
+    the same strict ``TrustSet``/``load_trust_config`` loader the consensus
+    evaluator trust config above uses, but as an entirely separate TrustSet
+    instance. Never falls back to the gateway's mandate/approval trust_set or
+    to the consensus trust config: those are different trust domains (a
+    business-partner mandate issuer or an evaluator is not an owner).
+    Disabled (returns None) unless configured -- ``execute_with_delegation``
+    then fails closed rather than silently accepting any key.
+    """
+    import json
+    from pathlib import Path
+
+    from mcc_core import DelegationVerifier
+    from .trust import load_trust_config
+
+    path = env.get("MCC_DELEGATION_OWNER_TRUST_CONFIG", "").strip()
+    if not path:
+        return None
+    trust = load_trust_config(json.loads(Path(path).read_text(encoding="utf-8")))
+    import time
+
+    return DelegationVerifier(
+        trusted_owner_keys=trust.active_trusted_keys(now=int(time.time())),
+        revocation_registry=revocation,
+        time_source=time_source,
     )
