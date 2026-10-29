@@ -84,20 +84,106 @@ This is judged the more conservative choice available, not a weaker one:
 the alternative (keep reading the whole file, just to preserve an
 undocumented side effect) would defeat the entire optimization.
 
+### 2.3 Round 2 correction: two real behavioral regressions found and fixed
+
+An independent review of the initial version of this PR (commit `b3bd9ad`)
+identified two genuine behavioral differences between the old text-mode
+scan and the new binary tail-read, both now fixed in this PR's head commit:
+
+1. **Unicode whitespace blankness.** The old implementation read the file
+   in **text mode** (`open(path, "r", encoding="utf-8")`) and tested each
+   line with `str.strip()`, which is Unicode-whitespace-aware (e.g. NBSP
+   `U+00A0`, EM SPACE `U+2003`, IDEOGRAPHIC SPACE `U+3000`, LINE SEPARATOR
+   `U+2028` are all `.isspace()`-true and stripped). The first version of
+   the tail-read worked on raw **bytes** and used `bytes.strip()`, which
+   only strips ASCII whitespace — a line containing only encoded Unicode
+   whitespace was *not* blank to `bytes.strip()`. A line consisting solely
+   of such a character, immediately after a real last entry, would have
+   been wrongly treated as data and skipped the real entry, or (worse) a
+   real entry's own `note`-style field value containing those characters
+   needed to be proven NOT to trigger the opposite failure once fixed (see
+   below).
+2. **Newline-separator semantics.** Python text-mode file objects use
+   *universal newlines*: `\r\n`, bare `\r`, and bare `\n` are all treated
+   as line terminators. The first version of the tail-read split only on
+   literal `b"\n"`, so content using bare-`\r` or mixed separators would be
+   parsed into a different set of "lines" than the old implementation ever
+   saw.
+
+**The fix** (still no full-file scan): each backward-read candidate line
+is now split using `_NEWLINE_RE = re.compile(rb"\r\n|\r|\n")` (the `\r\n`
+alternative is tried first so a CRLF pair is never split into two empty
+separators — the same three-way equivalence universal-newlines text mode
+gives), and blankness is tested by decoding the candidate as UTF-8 and
+calling `str.strip()` on the result — exactly the old implementation's
+semantics — with one explicit rule: if the candidate fails to decode as
+UTF-8, it is treated as **not blank** (i.e. selected and returned
+immediately), because invalid UTF-8 was never considered "whitespace" by
+the old implementation either, and this preserves the existing, already-
+tested `UnicodeDecodeError` propagation contract in §2.1 unchanged. The
+chunk-boundary-safety argument in §2 is unaffected: it only assumes the
+right edge of the backward-accumulated buffer is true EOF and the left
+edge is untrusted until `pos == 0`, which holds regardless of separator
+length (1 or 2 bytes) or how blankness is tested on an already-isolated
+candidate line.
+
+**The test oracle itself was also wrong, and had to be fixed first.** The
+differential reference kept in `tests/test_audit_tail_read.py` for round 1
+was itself a **binary-mode approximation** (`open(path, "rb")` +
+`bytes.strip()`) rather than the true original behavior — which is
+precisely why it did not catch either regression above; it shared the same
+blind spots as the code it was meant to validate. It has been replaced with
+the actual original **text-mode** implementation
+(`open(path, "r", encoding="utf-8")`, `str.strip()`), and one existing test
+(`test_corrupted_last_line_invalid_utf8_raises_identically`) was updated
+because the corrected reference now raises `UnicodeDecodeError` directly
+from its own text-mode iteration (matching production's real behavior)
+instead of returning raw bytes as the flawed binary oracle did.
+
+Nine new test groups were added to `tests/test_audit_tail_read.py` driving
+the *corrected* reference: Unicode-whitespace-only trailing lines (single,
+multiple, and mixed with plain blank lines, parametrized over all four
+characters above); bare-`\r` and `\r\n`-separated entries; mixed newline
+conventions within one file; both of the above deliberately straddling the
+tail-read's chunk-size boundary (`±1/2/3` bytes); and a 200-trial fuzz
+corpus mixing all three separators with Unicode-whitespace padding. A
+companion test was added to
+`tests/test_audit_optimization_regression.py`
+(`test_unicode_whitespace_as_json_value_is_not_mistaken_for_a_blank_line`)
+proving the opposite direction: Unicode whitespace characters present as
+an ordinary JSON **value** inside a real, well-formed entry are correctly
+treated as data, not as a blank line to skip past — guarding against ever
+overcorrecting in the other direction.
+
+**Non-vacuity of the fix itself was verified directly**, not just the
+tests passing: with only the production fix reverted (via a scoped `git
+stash` of `src/mcc_core/audit.py` alone, test files untouched), re-running
+the updated test suite produced **26 real failures** — exactly the new and
+Unicode/CR-sensitive tests — against the pre-fix code; restoring the fix
+returned the suite to all passing. This confirms the new tests are not
+vacuously true against the fixed code; they actually distinguish the fixed
+implementation from the regressed one.
+
 ## 3. Non-vacuity: proving the replacement is equivalent
 
-`tests/test_audit_tail_read.py` keeps the OLD forward-scan algorithm as a
-test-only reference implementation (never shipped in production code,
-clearly labeled) and differentially compares it against the new tail-read
-over: empty files; blank-only files; single entries with/without a
-trailing newline; many entries with 0/1/2/5/20 trailing blank lines;
-non-ASCII UTF-8 content (including content deliberately sized to straddle
-the tail-read's chunk-size boundary at ±1/2/3 bytes); a corrupted last line
-(invalid JSON, and separately invalid UTF-8); files from 1 KB to ~2 MB; and
-a 200-trial randomized fuzz corpus. A separate test instruments actual
-bytes read from disk against a ~2 MB, 200,000-entry file and asserts the
-tail-read pulls under 200 KB total — proving the read pattern is genuinely
-bounded, not just "fast in practice." **27/27 of these tests pass.**
+`tests/test_audit_tail_read.py` keeps the TRUE original text-mode
+forward-scan algorithm as a test-only reference implementation (never
+shipped in production code, clearly labeled; see §2.3 for why the round-1
+version of this reference was itself corrected) and differentially
+compares it against the new tail-read over: empty files; blank-only files;
+single entries with/without a trailing newline; many entries with
+0/1/2/5/20 trailing blank lines; non-ASCII UTF-8 content (including
+content deliberately sized to straddle the tail-read's chunk-size boundary
+at ±1/2/3 bytes); a corrupted last line (invalid JSON, and separately
+invalid UTF-8); files from 1 KB to ~2 MB; a 200-trial randomized fuzz
+corpus; Unicode-whitespace-only trailing lines; bare-`\r`/`\r\n`/mixed
+newline separators; both of the newline/whitespace cases straddling the
+chunk boundary; and a second 200-trial fuzz corpus mixing all three
+separators with Unicode-whitespace padding (§2.3). A separate test
+instruments actual bytes read from disk against a ~2 MB, 200,000-entry
+file and asserts the tail-read pulls under 200 KB total — proving the read
+pattern is genuinely bounded, not just "fast in practice." **54/54 of
+these tests pass** (27 from round 1 + 27 added in the round-2 correction).
 
 ## 4. Before/after measurement
 
@@ -159,9 +245,28 @@ unavoidable, and UNCHANGED `fsync` floor (~130–200 µs) increasingly
 dominating total latency as the scan cost is removed, not a limitation of
 the fix.
 
+### 4.1 Round 2 sanity re-check: scaling is still O(tail) after the fix
+
+The round-2 fix (§2.3) adds a small, constant amount of work per
+backward-read candidate line (a regex split instead of a literal-`\n`
+split, plus a UTF-8 decode before the blankness check) — this cannot
+change the read's complexity class, but was re-measured directly rather
+than assumed. Re-running the identical benchmark at 50,000 seeded entries
+against this PR's corrected HEAD
+(`benchmarks/results/audit_after_round2_fix_n50000.json`) gives
+`_read_last_entry` p50 = **37.7 µs** (p95 = 58.5 µs) — slightly higher than
+the round-1 post-optimization figure in the table above (19.6 µs, as
+expected: the fix does strictly more work per candidate), but still
+**~246× faster than the pre-optimization baseline** (9289.7 µs) at the
+same file size, and flat relative to file size exactly as before (it does
+not scale with the 13.6 MB file size at all — it is dominated by the fixed
+per-candidate decode/regex cost, not by anything that grows with `n`).
+The complexity-class change from §4's growth-rate analysis is therefore
+unaffected by the round-2 correction.
+
 ## 5. Adversarial regression coverage
 
-`tests/test_audit_optimization_regression.py` (10 tests, all using real OS
+`tests/test_audit_optimization_regression.py` (11 tests, all using real OS
 processes where the property being tested is cross-process, never an
 in-process simulation of a cross-process concern):
 
@@ -177,9 +282,10 @@ in-process simulation of a cross-process concern):
 | `test_lock_timeout_behavior_unchanged` | `AuditLockError`'s timeout is unchanged by this PR |
 | `test_stale_in_memory_prev_hash_is_never_used_for_a_real_append` | A deliberately-staled in-memory cache is proven, by actual chain content, never to leak into a real write |
 | `test_governed_stack_actuator_call_counts_unaffected_by_the_optimization` | A DENY still yields zero actuator calls and an ALLOW still yields exactly one, through the real coordinator, with the optimized `AuditLog` backing it |
+| `test_unicode_whitespace_as_json_value_is_not_mistaken_for_a_blank_line` (round 2) | A real entry whose JSON value contains Unicode whitespace characters is appended, read back, and chained correctly — proves the round-2 Unicode-blankness fix (§2.3) does not overcorrect and swallow legitimate data |
 
-All 10 pass. Combined with the 27 differential tests in §3, this PR adds
-**37 new tests**, all passing.
+All 11 pass. Combined with the 54 differential tests in §3, this PR adds
+**65 new tests**, all passing.
 
 ## 6. Exit-gate matrix
 
@@ -198,6 +304,10 @@ All 10 pass. Combined with the 27 differential tests in §3, this PR adds
 | Zero unauthorized actuator calls | **PASS** — §5 last row |
 | Full regression suite unaffected | **PASS** — see PR description for the exact run on this PR's head |
 | `make verify-assurance` (independent-assurance + TLA+ + mutation) unaffected | **PASS** — see PR description |
+| Round 2: Unicode-whitespace blankness matches original text-mode semantics | **PASS** — §2.3, `tests/test_audit_tail_read.py` Unicode-whitespace groups |
+| Round 2: universal-newline (`\r`/`\r\n`/`\n`) equivalence matches original text-mode semantics | **PASS** — §2.3, `tests/test_audit_tail_read.py` CR/CRLF groups |
+| Round 2: fix does not overcorrect and swallow legitimate Unicode-whitespace data | **PASS** — §2.3, `test_unicode_whitespace_as_json_value_is_not_mistaken_for_a_blank_line` |
+| Round 2: differential-test oracle itself verified to be the true original semantics, not an approximation | **PASS** — §2.3 |
 | True power-loss-before-fsync durability (not just process death) | **NOT PROVEN** — this sandbox cannot safely simulate real power loss / page-cache eviction; `test_crash_before_fsync_leaves_a_recoverable_consistent_file` proves process-death recovery, which is a real but narrower guarantee (see §7) |
 | Dedicated-hardware / production-scale throughput numbers | **NOT PROVEN** — shared sandbox host only, explicitly not an SLA (§4, §7) |
 
@@ -230,3 +340,42 @@ All 10 pass. Combined with the 27 differential tests in §3, this PR adds
 - **No change was made to, or benchmark taken of, `verify_chain()`** — it
   remains a full scan by design (an on-demand, offline integrity check, not
   a hot path), and this PR does not claim anything about its performance.
+- **Historical (non-last-line) corruption detection limitation, restated
+  precisely.** As disclosed in §2.2 and pinned down by
+  `test_corrupted_non_last_line_is_not_detected_by_tail_read_but_is_by_verify_chain`,
+  the hot path (`append()`/constructor-time read) no longer incidentally
+  detects byte-level corruption or chain tampering in any line **other
+  than** the current last non-blank line, because it no longer reads those
+  bytes at all. This was never a documented guarantee of the hot path
+  (`AuditCorruptionError`'s contract is scoped to the last record), but it
+  was a real, if accidental, side effect of the old O(n) scan that this PR
+  removes. Operationally this means: a file that develops historical
+  corruption (e.g. partial disk corruption of an old record, or a tampered
+  `prev_hash` several entries back) will not cause any error on ordinary
+  `append()` calls going forward — only an explicit `verify_chain()` call,
+  or an attempt to append on top of a corrupted *last* line, will catch it.
+
+  **Proposed integrity-verification control (documentation/proposal only —
+  deliberately NOT implemented in this PR).** To close this gap without
+  reintroducing O(n) cost on the hot `append()` path, operators should run
+  `AuditLog.verify_chain(path)` — which already exists, is already a full
+  scan, and is already exercised by this PR's own tests — from a location
+  **off** the per-append hot path:
+    - at process/service **startup**, once, before the first `append()`
+      (catches corruption inherited from a prior crash or external
+      tampering before any new writes build on top of it);
+    - from a periodic **scheduled health-check job** (e.g. the existing
+      `/ready` readiness-probe infrastructure referenced in
+      `gateway/governance_service.py`, or a cron/sidecar process), at an
+      interval an operator chooses based on audit-file growth rate and
+      acceptable detection latency;
+    - optionally, incrementally — `verify_chain()` could in principle be
+      extended to accept a last-verified offset/hash checkpoint and only
+      scan the bytes appended since, turning a "full rescan every time"
+      control into an "amortized incremental" one — but that is a
+      **separate, future change** to `verify_chain()` itself, not
+      something this PR implements or claims; it is noted here only as
+      the shape a lower-cost version of this control could take.
+  This keeps the integrity check real, independent, and already-proven
+  (§3, §5), while keeping it off the latency-sensitive path this PR was
+  created to fix.

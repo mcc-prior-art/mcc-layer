@@ -30,6 +30,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, List
@@ -54,27 +55,63 @@ _LOCK_POLL_INTERVAL_SECONDS = 0.02
 _TAIL_INITIAL_CHUNK_BYTES = 4096
 _TAIL_MAX_CHUNK_BYTES = 1 << 20
 
+# Matches Python text-mode's own universal-newlines rule: \r\n, bare \r, and
+# bare \n are all equivalent line separators. \r\n MUST be tried before bare
+# \r in the alternation so a CRLF pair is never mistaken for two separators
+# (one \r, one \n). See _tail_last_nonblank_line's docstring -- this was
+# added to fix a real regression (round 2 of this change) where the
+# original replacement split only on literal b"\n" and so treated a
+# CR-only- or CRLF-separated file as a single unsplit line, unlike the
+# original text-mode scan it replaced.
+_NEWLINE_RE = re.compile(rb"\r\n|\r|\n")
+
 
 def _tail_last_nonblank_line(path: str) -> "bytes | None":
-    """Return the last line in ``path`` whose ``.strip()`` is non-empty, as
-    raw bytes, reading only as much of the file's TAIL as needed -- O(size
-    of the last entry + any trailing blank lines), never O(file size).
-    This is the performance-critical replacement for a full forward scan
-    (see docs/AUDITLOG_OPTIMIZATION.md for the before/after measurement
-    and tests/test_audit_tail_read.py for the differential test proving
-    this returns byte-identical results to a full forward scan for every
-    case that matters to _read_last_entry()'s contract).
+    """Return the last line in ``path`` whose decoded, stripped text is
+    non-empty, as raw bytes, reading only as much of the file's TAIL as
+    needed -- O(size of the last entry + any trailing blank lines), never
+    O(file size). This is the performance-critical replacement for a full
+    forward scan (see docs/AUDITLOG_OPTIMIZATION.md for the before/after
+    measurement and tests/test_audit_tail_read.py for the differential test
+    proving this returns byte-identical results to the TRUE original
+    text-mode forward scan for every case that matters to
+    _read_last_entry()'s contract).
 
     Raises ``FileNotFoundError`` / other ``OSError`` exactly as opening
     and reading the whole file would (same syscalls, just fewer bytes).
 
+    Blankness is tested the same way the original text-mode scan tested it
+    -- by decoding each candidate as UTF-8 and calling ``str.strip()``,
+    which (unlike ``bytes.strip()``) is Unicode-whitespace-aware (e.g. NBSP
+    U+00A0, EM SPACE U+2003, U+3000, U+2028 all strip to empty). Using
+    ``bytes.strip()`` here (round 1 of this change) was itself a regression:
+    it only strips ASCII whitespace, so a trailing line containing nothing
+    but a UTF-8-encoded Unicode whitespace character was wrongly treated as
+    non-blank, selected as "the last line," and then failed JSON parsing --
+    turning a benign trailing line into a spurious ``AuditCorruptionError``
+    that a real append should never have hit. If a candidate fails to
+    decode as UTF-8 at all, it is returned immediately (never treated as
+    blank) -- this is not new corruption-detection logic, it is what lets
+    ``_read_last_entry()``'s own subsequent ``.decode("utf-8")`` call raise
+    the same ``UnicodeDecodeError``, uncaught, that the original sequential
+    text-mode reader would have raised at the same point in the contract.
+
+    Line splitting uses ``_NEWLINE_RE`` (``\\r\\n`` / ``\\r`` / ``\\n``,
+    matching Python's own text-mode universal-newlines rule) rather than a
+    literal ``\\n`` split, so a bare-CR- or CRLF-separated file is split
+    into the same logical lines the original text-mode scan would have
+    produced.
+
     Never returns a line whose start was not actually read from disk: a
     line is only considered found once it is bounded on both sides by a
-    real ``\\n`` byte actually present in what has been read so far, or by
-    true end-of-file on the right and (after growing to read the whole
-    file) true start-of-file on the left. A chunk-boundary split can
-    never be mistaken for a short line -- it is simply re-read with more
-    context on the next, larger retry.
+    real separator match actually present in what has been read so far, or
+    by true end-of-file on the right and (after growing to read the whole
+    file) true start-of-file on the left. A chunk-boundary split -- even
+    one that lands in the middle of a two-byte ``\\r\\n`` separator -- can
+    never be mistaken for a short line; it is simply re-read with more
+    context on the next, larger retry (the boundary-safety argument below
+    does not depend on the separator's byte length, only on whether it is
+    FULLY present in the bytes read so far).
 
     Deliberate, documented scope narrowing vs. the old full-file scan:
     this function does not inspect bytes earlier in the file than the
@@ -108,18 +145,30 @@ def _tail_last_nonblank_line(path: str) -> "bytes | None":
             fh.seek(pos)
             buf = fh.read(read_size) + buf
 
-            lines = buf.split(b"\n")
+            lines = _NEWLINE_RE.split(buf)
             # lines[0] is only a COMPLETE line if this read reached the
             # true start of the file (pos == 0); otherwise an earlier,
-            # not-yet-read byte could still belong to it, so it is
-            # skipped until a retry proves otherwise. Every other element
-            # is bounded on the left by a real '\n' actually in `buf`
-            # and on the right by either another real '\n' or true EOF
-            # (the very first iteration always starts the read anchored
-            # at the true end of the file), so all of them are safe.
+            # not-yet-read byte could still belong to it (including the
+            # possibility that a \r\n separator is split across this
+            # chunk's left edge), so it is skipped until a retry proves
+            # otherwise. Every other element is bounded on the left by a
+            # real separator FULLY present in `buf` and on the right by
+            # either another real separator or true EOF (the very first
+            # iteration always starts the read anchored at the true end
+            # of the file, and every later iteration only extends `buf`
+            # backward, so its right edge is always true EOF), so all of
+            # them are safe regardless of separator length.
             safe_start = 0 if pos == 0 else 1
             for candidate in reversed(lines[safe_start:]):
-                if candidate.strip():
+                try:
+                    is_blank = not candidate.decode("utf-8").strip()
+                except UnicodeDecodeError:
+                    # Invalid UTF-8 is never "blank" -- surface it via the
+                    # same path _read_last_entry()'s own re-decode already
+                    # uses, so the caller's existing, tested exception
+                    # contract is unchanged by this optimization.
+                    return candidate
+                if not is_blank:
                     return candidate
 
             if pos == 0:

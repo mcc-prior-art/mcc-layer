@@ -199,6 +199,41 @@ def test_verify_chain_detects_a_broken_link_anywhere_in_the_file(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Round 2 regression guard: Unicode whitespace as a legitimate JSON VALUE
+# must never be mistaken for a blank tail line (the overcorrection risk of
+# the Unicode-whitespace fix in _tail_last_nonblank_line).
+# ---------------------------------------------------------------------------
+
+
+def test_unicode_whitespace_as_json_value_is_not_mistaken_for_a_blank_line(tmp_path):
+    path = str(tmp_path / "audit.jsonl")
+    log = AuditLog(path)
+    log.append({"i": 0})
+    log.append({"i": 1})
+    # The record's own content contains Unicode whitespace characters as a
+    # VALUE, not as a bare whitespace-only trailing line. A tail reader that
+    # (over-)treats any Unicode-whitespace-containing line as blank would
+    # wrongly skip past this real, well-formed entry.
+    log.append({"i": 2, "note": "  　 "})
+
+    assert AuditLog.verify_chain(path) is True
+    with open(path, encoding="utf-8") as fh:
+        lines = [l for l in fh if l.strip()]
+    last_entry = json.loads(lines[-1])
+    assert last_entry["i"] == 2
+    assert last_entry["note"] == "  　 "
+
+    # A further real append must see this entry as the true chain head
+    # (not silently roll back to entry 1's hash).
+    log.append({"i": 3})
+    with open(path, encoding="utf-8") as fh:
+        lines = [l for l in fh if l.strip()]
+    assert len(lines) == 4
+    assert json.loads(lines[-2])["hash"] == json.loads(lines[-1])["prev_hash"]
+    assert AuditLog.verify_chain(path) is True
+
+
+# ---------------------------------------------------------------------------
 # Storage errors
 # ---------------------------------------------------------------------------
 
