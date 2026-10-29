@@ -124,7 +124,7 @@ def test_both_issuance_paths_pass_evidence_digest_to_issue_token():
     tree = _tree(GOVERNANCE_SERVICE)
     checked = set()
     for func in _function_defs(tree):
-        if func.name not in ("execute_with_mandate", "execute_with_consensus"):
+        if func.name not in ("execute_with_mandate", "execute_with_consensus", "execute_with_delegation"):
             continue
         for name, lineno, call in _call_names(func):
             if not name.endswith(".issue_token"):
@@ -136,8 +136,8 @@ def test_both_issuance_paths_pass_evidence_digest_to_issue_token():
                 f"pass evidence_digest= -- the Control-derived digest would "
                 f"never reach the token"
             )
-    assert checked == {"execute_with_mandate", "execute_with_consensus"}, (
-        f"expected both governed issuance paths to call issue_token, found: {checked}"
+    assert checked == {"execute_with_mandate", "execute_with_consensus", "execute_with_delegation"}, (
+        f"expected all governed issuance paths to call issue_token, found: {checked}"
     )
 
 
@@ -277,18 +277,23 @@ def test_no_new_issue_token_call_site_outside_governance_service():
         assert path.is_file()
 
 
-def test_governance_service_still_has_exactly_two_issue_token_call_sites():
-    """Pins the known issuance surface (unchanged by PR-3): a new call site,
-    if ever added, must deliberately update this guard, not silently bypass
-    evidence-digest propagation (guard #1 above)."""
+def test_governance_service_still_has_exactly_three_issue_token_call_sites():
+    """Pins the known issuance surface: a new call site, if ever added, must
+    deliberately update this guard, not silently bypass evidence-digest
+    propagation (guard #1 above). Verifiable Delegation added
+    ``execute_with_delegation`` as a third, deliberate, reviewed call site
+    (it propagates evidence_digest exactly like the other two -- see
+    gateway/governance_service.py)."""
     tree = _tree(GOVERNANCE_SERVICE)
     sites = []
     for func in _function_defs(tree):
         for name, lineno, _ in _call_names(func):
             if name.endswith(".issue_token"):
                 sites.append((func.name, lineno))
-    assert {name for name, _ in sites} == {"execute_with_mandate", "execute_with_consensus"}
-    assert len(sites) == 2
+    assert {name for name, _ in sites} == {
+        "execute_with_mandate", "execute_with_consensus", "execute_with_delegation",
+    }
+    assert len(sites) == 3
 
 
 # ---------------------------------------------------------------------------

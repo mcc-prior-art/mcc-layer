@@ -38,6 +38,13 @@ ROOT = Path(__file__).resolve().parents[2]
 # DECISION specifically) would be a plane usurpation.
 AUTHORITY_PLANE_FILES = {
     "core.py", "mandate.py", "approvals.py", "consensus.py", "challenge.py", "signing.py",
+    # delegation.py: Verifiable Delegation & Intent Binding -- issue_delegation()
+    # calls the OWNER's SigningKey.sign_token(), exactly analogous to
+    # mandate.py's issue_mandate(); it never calls DecisionEngine.issue_token
+    # (that remains gateway/governance_service.py's exclusive privilege; see
+    # test_e below), so this is a signed-authority-ARTIFACT issuer, not a
+    # second DECISION-token issuer.
+    "delegation.py",
 }
 
 
