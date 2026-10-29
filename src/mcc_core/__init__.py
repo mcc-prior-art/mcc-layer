@@ -30,6 +30,12 @@ _EXPORTS: dict[str, str] = {
     "RedisApprovalRegistry": "approvals", "approval_registry_from_env": "approvals",
     # audit
     "AuditLog": "audit",
+    # audit_integrity (P2-A3: automated audit-chain integrity + fail-closed enforcement)
+    "AuditIntegrityMonitor": "audit_integrity", "IntegrityBackendUnavailable": "audit_integrity",
+    "IntegrityConfigError": "audit_integrity", "IntegrityState": "audit_integrity",
+    "IntegrityStatus": "audit_integrity", "InMemoryIntegrityStateRegistry": "audit_integrity",
+    "RedisIntegrityStateRegistry": "audit_integrity", "integrity_state_registry_from_env": "audit_integrity",
+    "is_healthy": "audit_integrity",
     # authority
     "ActionPolicy": "authority", "AuthorityDecision": "authority",
     "AuthorityModel": "authority", "Mandate": "authority",
@@ -138,6 +144,17 @@ if TYPE_CHECKING:  # help static type-checkers see the re-exported names
         approval_registry_from_env,
     )
     from .audit import AuditLog  # noqa: F401
+    from .audit_integrity import (  # noqa: F401
+        AuditIntegrityMonitor,
+        IntegrityBackendUnavailable,
+        IntegrityConfigError,
+        IntegrityState,
+        IntegrityStatus,
+        InMemoryIntegrityStateRegistry,
+        RedisIntegrityStateRegistry,
+        integrity_state_registry_from_env,
+        is_healthy,
+    )
     from .authority import (  # noqa: F401
         ActionPolicy,
         AuthorityDecision,

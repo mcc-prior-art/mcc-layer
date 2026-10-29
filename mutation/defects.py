@@ -469,12 +469,31 @@ DEFECTS: List[Defect] = [
         detector_tests=("tests/test_attester_service.py::test_g_missing_auth_header_rejected_before_provider_is_called",
                          "tests/test_attester_service.py::test_g_wrong_auth_header_rejected_before_provider_is_called"),
     ),
+    # P2-A3: Automated Audit Integrity & Fail-Closed Enforcement -- the two
+    # independent enforcement boundaries this task adds. See
+    # docs/AUDIT_INTEGRITY_ENFORCEMENT.md.
+    Defect(
+        id="audit-integrity-dispatch-gate-disabled",
+        description="EnforcementCoordinator.enforce()'s audit-integrity DISPATCH-boundary check is disabled -- actuation proceeds even when audit-chain integrity is UNVERIFIED/VERIFYING/UNHEALTHY.",
+        file_path="src/mcc_core/coordinator.py",
+        find='            if getattr(integrity_state, "value", integrity_state) != "HEALTHY":',
+        replace="            if False:  # MUTATED: audit-integrity dispatch gate disabled",
+        detector_tests=("tests/test_audit_integrity_enforcement.py::test_direct_coordinator_call_blocked_when_integrity_not_healthy",),
+    ),
+    Defect(
+        id="audit-integrity-issuance-gate-disabled",
+        description="GovernanceService._integrity_gate() always permits token issuance regardless of audit-chain integrity state -- the ISSUANCE-boundary half of the P2-A3 control is disabled.",
+        file_path="gateway/governance_service.py",
+        find="        if state == IntegrityState.HEALTHY:\n            return None",
+        replace="        if True:  # MUTATED: audit-integrity issuance gate disabled\n            return None",
+        detector_tests=("tests/test_audit_integrity_enforcement.py::test_mandate_issuance_blocked_when_integrity_not_healthy",),
+    ),
 ]
 
 DEFECT_IDS = tuple(d.id for d in DEFECTS)
 
-assert len(DEFECT_IDS) == 39, f"expected exactly 39 targeted defects, found {len(DEFECT_IDS)}"
-assert len(set(DEFECT_IDS)) == 39, "defect ids must be unique"
+assert len(DEFECT_IDS) == 41, f"expected exactly 41 targeted defects, found {len(DEFECT_IDS)}"
+assert len(set(DEFECT_IDS)) == 41, "defect ids must be unique"
 
 GATE_FAIL_OPEN_DEFECT_IDS = tuple(d.id for d in DEFECTS if d.id == "gate-fail-open" or d.id.startswith("gate-") and d.id.endswith("-fail-open"))
 assert len(GATE_FAIL_OPEN_DEFECT_IDS) == 14, (

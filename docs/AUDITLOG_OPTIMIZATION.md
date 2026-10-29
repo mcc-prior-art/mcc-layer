@@ -379,3 +379,13 @@ All 11 pass. Combined with the 54 differential tests in §3, this PR adds
   This keeps the integrity check real, independent, and already-proven
   (§3, §5), while keeping it off the latency-sensitive path this PR was
   created to fix.
+
+  **Implemented (P2-A3).** The proposal above is now real production code:
+  see `docs/AUDIT_INTEGRITY_ENFORCEMENT.md` and
+  `src/mcc_core/audit_integrity.py`. Startup verification, periodic
+  background verification (reusing `AuditLog._locked()` via the new
+  `AuditLog.verify_chain_safe()` method -- the ONLY addition this PR made
+  to `audit.py` itself), and mandatory fail-closed enforcement at both the
+  token-issuance and actuation-dispatch boundaries are all implemented and
+  opt-in via `MCC_REQUIRE_AUDIT_INTEGRITY`. `append()`'s O(tail) hot path
+  remains completely unmodified.

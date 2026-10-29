@@ -110,6 +110,7 @@ class GovernanceService:
         pre_execution_control: Optional[PreExecutionControl] = None,
         time_source: Optional[TrustedTimeSource] = None,
         delegation_verifier: Optional[DelegationVerifier] = None,
+        integrity_monitor: Optional[Any] = None,
     ) -> None:
         self.engine = engine
         self.coordinator = coordinator
@@ -148,6 +149,43 @@ class GovernanceService:
         # (mandate issuers), so an agent's own key, even if somehow trusted
         # for mandates, can never satisfy delegation verification.
         self.delegation_verifier = delegation_verifier
+        # P2-A3: optional fail-closed audit-integrity ISSUANCE gate (an
+        # ``mcc_core.audit_integrity.AuditIntegrityMonitor``; None =
+        # disabled -> unchanged pre-P2-A3 behavior for every call site).
+        # Independent of, and in addition to, EnforcementCoordinator's own
+        # dispatch-boundary check -- see ``_integrity_gate`` below for why
+        # both exist.
+        self.integrity_monitor = integrity_monitor
+
+    async def _integrity_gate(self) -> "Optional[ExecOutcome]":
+        """P2-A3 issuance-boundary gate -- mirrors ``_attestation_gate``'s
+        calling convention. Returns an ``ExecOutcome`` (BLOCKED) the caller
+        must return immediately, WITHOUT ever calling
+        ``DecisionEngine.issue_token``, when audit-chain integrity cannot
+        currently be established as HEALTHY. A no-op (returns ``None``)
+        when no ``integrity_monitor`` is configured.
+
+        Deliberately a SEPARATE, independent check from
+        ``EnforcementCoordinator.enforce()``'s own dispatch-boundary check,
+        not a substitute for it: a caller that reaches the coordinator
+        directly, bypassing this service entirely, must still be blocked --
+        exactly what that other, independently-configured check guarantees.
+        Losing either boundary would leave a bypass; this task requires
+        both.
+        """
+        if self.integrity_monitor is None:
+            return None
+        from mcc_core.audit_integrity import IntegrityState
+
+        state = await self.integrity_monitor.current_state()
+        if state == IntegrityState.HEALTHY:
+            return None
+        return ExecOutcome(
+            "BLOCKED",
+            f"AUDIT_INTEGRITY_NOT_HEALTHY: audit-chain integrity state is {state.value}; "
+            "refusing to issue executable authority; fail-closed",
+            decision="DENY",
+        )
 
     async def _attestation_gate(
         self, *, action: str, forward_context: Dict[str, Any], resource: Optional[str],
@@ -281,6 +319,10 @@ class GovernanceService:
         # issued. A no-op when unconfigured or the action has no requirement.
         # PR-3: the same Control call also yields the trusted evidence_digest
         # for a VERIFIED required attestation (None otherwise).
+        integrity_blocked = await self._integrity_gate()
+        if integrity_blocked is not None:
+            return integrity_blocked
+
         blocked, evidence_digest = await self._attestation_gate(
             action=action, forward_context=forward_context, resource=resource,
             attestation=attestation, now=now,
@@ -398,6 +440,10 @@ class GovernanceService:
         )
         if decision.verdict != Verdict.ALLOW:
             return ExecOutcome("BLOCKED", decision.reason, decision=decision.verdict.value)
+
+        integrity_blocked = await self._integrity_gate()
+        if integrity_blocked is not None:
+            return integrity_blocked
 
         blocked, evidence_digest = await self._attestation_gate(
             action=action, forward_context=canonical, resource=resource,
@@ -635,6 +681,10 @@ class GovernanceService:
         # Consensus carries no mandate CONSTRAIN rewrite step, so the exact
         # final payload is simply the canonicalized one -- still resolved via
         # the action profile, never the raw caller-supplied context.
+        integrity_blocked = await self._integrity_gate()
+        if integrity_blocked is not None:
+            return integrity_blocked
+
         blocked, evidence_digest = await self._attestation_gate(
             action=action, forward_context=canonical, resource=resource,
             attestation=attestation, now=now,

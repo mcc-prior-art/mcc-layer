@@ -400,6 +400,22 @@ app = FastAPI(
 )
 
 
+@app.on_event("startup")
+async def _start_audit_integrity_monitor() -> None:
+    """P2-A3: arm the periodic background verification loop now that an
+    event loop actually exists (``build_governance_service()`` runs before
+    one does, so it can only run the synchronous startup pass -- see its
+    own docstring comment). A no-op when the feature is not configured."""
+    if governance.integrity_monitor is not None:
+        governance.integrity_monitor.start_periodic_verification()
+
+
+@app.on_event("shutdown")
+async def _stop_audit_integrity_monitor() -> None:
+    if governance.integrity_monitor is not None:
+        await governance.integrity_monitor.stop_periodic_verification()
+
+
 @app.post("/evaluate", response_model=EvaluateResponse, response_model_exclude_none=False)
 def evaluate(req: EvaluateRequest, _caller: str = Depends(get_caller)) -> EvaluateResponse:
     return gateway.evaluate(req)
@@ -616,6 +632,21 @@ async def ready(response: Response) -> Dict[str, Any]:
     if checkpoint_anchor_verification_required:
         checks["checkpoint_anchors"] = _checkpoint_anchors_ok(env)
 
+    # P2-A3: additive, operational-visibility only -- this does NOT replace
+    # the two mandatory enforcement boundaries (GovernanceService's
+    # issuance gate, EnforcementCoordinator's dispatch gate), which run on
+    # every governed call regardless of whether anything ever reads
+    # /ready. ``audit_integrity_state`` is reported whenever the monitor
+    # is configured at all; it is only in the REQUIRED set (and so able to
+    # flip readiness) when MCC_REQUIRE_AUDIT_INTEGRITY is set.
+    audit_integrity_required = env.get("MCC_REQUIRE_AUDIT_INTEGRITY", "").strip().lower() in (
+        "1", "true", "yes", "on")
+    if governance.integrity_monitor is not None:
+        state = await governance.integrity_monitor.current_state()
+        checks["audit_integrity_state"] = str(getattr(state, "value", state))
+        if audit_integrity_required:
+            checks["audit_integrity"] = checks["audit_integrity_state"] == "HEALTHY"
+
     redis_required = _redis_required(env)
     checks["redis_required"] = redis_required
     if redis_required:
@@ -623,7 +654,7 @@ async def ready(response: Response) -> Dict[str, Any]:
 
     required_flags = [v for k, v in checks.items()
                       if k in ("signing_key", "consensus_verifier", "challenge_service",
-                               "checkpoint_anchors", "redis")]
+                               "checkpoint_anchors", "redis", "audit_integrity")]
     ready_now = all(required_flags)
     if not ready_now:
         response.status_code = 503

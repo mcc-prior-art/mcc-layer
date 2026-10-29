@@ -351,6 +351,19 @@ class AuditLog:
             self.prev_hash = entry["hash"]
         return entry
 
+    def verify_chain_safe(self) -> bool:
+        """Full-chain verification (``verify_chain()``), performed while
+        holding this log's inter-process lock -- the SAME lock ``append()``
+        uses -- so a concurrent writer can never be observed mid-write.
+
+        This is an explicit, on-demand, O(file size) operation, never part
+        of ``append()``'s own hot path. Its only intended caller is
+        ``src/mcc_core/audit_integrity.py``'s periodic/startup verification,
+        always off any request-handling path (see that module's docstring).
+        """
+        with self._locked():
+            return self.verify_chain(self.path)
+
     @staticmethod
     def verify_chain(path: str) -> bool:
         """Recompute every entry hash and check linkage. The legacy genesis
