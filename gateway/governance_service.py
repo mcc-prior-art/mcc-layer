@@ -27,6 +27,8 @@ from mcc_core import (
     ActuationStatus,
     ApprovalService,
     DecisionEngine,
+    DelegationAuthority,
+    DelegationVerifier,
     EnforcementCoordinator,
     MandateAuthority,
     MandateVerifier,
@@ -34,6 +36,8 @@ from mcc_core import (
     ProfileRegistry,
     RevocationStatus,
     Verdict,
+    delegation_velocity_descriptor,
+    delegation_velocity_limit,
     hash_payload,
 )
 from mcc_core.trusted_time import LocalTimeSource, TimeTrustError, TrustedTimeSource
@@ -105,6 +109,7 @@ class GovernanceService:
         challenge_service: Optional[Any] = None,
         pre_execution_control: Optional[PreExecutionControl] = None,
         time_source: Optional[TrustedTimeSource] = None,
+        delegation_verifier: Optional[DelegationVerifier] = None,
     ) -> None:
         self.engine = engine
         self.coordinator = coordinator
@@ -133,6 +138,16 @@ class GovernanceService:
         # disabled -> unchanged pre-PR-2 behavior for every action, since no
         # AttestationRequirement can ever be resolved without it configured).
         self.pre_execution_control = pre_execution_control
+        # Verifiable Delegation & Intent Binding (planned PR #123 in the
+        # roadmap/threat-model; the actual implementation PR number is
+        # whatever GitHub assigns, since #123 itself was consumed by the
+        # documentation handoff). None = disabled -> execute_with_delegation
+        # fails closed with no configured delegation authority. Built from a
+        # DEDICATED owner trust root (see delegation.py's module docstring,
+        # point 2) -- never the same TrustSet instance as ``self.trust_set``
+        # (mandate issuers), so an agent's own key, even if somehow trusted
+        # for mandates, can never satisfy delegation verification.
+        self.delegation_verifier = delegation_verifier
 
     async def _attestation_gate(
         self, *, action: str, forward_context: Dict[str, Any], resource: Optional[str],
@@ -321,6 +336,146 @@ class GovernanceService:
         # never a second, separate execution route.
         return await self._run(token, action, forward_context, actor, resource,
                                transaction_id, headers, tenant_id=tenant_id, evidence=attestation)
+
+    # ---- Verifiable Delegation & Intent Binding ----
+
+    async def execute_with_delegation(
+        self, *, delegation: Any, actor: str, action: str, resource: Optional[str],
+        purpose: str, context: Dict[str, Any], transaction_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None, tenant_id: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+        extra_auth_claims: Optional[Dict[str, Any]] = None,
+        attestation: Optional[Dict[str, Any]] = None,
+    ) -> ExecOutcome:
+        """Execute under a signed owner-to-agent :mod:`mcc_core.delegation`,
+        through the SAME one governed execution path every other authority
+        source uses (``self._run()`` -> ``EnforcementCoordinator.enforce()``)
+        -- no second execution route, no changes to the coordinator itself.
+
+        ``purpose`` is a TRUSTED, server-resolved parameter, exactly like
+        ``tenant_id`` below -- never read from the agent-supplied ``context``
+        (an agent must not be able to freely assert which delegated purpose
+        its own proposal falls under).
+
+        The recipient, currency, and amount ``DelegationAuthority`` checks
+        against are deliberately NOT separate parameters here: they are
+        read from ``canonical`` -- the SAME canonicalized payload that
+        becomes ``forward_context`` and is bound into the token's
+        ``payload_hash`` below. Accepting them as independent arguments
+        would let a caller assert one (in-scope) value to the authority
+        while the actual executed payload carried another -- exactly the
+        T-03 payload-substitution risk this module exists to close. This
+        currently requires the resolved action profile to be payment-shaped
+        (``beneficiary_id``/``amount``/``currency`` -- see
+        ``mcc_core.profiles.PaymentProfile``); a delegation for a non-
+        payment action profile has no recipient/amount/currency to check
+        and is out of this module's scope.
+        """
+        if self.delegation_verifier is None:
+            return ExecOutcome(
+                "BLOCKED", "delegation authority not configured; fail-closed", decision="DENY",
+            )
+        try:
+            now = await self._now()
+        except TimeTrustError as exc:
+            return ExecOutcome("BLOCKED", f"{exc.reason}: {exc.detail}", decision="DENY")
+
+        try:
+            profile = self.profiles.for_action(action)
+            canonical = profile.canonical_payload(context)
+        except ProfileError as exc:
+            return ExecOutcome("BLOCKED", f"PROFILE_ERROR: {exc}", decision="DENY")
+
+        recipient = canonical.get("beneficiary_id")
+        currency = canonical.get("currency")
+        amount = canonical.get("amount")
+
+        authority = DelegationAuthority(self.delegation_verifier)
+        decision = await authority.authorize(
+            delegation, subject=actor, tenant_id=tenant_id or "", action=action,
+            resource=resource, recipient=recipient, currency=currency, amount=amount,
+            purpose=purpose, now=now, policy_hash=self.policy_hash,
+        )
+        if decision.verdict != Verdict.ALLOW:
+            return ExecOutcome("BLOCKED", decision.reason, decision=decision.verdict.value)
+
+        blocked, evidence_digest = await self._attestation_gate(
+            action=action, forward_context=canonical, resource=resource,
+            attestation=attestation, now=now,
+        )
+        if blocked is not None:
+            return blocked
+
+        if _missing_logical_operation_id(idempotency_key):
+            return ExecOutcome(
+                "BLOCKED",
+                "MISSING_LOGICAL_OPERATION_ID: a valid, non-empty idempotency_key "
+                "is required for protected execution; fail-closed",
+                decision=decision.verdict.value,
+            )
+        if _missing_tenant_id(tenant_id):
+            return ExecOutcome(
+                "BLOCKED",
+                "MISSING_TENANT_IDENTITY: a valid, non-empty tenant_id "
+                "is required for protected execution; fail-closed",
+                decision=decision.verdict.value,
+            )
+
+        # Atomic, cumulative spend reservation -- BEFORE any token is issued,
+        # so a budget breach never reaches the coordinator or the actuator.
+        # Reuses EnforcementCoordinator's own VelocityRegistry instance (the
+        # SAME atomic Redis-Lua primitive PR #122 already proved safe
+        # against transaction splitting and cross-instance races); no
+        # parallel accounting system is introduced. Deliberately never
+        # passes an explicit ``now=`` (see ``_run()``'s own rationale,
+        # just below -- InMemoryVelocityRegistry's window bookkeeping is
+        # monotonic-clock based and must never be threaded a wall-clock
+        # value from here).
+        velocity = self.coordinator.velocity
+        limit = delegation_velocity_limit(delegation)
+        vel_descriptor = delegation_velocity_descriptor(
+            delegation, amount=amount, currency=currency, recipient=recipient,
+        )
+        vel_outcome = await velocity.reserve(limit, vel_descriptor)
+        if not vel_outcome.ok:
+            return ExecOutcome("BLOCKED", vel_outcome.reason, decision="DENY")
+
+        auth_claims = dict(profile.auth_claims(canonical))
+        auth_claims["delegation_id"] = decision.delegation_id
+        auth_claims["purpose"] = purpose
+        if extra_auth_claims:
+            auth_claims.update(extra_auth_claims)
+        token = self.engine.issue_token(
+            verdict=Verdict.ALLOW.value, subject=actor, action=action, payload=canonical,
+            transaction_id=transaction_id, idempotency_key=idempotency_key,
+            tenant_id=tenant_id, actor_id=actor, resource_id=resource,
+            auth_claims=auth_claims, mandate_id=decision.delegation_id,
+            evidence_digest=evidence_digest, now=now,
+            # Never let the issued token outlive the delegation that
+            # authorized it -- the same max_exp clamp PR #122 round 6
+            # applies to mandates (see DecisionEngine.issue_token).
+            max_exp=decision.delegation_exp,
+        )
+        result = await self._run(token, action, canonical, actor, resource, transaction_id,
+                                 headers, tenant_id=tenant_id, evidence=attestation)
+        if result.status == ActuationStatus.BLOCKED.value:
+            # Pre-dispatch failure: no external effect occurred (the
+            # coordinator's own fail-closed ordering guarantees this), so
+            # releasing the reservation is safe and lets a legitimate retry
+            # proceed without permanently losing that budget. Passes back
+            # the EXACT now vel_outcome.reserve() stored the reservation
+            # under (never a freshly re-resolved one) -- see
+            # VelocityOutcome.now's docstring for why a mismatched now
+            # silently fails to find the event to release.
+            await velocity.release(limit, vel_descriptor, now=vel_outcome.now)
+        # A durable EXECUTION_FAILED/UNKNOWN outcome deliberately does NOT
+        # release the reservation: the external side effect may have
+        # happened, and releasing budget here could let a genuine double-
+        # spend occur if the operation actually succeeded despite the
+        # ambiguous result -- mirroring the EXECUTED-vs-UNKNOWN distinction
+        # EnforcementCoordinator itself already enforces for idempotency
+        # and dispatch ownership.
+        return result
 
     # ---- approval operations (ESCALATE loop) ----
 

@@ -46,6 +46,11 @@ _EXPORTS: dict[str, str] = {
     # coordinator
     "ActuationResult": "coordinator", "ActuationStatus": "coordinator",
     "EnforcementCoordinator": "coordinator",
+    # delegation (Verifiable Delegation & Intent Binding)
+    "DelegationAuthority": "delegation", "DelegationAuthorityDecision": "delegation",
+    "DelegationResult": "delegation", "DelegationVerifier": "delegation",
+    "delegation_velocity_descriptor": "delegation", "delegation_velocity_limit": "delegation",
+    "issue_delegation": "delegation",
     # core
     "EXECUTABLE_VERDICTS": "core", "DecisionEngine": "core",
     "TokenNotIssuable": "core", "Verdict": "core",

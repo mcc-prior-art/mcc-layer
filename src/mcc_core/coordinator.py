@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from .audit import AuditLog
 from .core import Verdict
@@ -392,11 +392,17 @@ class EnforcementCoordinator:
             policy_scope=policy_scope,
             context=payload,
         )
-        reserved_limits: List[VelocityLimit] = []
+        # Each entry is (limit, the EXACT now that limit's own reservation was
+        # stored under) -- see VelocityOutcome.now's docstring. Releasing a
+        # reservation with any OTHER now (e.g. a freshly re-resolved one, as
+        # this used to do by re-passing the outer ``now`` -- always None in
+        # production) silently fails to find the event to remove, since both
+        # registries correlate release-by-exact-timestamp.
+        reserved_limits: List[Tuple[VelocityLimit, Optional[float]]] = []
         for limit in self.velocity_limits_for(action):
             outcome: VelocityOutcome = await self.velocity.reserve(limit, descriptor, now=now)
             if outcome.reserved:
-                reserved_limits.append(limit)
+                reserved_limits.append((limit, outcome.now))
             if not outcome.ok:
                 # Pre-dispatch: no external call has been attempted, so
                 # releasing everything reserved (including the logical
@@ -604,9 +610,21 @@ class EnforcementCoordinator:
         """Release capacity reserved so far. Only ever called BEFORE the
         durable dispatch boundary (step f) -- releasing the logical
         operation here is safe because no external call could have been
-        attempted yet."""
-        for limit in limits:
-            await self.velocity.release(limit, descriptor, now=now)
+        attempted yet.
+
+        ``now`` (the outer, caller-supplied/raw ``enforce()`` parameter) is
+        accepted for call-site compatibility but deliberately UNUSED for
+        velocity release below: each ``limits`` entry already carries the
+        EXACT ``now`` ITS OWN reservation was stored under (see
+        ``VelocityOutcome.now``), which is what must be passed back to
+        correctly correlate the release. Reusing the outer ``now`` instead
+        (always ``None`` in production, independently re-resolved by each
+        registry call) silently failed to release anything -- see
+        ``tests/test_velocity.py``'s and
+        ``tests/test_coordinator.py``'s regression coverage for this.
+        """
+        for limit, limit_now in limits:
+            await self.velocity.release(limit, descriptor, now=limit_now)
         if idem_fence is not None:
             await self.idempotency.release(idem_key, tenant_id=tenant_id, fence=idem_fence)
 

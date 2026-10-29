@@ -248,11 +248,14 @@ def test_m_attester_service_carries_no_outbound_execution_surface():
 
 def test_m_only_established_governed_issuance_paths_accept_attestation():
     """The signed artifact this service produces reaches governed execution
-    through exactly ONE existing, unmodified surface: the ``attestation``
-    parameter already present (since PR-2) on
-    GovernanceService.execute_with_mandate / execute_with_consensus. This
-    guard re-confirms (mirrors PR-2's own guard) that those remain the only
-    two call sites -- PR-4 did not add a third."""
+    through established, unmodified surfaces: the ``attestation`` parameter
+    already present (since PR-2) on GovernanceService.execute_with_mandate /
+    execute_with_consensus, now joined by a third, deliberately-reviewed
+    surface -- execute_with_delegation (Verifiable Delegation), which routes
+    its ``attestation`` argument through the same ``_attestation_gate``
+    helper the other two use. This guard re-confirms (mirrors PR-2's own
+    guard) that these three remain the only call sites -- any further
+    addition must again deliberately update this guard."""
     tree = _tree(ROOT / "gateway" / "governance_service.py")
 
     def _function_defs(t):
@@ -275,5 +278,7 @@ def test_m_only_established_governed_issuance_paths_accept_attestation():
         for name, lineno in _call_names(func):
             if name.endswith("issue_token"):
                 sites.append((func.name, lineno))
-    assert {name for name, _ in sites} == {"execute_with_mandate", "execute_with_consensus"}
-    assert len(sites) == 2
+    assert {name for name, _ in sites} == {
+        "execute_with_mandate", "execute_with_consensus", "execute_with_delegation",
+    }
+    assert len(sites) == 3

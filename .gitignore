@@ -15,6 +15,11 @@ __pycache__/
 htmlcov/
 .hypothesis/
 
+# Redis' own default dump file, written to cwd by a local redis-server
+# process used by the Redis-gated test suites -- runtime state, never
+# meaningful to commit.
+dump.rdb
+
 # Environments
 .env
 # Pilot env holds real keys/endpoints; the .example template IS committed.

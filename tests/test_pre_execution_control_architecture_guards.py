@@ -161,20 +161,24 @@ def test_every_issue_token_call_site_is_gated_by_attestation_first():
     )
 
 
-def test_governance_service_has_exactly_two_issue_token_call_sites():
+def test_governance_service_has_exactly_three_issue_token_call_sites():
     """Documents and pins the known runtime issuance surface (PR-2 final
     report item #11): execute_with_mandate and execute_with_consensus.
     execute_with_approval delegates to execute_with_mandate rather than
-    calling issue_token a third time. A new call site must be a deliberate,
-    reviewed change to this guard, not a silent addition."""
+    calling issue_token a third time. Verifiable Delegation added
+    execute_with_delegation as a genuine, deliberate, reviewed third call
+    site (not a silent addition) -- any further new call site must again
+    deliberately update this guard."""
     tree = _tree(GOVERNANCE_SERVICE)
     sites = []
     for func in _function_defs(tree):
         for name, lineno in _call_names(func):
             if name.endswith(".issue_token"):
                 sites.append((func.name, lineno))
-    assert {name for name, _ in sites} == {"execute_with_mandate", "execute_with_consensus"}
-    assert len(sites) == 2
+    assert {name for name, _ in sites} == {
+        "execute_with_mandate", "execute_with_consensus", "execute_with_delegation",
+    }
+    assert len(sites) == 3
 
 
 def test_execute_with_approval_delegates_and_forwards_attestation():
