@@ -30,7 +30,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -39,6 +38,7 @@ from typing import Any, Dict, Mapping, Optional
 from .authority_policy import AuthorityPolicy
 from .mandate import issue_mandate
 from .signing import SigningKey, hash_action, hash_payload
+from .trusted_time import LocalTimeSource, TimeTrustError, TrustedTimeSource
 
 DEFAULT_TTL_SECONDS = 300
 DEFAULT_OP_TIMEOUT_SECONDS = 0.5
@@ -88,6 +88,21 @@ class ConsumeResult:
     state: Optional[str] = None
 
 
+_EXPIRABLE_STATES = {ApprovalState.PENDING.value, ApprovalState.APPROVED.value}
+
+
+def _logically_expired(state: str, expires_at: int, now: int) -> bool:
+    """Shared effective-state rule for BOTH registries and both Lua scripts
+    (see ``_SET_STATE_LUA``/``_CONSUME_LUA``): PENDING and APPROVED are the
+    only two non-terminal states, so they are the only ones whose eligibility
+    for a transition must be re-checked against the ORIGINAL, immutable
+    ``expires_at`` deadline, independently of whatever the physical Redis key
+    TTL happens to be at the time of the check. Terminal states (DENIED /
+    INVALIDATED / CONSUMED) are never affected by expiry -- a terminal
+    outcome does not un-happen because time passed."""
+    return state in _EXPIRABLE_STATES and now >= expires_at
+
+
 # --------------------------------------------------------------------------
 # Registries
 # --------------------------------------------------------------------------
@@ -110,13 +125,18 @@ class InMemoryApprovalRegistry:
         rec = self._records.get(request_id)
         if rec is None:
             return None
-        if rec.state == ApprovalState.PENDING.value and rec.is_expired(now):
+        if _logically_expired(rec.state, rec.expires_at, now):
             rec.state = ApprovalState.EXPIRED.value
         return rec
 
-    async def set_state(self, request_id: str, *, expect, to: ApprovalState) -> bool:
+    async def set_state(self, request_id: str, *, expect, to: ApprovalState, now: int) -> bool:
         rec = self._records.get(request_id)
-        if rec is None or rec.state not in {s.value for s in expect}:
+        if rec is None:
+            return False
+        state = rec.state
+        if _logically_expired(state, rec.expires_at, now):
+            state = ApprovalState.EXPIRED.value
+        if state not in {s.value for s in expect}:
             return False
         rec.state = to.value
         return True
@@ -125,7 +145,10 @@ class InMemoryApprovalRegistry:
         rec = self._records.get(request_id)
         if rec is None:
             return ConsumeResult(False, "approval not found")
-        if rec.state == ApprovalState.PENDING.value and rec.is_expired(now):
+        # Replay is checked before expiry: a previously-consumed record
+        # reports "replay", never "expired", regardless of how much real
+        # time has since elapsed (matches the Redis path's priority).
+        if rec.state != ApprovalState.CONSUMED.value and _logically_expired(rec.state, rec.expires_at, now):
             rec.state = ApprovalState.EXPIRED.value
         if rec.state != ApprovalState.APPROVED.value:
             return ConsumeResult(False, f"approval not consumable in state {rec.state}", rec.state)
@@ -148,30 +171,125 @@ _SET_STATE_LUA = """
 -- This script performs the read, membership check, and write as ONE
 -- atomic Redis operation (Redis executes Lua scripts without
 -- interleaving other commands), closing that race deterministically.
+--
+-- Security fix (red-team finding, 2026-10-28, TTL-extension defect): this
+-- script used to (a) never re-check ``expires_at`` at all -- a logically
+-- expired PENDING/APPROVED record could still be transitioned (e.g.
+-- approve()'d) purely because its physical Redis key had not yet been
+-- deleted -- and (b) on every transition, reset the key's PHYSICAL TTL to
+-- ``expires_at - created_at`` (the FULL original duration) applied from
+-- "now", which extends the key's real-world lifetime by however much time
+-- had already elapsed since creation, instead of preserving the original
+-- absolute deadline. Both are fixed here: ``now`` (ARGV[3], the SAME clock
+-- basis the Python caller uses -- real time in production, an injected
+-- fake epoch in tests) is used to (a) promote the effective state to
+-- EXPIRED for matching purposes when PENDING/APPROVED has passed its
+-- ``expires_at`` (mirrors ``_logically_expired`` in approvals.py), which
+-- makes an expired record simply fail to match any ``expect`` set given to
+-- this script (no caller ever expects EXPIRED), and (b) compute the
+-- REMAINING duration (``expires_at - now``), never the full original one,
+-- when re-applying the key's TTL on a successful transition -- the
+-- physical key can now never outlive its original absolute deadline by
+-- more than clock-rounding. Deliberately NOT switched to Redis absolute-
+-- time expiry (PXAT/EXAT): callers (including this repo's own test suite)
+-- may pass a synthetic, non-wall-clock ``now``, and PXAT would take that
+-- literally as a real Unix timestamp.
 local cur = redis.call('GET', KEYS[1])
 if not cur then return 0 end
 local rec = cjson.decode(cur)
 local expect = cjson.decode(ARGV[1])
+local now = tonumber(ARGV[3])
+local state = rec['state']
+if (state == 'PENDING' or state == 'APPROVED') and now >= tonumber(rec['expires_at']) then
+    state = 'EXPIRED'
+end
 local matched = false
 for _, v in ipairs(expect) do
-    if rec['state'] == v then matched = true end
+    if state == v then matched = true end
 end
 if not matched then return 0 end
 rec['state'] = ARGV[2]
-local ttl = tonumber(rec['expires_at']) - tonumber(rec['created_at'])
-if ttl < 1 then ttl = 1 end
-redis.call('SET', KEYS[1], cjson.encode(rec), 'EX', ttl)
+local remaining = tonumber(rec['expires_at']) - now
+if remaining < 1 then remaining = 1 end
+redis.call('SET', KEYS[1], cjson.encode(rec), 'EX', remaining)
 return 1
 """
 
 
+_CONSUME_LUA = """
+-- Security fix (red-team finding, 2026-10-27): consume() used to be
+-- GET -> (check APPROVED in Python) -> SET <id>:consumed NX -> SET <id>
+-- (blind overwrite). The APPROVED check and the state-check-then-NX-claim
+-- were two SEPARATE round trips: a concurrently-racing invalidate()/deny()
+-- (itself an atomic set_state() CAS) could complete in the window between
+-- consume()'s own stale read and its NX claim. consume() would then still
+-- win the (now-uncontested) :consumed key, and its blind final SET would
+-- overwrite the just-invalidated record back to CONSUMED -- destroying the
+-- invalidation and letting the coordinator proceed to actuate an operation
+-- that had just been revoked. This script performs the read, the
+-- single-use/state check, and the write as ONE atomic Redis operation,
+-- closing that window deterministically and eliminating the separate
+-- ":consumed" key (the record's own ``state`` field is now the single
+-- source of truth for single-use consumption, exactly like every other
+-- transition in this file).
+--
+-- Security fix (red-team finding, 2026-10-28, TTL-extension defect): this
+-- script used to never re-check ``expires_at`` at all, and reset the key's
+-- PHYSICAL TTL to the FULL original duration (``expires_at - created_at``)
+-- on every successful consume, extending the key's real-world lifetime by
+-- however much time had already elapsed since creation. A record that was
+-- APPROVED and then left untouched past its logical ``expires_at`` could
+-- therefore still be consumed, relying entirely on the physical key's
+-- (bugged, extended) TTL rather than any explicit expiry check -- see
+-- ``ttl_bug_consume_after_logical_expiry.py`` for the empirical
+-- reproduction. Fixed by: (a) checking ``now`` (ARGV[1], same clock basis
+-- as the Python caller) against ``expires_at`` for an APPROVED record
+-- BEFORE allowing the CONSUMED transition -- checked AFTER the existing
+-- replay check (a previously-CONSUMED record always reports "replay", even
+-- if also long past its deadline -- the more specific, already-decided
+-- outcome), and (b) computing the REMAINING duration (``expires_at -
+-- now``), never the full original one, when re-applying the TTL. As with
+-- ``_SET_STATE_LUA``, deliberately NOT switched to Redis absolute-time
+-- expiry (PXAT/EXAT) -- stays relative-``EX``, computed from the caller's
+-- own (possibly synthetic, test-injected) ``now``.
+--
+-- Returns one of:
+--   {0}        not found (never existed, or its Redis TTL already expired)
+--   {1}        consumed successfully (was APPROVED; now CONSUMED)
+--   {2}        already consumed (replay) -- was already CONSUMED
+--   {3, state} wrong state (DENIED / INVALIDATED) -- never consumable from
+--              here regardless of race outcome
+--   {4, state} logically expired -- was APPROVED but ``now >= expires_at``;
+--              distinguished from a generic {3} so callers can report a
+--              precise reason instead of a misleading wrong-state message
+local cur = redis.call('GET', KEYS[1])
+if not cur then return {0} end
+local rec = cjson.decode(cur)
+local now = tonumber(ARGV[1])
+if rec['state'] == 'CONSUMED' then return {2} end
+if rec['state'] == 'APPROVED' and now >= tonumber(rec['expires_at']) then
+    return {4, 'EXPIRED'}
+end
+if rec['state'] ~= 'APPROVED' then return {3, rec['state']} end
+rec['state'] = 'CONSUMED'
+local remaining = tonumber(rec['expires_at']) - now
+if remaining < 1 then remaining = 1 end
+redis.call('SET', KEYS[1], cjson.encode(rec), 'EX', remaining)
+return {1}
+"""
+
+
 class RedisApprovalRegistry:
-    """Durable, multi-instance approval store. The record is a JSON value with a
-    TTL; the single-use consume is an atomic ``SET NX`` on a separate consume
-    key so exactly one caller can consume an approved request. State
-    transitions (``deny``/``invalidate``/the approve half-step) are an atomic
-    Lua compare-and-swap (see ``_SET_STATE_LUA``), not a separate GET/SET pair.
-    Fail-closed on any Redis error/timeout."""
+    """Durable, multi-instance approval store. The record is a JSON value with
+    a TTL. EVERY state transition -- ``deny``/``invalidate``/the approve
+    half-step (``_SET_STATE_LUA``) and the single-use ``consume`` (
+    ``_CONSUME_LUA``) -- is an atomic Lua compare-and-swap: one Redis
+    round trip that reads the current state, checks it, and writes the new
+    state, with no other command able to interleave. There is no separate
+    read-then-blind-write anywhere in this class, and no separate
+    ``:consumed`` side key -- the record's own ``state`` field is the single
+    source of truth for single-use consumption. Fail-closed on any Redis
+    error/timeout."""
 
     def __init__(self, redis_client: Any, *, namespace: str = "mcc:appr:",
                  op_timeout_seconds: float = DEFAULT_OP_TIMEOUT_SECONDS) -> None:
@@ -218,45 +336,46 @@ class RedisApprovalRegistry:
         rec = await self._load(request_id)
         if rec is None:
             return None
-        if rec.state == ApprovalState.PENDING.value and rec.is_expired(now):
+        if _logically_expired(rec.state, rec.expires_at, now):
             rec.state = ApprovalState.EXPIRED.value
         return rec
 
-    async def _save(self, rec: ApprovalRecord) -> bool:
-        # Re-set with a relative TTL equal to the request's window (avoids
-        # depending on Redis KEEPTTL); the window is bounded and idempotent.
-        ttl = max(1, rec.expires_at - rec.created_at)
-        try:
-            await self._c(self._redis.set(self._k(rec.request_id), json.dumps(asdict(rec)), ex=ttl))
-            return True
-        except Exception:
-            return False
-
-    async def set_state(self, request_id: str, *, expect, to: ApprovalState) -> bool:
+    async def set_state(self, request_id: str, *, expect, to: ApprovalState, now: int) -> bool:
         expect_json = json.dumps([s.value for s in expect])
         try:
             res = await self._c(self._redis.eval(
-                _SET_STATE_LUA, 1, self._k(request_id), expect_json, to.value,
+                _SET_STATE_LUA, 1, self._k(request_id), expect_json, to.value, str(int(now)),
             ))
             return int(res) == 1
         except Exception:
             return False
 
     async def consume(self, request_id: str, *, now: int) -> ConsumeResult:
-        rec = await self._load(request_id)
-        if rec is None:
-            return ConsumeResult(False, "approval not found")
-        if rec.state != ApprovalState.APPROVED.value:
-            return ConsumeResult(False, f"approval not consumable in state {rec.state}", rec.state)
+        """Atomically transition APPROVED -> CONSUMED, single-use, in ONE
+        Redis round trip (see ``_CONSUME_LUA``). Never reads the state in one
+        step and writes it in another: a concurrently-racing ``invalidate()``
+        (or ``deny()``) either fully precedes or fully follows this call --
+        there is no window in which this method's own write can observe a
+        state older than the current one and clobber it. Fail-closed (never
+        a silent success) on any Redis error/timeout or unexpected reply."""
         try:
-            won = await self._c(self._redis.set(self._k(request_id) + ":consumed", "1", nx=True))
+            res = await self._c(self._redis.eval(_CONSUME_LUA, 1, self._k(request_id), str(int(now))))
         except Exception:
             return ConsumeResult(False, "approval registry unavailable; fail-closed")
-        if won is not True:
+        if not isinstance(res, (list, tuple)) or not res:
+            return ConsumeResult(False, "approval registry unavailable; fail-closed")
+        code = res[0]
+        if code == 1:
+            return ConsumeResult(True, "consumed", ApprovalState.CONSUMED.value)
+        if code == 2:
             return ConsumeResult(False, "approval already consumed (replay)", ApprovalState.CONSUMED.value)
-        rec.state = ApprovalState.CONSUMED.value
-        await self._save(rec)
-        return ConsumeResult(True, "consumed", rec.state)
+        if code == 4:
+            state = res[1] if len(res) > 1 else ApprovalState.EXPIRED.value
+            return ConsumeResult(False, "approval expired", state)
+        if code == 3:
+            state = res[1] if len(res) > 1 else None
+            return ConsumeResult(False, f"approval not consumable in state {state}", state)
+        return ConsumeResult(False, "approval not found")
 
 
 class ApprovalConfigError(Exception):
@@ -298,7 +417,8 @@ class ApprovalService:
 
     def __init__(self, registry, approver_key: SigningKey, *,
                  issuer: str = "mcc/approvals", default_ttl_seconds: int = DEFAULT_TTL_SECONDS,
-                 authority_policy: Optional[AuthorityPolicy] = None) -> None:
+                 authority_policy: Optional[AuthorityPolicy] = None,
+                 time_source: Optional[TrustedTimeSource] = None) -> None:
         self.registry = registry
         self.approver_key = approver_key
         self.issuer = issuer
@@ -311,6 +431,23 @@ class ApprovalService:
         # (the bare "an authenticated human/operator says so" model) -- the
         # right choice for a genuinely attended human-approval deployment.
         self.authority_policy = authority_policy
+        # Clock-skew hardening (PR #122 round 3): the DEFAULT source of
+        # ``now`` whenever a caller does not supply one explicitly. Defaults
+        # to the pre-existing behavior (this process's own clock) when not
+        # configured -- no new dependency for non-Redis deployments. An
+        # explicit ``now=`` argument (the isolated test interface; never
+        # reachable from an HTTP request body) always bypasses this entirely.
+        self.time_source: TrustedTimeSource = time_source or LocalTimeSource()
+
+    async def _resolve_now(self, now: Optional[int]) -> int:
+        """The single place every method below turns an optional caller-
+        supplied ``now`` into a trustworthy one. Never falls back to a bare
+        ``time.time()`` when ``self.time_source`` cannot vouch for the
+        result -- raises :class:`TimeTrustError`, which every caller below
+        turns into its own fail-closed outcome (never a silent ALLOW)."""
+        if now is not None:
+            return int(now)
+        return await self.time_source.now()
 
     async def request(
         self, *, actor: str, action: str, resource: Optional[str] = None,
@@ -319,7 +456,13 @@ class ApprovalService:
         ttl_seconds: Optional[int] = None, now: Optional[int] = None,
         tenant_id: Optional[str] = None, payload: Optional[Dict[str, Any]] = None,
     ) -> str:
-        now = int(now if now is not None else time.time())
+        # Fail closed on untrusted time: a request record's own created_at/
+        # expires_at window is the foundation every later expiry check in
+        # this class relies on -- minting it from an unverified clock would
+        # undermine every check built on top, so this does not silently
+        # fall back; TimeTrustError propagates (mirrors the existing
+        # RuntimeError this method already raises on registry failure).
+        now = await self._resolve_now(now)
         ttl = ttl_seconds or self.default_ttl
         request_id = f"req-{uuid.uuid4().hex}"
         canonical_payload = dict(payload or {})
@@ -356,18 +499,36 @@ class ApprovalService:
         return request_id
 
     async def get(self, request_id: str, *, now: Optional[int] = None) -> Optional[ApprovalRecord]:
-        return await self.registry.get(request_id, now=int(now if now is not None else time.time()))
+        # A read/observability path, not a grant or exercise of authority:
+        # if the trusted clock is unavailable, report the record as stored
+        # rather than refuse the read entirely -- the actual security gates
+        # (approve()/consume() below) fail closed independently and do not
+        # rely on get() having promoted anything here.
+        try:
+            now = await self._resolve_now(now)
+        except TimeTrustError:
+            return await self.registry.get(request_id, now=-1)
+        return await self.registry.get(request_id, now=now)
 
-    async def deny(self, request_id: str) -> bool:
+    async def deny(self, request_id: str, *, now: Optional[int] = None) -> bool:
+        try:
+            now = await self._resolve_now(now)
+        except TimeTrustError:
+            return False
         return await self.registry.set_state(
-            request_id, expect=[ApprovalState.PENDING], to=ApprovalState.DENIED
+            request_id, expect=[ApprovalState.PENDING], to=ApprovalState.DENIED, now=now,
         )
 
-    async def invalidate(self, request_id: str) -> bool:
+    async def invalidate(self, request_id: str, *, now: Optional[int] = None) -> bool:
+        try:
+            now = await self._resolve_now(now)
+        except TimeTrustError:
+            return False
         return await self.registry.set_state(
             request_id,
             expect=[ApprovalState.PENDING, ApprovalState.APPROVED],
             to=ApprovalState.INVALIDATED,
+            now=now,
         )
 
     async def approve(self, request_id: str, *, now: Optional[int] = None) -> Optional[Dict[str, Any]]:
@@ -378,8 +539,13 @@ class ApprovalService:
         this exact operation (request remains PENDING -- the caller gets no
         signal distinguishing "denied by policy" from "not yet decided",
         which is intentional: an unattended caller must not be able to probe
-        policy internals by state-machine side channel)."""
-        now = int(now if now is not None else time.time())
+        policy internals by state-machine side channel). Fails closed (None)
+        if a trustworthy ``now`` cannot be established -- never mints
+        authority against an unverified clock."""
+        try:
+            now = await self._resolve_now(now)
+        except TimeTrustError:
+            return None
         rec = await self.registry.get(request_id, now=now)
         if rec is None or rec.state != ApprovalState.PENDING.value or rec.is_expired(now):
             return None
@@ -406,7 +572,7 @@ class ApprovalService:
             if decision.verdict != "ALLOW":
                 return None
         if not await self.registry.set_state(
-            request_id, expect=[ApprovalState.PENDING], to=ApprovalState.APPROVED
+            request_id, expect=[ApprovalState.PENDING], to=ApprovalState.APPROVED, now=now,
         ):
             return None
         return issue_mandate(
@@ -430,8 +596,13 @@ class ApprovalService:
     ) -> ConsumeResult:
         """Atomically consume an APPROVED request, binding to the exact
         operation. Mismatched action/transaction/payload, replay, or a non-
-        APPROVED state all fail closed."""
-        now = int(now if now is not None else time.time())
+        APPROVED state all fail closed -- as does an untrusted clock: this
+        is the exact boundary at which authority is exercised, so an
+        unverifiable ``now`` is never treated as "not yet expired"."""
+        try:
+            now = await self._resolve_now(now)
+        except TimeTrustError as exc:
+            return ConsumeResult(False, f"{exc.reason}: {exc.detail}")
         rec = await self.registry.get(request_id, now=now)
         if rec is None:
             return ConsumeResult(False, "approval not found")

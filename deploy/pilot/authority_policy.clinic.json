@@ -1,0 +1,14 @@
+{
+  "rules": [
+    {
+      "action": "refund_request",
+      "tenant": "pilot",
+      "actors": ["agent/axflow-clinic"],
+      "resource_pattern": "clinic-1",
+      "payload_bounds": {
+        "channel": {"in": ["email", "sms"]},
+        "risk_level": {"in": ["low", "normal"]}
+      }
+    }
+  ]
+}

@@ -36,7 +36,6 @@ import asyncio
 import json
 import os
 import secrets
-import time
 import uuid
 from dataclasses import asdict, dataclass
 from enum import Enum
@@ -44,6 +43,7 @@ from typing import Any, Dict, Mapping, Optional
 
 from .approvals import ConsumeResult
 from .signing import hash_action
+from .trusted_time import LocalTimeSource, TimeTrustError, TrustedTimeSource
 
 DEFAULT_TTL_SECONDS = 120
 DEFAULT_OP_TIMEOUT_SECONDS = 0.5
@@ -251,17 +251,31 @@ class ChallengeService:
     """Issues and consumes consensus challenges. The gateway owns the nonce."""
 
     def __init__(self, registry, *, issuer: str = "mcc/consensus",
-                 default_ttl_seconds: int = DEFAULT_TTL_SECONDS) -> None:
+                 default_ttl_seconds: int = DEFAULT_TTL_SECONDS,
+                 time_source: Optional[TrustedTimeSource] = None) -> None:
         self.registry = registry
         self.issuer = issuer
         self.default_ttl = default_ttl_seconds
+        # Clock-skew hardening (PR #122 round 4): default source of `now`
+        # when a caller does not supply one explicitly -- see
+        # trusted_time.py. Defaults to this process's own clock (the
+        # pre-existing behavior) when not configured.
+        self.time_source: TrustedTimeSource = time_source or LocalTimeSource()
+
+    async def _resolve_now(self, now: Optional[int]) -> int:
+        if now is not None:
+            return int(now)
+        return await self.time_source.now()
 
     async def issue(
         self, *, action: str, actor: str, resource: Optional[str], payload_hash: str,
         policy_hash: Optional[str] = None, ttl_seconds: Optional[int] = None,
         now: Optional[int] = None,
     ) -> ChallengeRecord:
-        now = int(now if now is not None else time.time())
+        # Fail closed on untrusted time: this challenge's own issued_at/
+        # expires_at window is the foundation every later expiry check
+        # relies on (mirrors ApprovalService.request()).
+        now = await self._resolve_now(now)
         ttl = ttl_seconds or self.default_ttl
         rec = ChallengeRecord(
             challenge_id=f"chal-{uuid.uuid4().hex}",
@@ -275,7 +289,15 @@ class ChallengeService:
         return rec
 
     async def get(self, challenge_id: str, *, now: Optional[int] = None) -> Optional[ChallengeRecord]:
-        return await self.registry.get(challenge_id, now=int(now if now is not None else time.time()))
+        # Read/observability path, not a grant or exercise of authority --
+        # degrade gracefully (report as stored) rather than refuse the read
+        # when the trusted clock is unavailable (mirrors
+        # ApprovalService.get()).
+        try:
+            now = await self._resolve_now(now)
+        except TimeTrustError:
+            return await self.registry.get(challenge_id, now=-1)
+        return await self.registry.get(challenge_id, now=now)
 
     async def consume(
         self, challenge_id: str, *, action: str, actor: str, resource: Optional[str],
@@ -283,8 +305,13 @@ class ChallengeService:
     ) -> ConsumeResult:
         """Atomically consume the challenge, binding to the exact operation.
         Unknown, expired, reused, or any mismatched dimension fails closed
-        *before* the single-use consume is attempted."""
-        now = int(now if now is not None else time.time())
+        *before* the single-use consume is attempted -- as does an
+        untrusted clock: this is the exact boundary at which the
+        challenge's one-time nonce is spent."""
+        try:
+            now = await self._resolve_now(now)
+        except TimeTrustError as exc:
+            return ConsumeResult(False, f"{exc.reason}: {exc.detail}")
         rec = await self.registry.get(challenge_id, now=now)
         if rec is None:
             return ConsumeResult(False, "UNKNOWN_CHALLENGE: not found")

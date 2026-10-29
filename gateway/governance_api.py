@@ -392,12 +392,20 @@ def build_governance_service(
         revocation_registry_from_env,
         velocity_registry_from_env,
     )
+    from mcc_core.trusted_time import trusted_time_source_from_env
 
     from .pilot_policy import PILOT_VELOCITY
     from .trust import trust_set_from_env
 
     env = os.environ if env is None else env
     trust_set = trust_set_from_env(env)
+    # Clock-skew hardening (PR #122 round 3): ONE shared, validated clock
+    # for this gateway instance -- see mcc_core.trusted_time. Defaults to
+    # this process's own clock (MCC_TIME_TRUST_BACKEND unset/"local"); opts
+    # into a shared, skew/availability/rollback-validated Redis clock via
+    # MCC_TIME_TRUST_BACKEND=redis. Fails closed at startup (raises) on
+    # misconfiguration -- never silently falls back to an unverified clock.
+    time_source = trusted_time_source_from_env(env)
 
     approver_path = env.get("MCC_APPROVER_SIGNING_KEY_PATH", "").strip()
     approver_kid = env.get("MCC_APPROVER_KEY_ID", "mcc-approver-1")
@@ -421,7 +429,7 @@ def build_governance_service(
     gate = ExecutionGate(
         trusted_keys={signing_key.kid: signing_key.public_key()},
         audience=token_audience, nonce_registry=shared_nonce_registry,
-        policy_hash=policy_hash,
+        policy_hash=policy_hash, time_source=time_source,
     )
     revocation = revocation_registry_from_env(env)
     # Independent authority-side policy for unattended ESCALATE auto-approval
@@ -434,7 +442,7 @@ def build_governance_service(
 
     authority_policy = authority_policy_from_env(env)
     approvals = ApprovalService(approval_registry_from_env(env), approver_key,
-                                authority_policy=authority_policy)
+                                authority_policy=authority_policy, time_source=time_source)
 
     limits = {pat: [VelocityLimit.from_config(i) for i in items]
               for pat, items in PILOT_VELOCITY.items()}
@@ -464,13 +472,13 @@ def build_governance_service(
     # store is single-use and TTL-bounded; the coordinator consumes it before
     # actuation. Always available; MCC_REQUIRE_CHALLENGE makes a gateway-issued
     # challenge mandatory for actuation (clients can no longer supply a nonce).
-    challenge_service = ChallengeService(challenge_registry_from_env(env))
+    challenge_service = ChallengeService(challenge_registry_from_env(env), time_source=time_source)
     require_challenge = _env_flag(env, "MCC_REQUIRE_CHALLENGE")
 
     # PR-2: optional Pre-Execution Attestation Control. Disabled (None) unless
     # MCC_ATTESTATION_REQUIREMENTS_CONFIG is set -- every action's behavior is
     # then identical to before PR-2. Reuses shared_nonce_registry (see above).
-    pre_execution_control = _build_pre_execution_control(env, shared_nonce_registry)
+    pre_execution_control = _build_pre_execution_control(env, shared_nonce_registry, time_source)
 
     coordinator = EnforcementCoordinator(
         gate=gate, idempotency=idempotency_registry_from_env(env),
@@ -479,6 +487,8 @@ def build_governance_service(
         revocation_registry=revocation, approvals=approvals,
         consensus_verifier=consensus_verifier, require_consensus=require_consensus,
         challenges=challenge_service, require_challenge=require_challenge,
+        time_source=time_source,
+        max_dispatch_staleness_seconds=_max_dispatch_staleness_from_env(env),
     )
 
     if upstream is None:
@@ -497,7 +507,7 @@ def build_governance_service(
         revocation_registry=revocation, approvals=approvals,
         profiles=ProfileRegistry.default_pilot(), upstream=upstream, policy_hash=policy_hash,
         consensus_verifier=consensus_verifier, challenge_service=challenge_service,
-        pre_execution_control=pre_execution_control,
+        pre_execution_control=pre_execution_control, time_source=time_source,
     )
 
 
@@ -505,7 +515,46 @@ def _env_flag(env, name: str) -> bool:
     return env.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _build_pre_execution_control(env, nonce_registry):
+# Clock-skew hardening (PR #122 round 5): the default bound on real-time
+# staleness between EnforcementCoordinator.enforce()'s authorization checks
+# and its durable dispatch commit -- generous enough to never trip under
+# normal backend latency, tight enough to catch a stuck/attacked backend
+# letting a token/mandate/approval reach dispatch long after it was checked.
+DEFAULT_MAX_DISPATCH_STALENESS_SECONDS = 30.0
+
+
+def _max_dispatch_staleness_from_env(env) -> Optional[float]:
+    raw = env.get("MCC_MAX_DISPATCH_STALENESS_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_MAX_DISPATCH_STALENESS_SECONDS
+    if raw.lower() in ("0", "off", "disabled", "none"):
+        return None
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"MCC_MAX_DISPATCH_STALENESS_SECONDS={raw!r} is not a valid number"
+        ) from exc
+    # PR #122 round 6, Finding 2: a bare ``value <= 0`` check does NOT catch
+    # NaN or infinity -- ``float("nan")`` and ``float("inf")``/``"Infinity"``
+    # all parse successfully without raising, and ``nan <= 0`` / ``inf <= 0``
+    # are both False, so both would have been ACCEPTED here. Downstream,
+    # ``staleness > nan`` and ``staleness > inf`` are ALWAYS False in Python
+    # -- either value would silently disable the dispatch-staleness
+    # protection entirely while still looking "configured" (as opposed to
+    # the explicit, honest ``off``/``0``/``disabled``/``none`` above).
+    # Delegates to the same helper RedisTimeSource already uses for its own
+    # threshold validation (mcc_core.trusted_time) -- one validated-
+    # positive-finite-seconds contract for every clock-trust threshold.
+    from mcc_core.trusted_time import TimeTrustConfigError, _validate_positive_finite
+
+    try:
+        return _validate_positive_finite(value, "MCC_MAX_DISPATCH_STALENESS_SECONDS")
+    except TimeTrustConfigError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def _build_pre_execution_control(env, nonce_registry, time_source=None):
     """Build the optional PR-2 Pre-Execution Attestation Control boundary.
 
     Disabled (returns ``None``) unless ``MCC_ATTESTATION_REQUIREMENTS_CONFIG``
@@ -548,7 +597,8 @@ def _build_pre_execution_control(env, nonce_registry):
         ))
     trust_store = AttesterTrustStore(anchors)
 
-    return PreExecutionControl(requirements=registry, trust_store=trust_store, nonce_registry=nonce_registry)
+    return PreExecutionControl(requirements=registry, trust_store=trust_store,
+                               nonce_registry=nonce_registry, time_source=time_source)
 
 
 def _build_consensus_verifier(env):

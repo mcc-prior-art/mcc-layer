@@ -72,6 +72,16 @@ services:
         exec uvicorn gateway.app:app --host 0.0.0.0 --port 8001
     environment:
       MCC_GATEWAY_MODE: "inline"
+      # Independent authority-side policy (PROPOSAL != PERMISSION): an
+      # authenticated operator key alone no longer suffices to grant an
+      # ESCALATE approval -- this exact, independently configured policy
+      # must also ALLOW the operation. Set only here (mcc-gateway); the
+      # clinic agent never reads or supplies this file. Covers
+      # refund_request within bounds (channel email/sms, risk_level
+      # low/normal); complaint_escalate (always risk_level=high) is
+      # deliberately never auto-approvable under this policy -- it stays
+      # PENDING, requiring a separate, more deliberate review path.
+      MCC_AUTHORITY_POLICY_CONFIG: "/app/authority_policy.clinic.json"
       # The governed executor targets the mock CLINIC service and requires a
       # confirmed matching receipt before EXECUTED.
       MCC_UPSTREAM_BASE: "http://clinic-service:9300"
@@ -82,6 +92,10 @@ services:
       MCC_APPROVAL_BACKEND: "redis"
       MCC_CHALLENGE_BACKEND: "redis"
       MCC_REVOCATION_BACKEND: "redis"
+      # Clock-skew hardening (PR #122): resolve `now` for approval/mandate/
+      # gate validity checks from this SAME shared, validated Redis clock
+      # rather than each gateway instance's own local clock.
+      MCC_TIME_TRUST_BACKEND: "redis"
     volumes:
       - clinic-config:/config
       - clinic-audit:/data

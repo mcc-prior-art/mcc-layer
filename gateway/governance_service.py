@@ -36,6 +36,7 @@ from mcc_core import (
     Verdict,
     hash_payload,
 )
+from mcc_core.trusted_time import LocalTimeSource, TimeTrustError, TrustedTimeSource
 
 from .pre_execution_control import PreExecutionControl
 
@@ -103,9 +104,20 @@ class GovernanceService:
         consensus_verifier: Optional[Any] = None,
         challenge_service: Optional[Any] = None,
         pre_execution_control: Optional[PreExecutionControl] = None,
+        time_source: Optional[TrustedTimeSource] = None,
     ) -> None:
         self.engine = engine
         self.coordinator = coordinator
+        # Clock-skew hardening (PR #122 round 3): the SINGLE source of
+        # trusted ``now`` this gateway instance resolves per request --
+        # see ``mcc_core.trusted_time``. Defaults to this process's own
+        # clock (pre-existing behavior) when not configured; opts into a
+        # shared, validated Redis clock via build_governance_service's
+        # MCC_TIME_TRUST_BACKEND=redis. ``_now()`` below is the only place
+        # this service resolves "now" for mandate/trust verification and
+        # decision-token issuance -- it never falls back to an unchecked
+        # ``time.time()`` when this source cannot vouch for the result.
+        self.time_source: TrustedTimeSource = time_source or LocalTimeSource()
         # Optional pre-token Multi-Context Consensus step (None = disabled).
         self.consensus_verifier = consensus_verifier
         # Optional consensus-challenge service: the gateway issues the one-time
@@ -124,7 +136,7 @@ class GovernanceService:
 
     async def _attestation_gate(
         self, *, action: str, forward_context: Dict[str, Any], resource: Optional[str],
-        attestation: Optional[Dict[str, Any]],
+        attestation: Optional[Dict[str, Any]], now: Optional[int] = None,
     ) -> "tuple[Optional[ExecOutcome], Optional[str]]":
         """Shared PR-2/PR-3 gate. Returns ``(blocked, evidence_digest)``:
 
@@ -145,7 +157,7 @@ class GovernanceService:
             return None, None
         result = await self.pre_execution_control.evaluate(
             action=action, forward_context=forward_context, resource=resource,
-            raw_attestation=attestation, policy_hash=self.policy_hash,
+            raw_attestation=attestation, policy_hash=self.policy_hash, now=now,
         )
         if result.ok:
             return None, result.evidence_digest
@@ -155,9 +167,13 @@ class GovernanceService:
 
     # ---- helpers ----
 
-    @staticmethod
-    def _now() -> int:
-        return int(time.time())
+    async def _now(self) -> int:
+        """The single trusted-``now`` resolution point for this service.
+        Raises :class:`TimeTrustError` when ``self.time_source`` cannot
+        currently vouch for a result -- every caller below catches this and
+        fails closed (BLOCKED/denied), never substituting an unchecked
+        local clock."""
+        return await self.time_source.now()
 
     def _authority_for(self, mandate: Any, now: int):
         """Resolve the mandate's kid against the trust set and return a
@@ -171,6 +187,11 @@ class GovernanceService:
         verifier = MandateVerifier(
             trusted_keys={resolution.kid: resolution.public_key},
             revocation_registry=self.revocation_registry,
+            # Same shared, validated clock this service itself resolved
+            # ``now`` from -- consistent even though ``verify()`` below is
+            # always called with an explicit ``now`` (defense-in-depth for
+            # any future call site that omits it).
+            time_source=self.time_source,
         )
         return MandateAuthority(verifier), resolution
 
@@ -180,7 +201,10 @@ class GovernanceService:
         self, *, mandate: Any, subject: str, action: str,
         resource: Optional[str] = None, policy_hash: Optional[str] = None,
     ) -> VerifyOutcome:
-        now = self._now()
+        try:
+            now = await self._now()
+        except TimeTrustError as exc:
+            return VerifyOutcome(False, f"{exc.reason}: {exc.detail}")
         authority, resolution = self._authority_for(mandate, now)
         if authority is None:
             return VerifyOutcome(False, f"{resolution.status.value}: {resolution.reason}")
@@ -208,7 +232,10 @@ class GovernanceService:
         extra_auth_claims: Optional[Dict[str, Any]] = None,
         attestation: Optional[Dict[str, Any]] = None,
     ) -> ExecOutcome:
-        now = self._now()
+        try:
+            now = await self._now()
+        except TimeTrustError as exc:
+            return ExecOutcome("BLOCKED", f"{exc.reason}: {exc.detail}", decision="DENY")
         authority, resolution = self._authority_for(mandate, now)
         if authority is None:
             return ExecOutcome("BLOCKED", f"{resolution.status.value}: {resolution.reason}",
@@ -241,7 +268,7 @@ class GovernanceService:
         # for a VERIFIED required attestation (None otherwise).
         blocked, evidence_digest = await self._attestation_gate(
             action=action, forward_context=forward_context, resource=resource,
-            attestation=attestation,
+            attestation=attestation, now=now,
         )
         if blocked is not None:
             return blocked
@@ -281,7 +308,12 @@ class GovernanceService:
             transaction_id=transaction_id, idempotency_key=idempotency_key,
             tenant_id=tenant_id, actor_id=actor, resource_id=resource,
             auth_claims=auth_claims, mandate_id=decision.mandate_id,
-            evidence_digest=evidence_digest,
+            evidence_digest=evidence_digest, now=now,
+            # PR #122 round 6, Finding 1: never let the issued token outlive
+            # the mandate (or, via execute_with_approval, the approval-
+            # minted mandate) that authorized it -- see
+            # MandateAuthorityDecision.mandate_exp / issue_token's max_exp.
+            max_exp=decision.mandate_exp,
         )
         # PR-3: the exact raw evidence artifact (when this token is
         # evidence-bound) follows the token down the SAME governed execution
@@ -372,12 +404,12 @@ class GovernanceService:
 
     # ---- multi-context consensus (pre-token authority step) ----
 
-    def _consensus(self, votes, action, context, actor, resource=None, nonce=None):
+    def _consensus(self, votes, action, context, actor, resource=None, nonce=None, now=None):
         profile = self.profiles.for_action(action)
         canonical = profile.canonical_payload(context)  # may raise ProfileError
         result = self.consensus_verifier.verify(
             votes, action=action, payload=canonical, actor=actor,
-            resource=resource, policy_hash=self.policy_hash, nonce=nonce)
+            resource=resource, policy_hash=self.policy_hash, nonce=nonce, now=now)
         return profile, canonical, result
 
     async def verify_consensus(self, *, votes, action, context, actor,
@@ -386,7 +418,12 @@ class GovernanceService:
             return {"verdict": "DENY", "reason": "consensus not configured; fail-closed",
                     "agreement": 0, "threshold": 0, "evaluators": [], "rejected_votes": 0}
         try:
-            _, _, result = self._consensus(votes, action, context, actor, resource, nonce)
+            now = await self._now()
+        except TimeTrustError as exc:
+            return {"verdict": "DENY", "reason": f"{exc.reason}: {exc.detail}", "agreement": 0,
+                    "threshold": 0, "evaluators": [], "rejected_votes": 0}
+        try:
+            _, _, result = self._consensus(votes, action, context, actor, resource, nonce, now)
         except ProfileError as exc:
             return {"verdict": "DENY", "reason": f"PROFILE_ERROR: {exc}", "agreement": 0,
                     "threshold": 0, "evaluators": [], "rejected_votes": 0}
@@ -411,6 +448,10 @@ class GovernanceService:
         authority for the nonce: it is resolved and re-bound here (unknown or
         expired -> fail closed), its nonce is used to verify the votes and issue
         the token, and the coordinator consumes it single-use before actuation."""
+        try:
+            now = await self._now()
+        except TimeTrustError as exc:
+            return ExecOutcome("BLOCKED", f"{exc.reason}: {exc.detail}", decision="DENY")
         if self.consensus_verifier is None:
             return ExecOutcome("BLOCKED", "consensus not configured; fail-closed", decision="DENY")
 
@@ -430,7 +471,7 @@ class GovernanceService:
             auth_claims_extra["challenge_id"] = challenge_id
 
         try:
-            profile, canonical, result = self._consensus(votes, action, context, actor, resource, nonce)
+            profile, canonical, result = self._consensus(votes, action, context, actor, resource, nonce, now)
         except ProfileError as exc:
             return ExecOutcome("BLOCKED", f"PROFILE_ERROR: {exc}", decision="DENY")
         if not result.ok:
@@ -441,7 +482,7 @@ class GovernanceService:
         # the action profile, never the raw caller-supplied context.
         blocked, evidence_digest = await self._attestation_gate(
             action=action, forward_context=canonical, resource=resource,
-            attestation=attestation,
+            attestation=attestation, now=now,
         )
         if blocked is not None:
             return blocked
@@ -474,7 +515,7 @@ class GovernanceService:
             transaction_id=transaction_id, idempotency_key=idempotency_key,
             tenant_id=tenant_id, actor_id=actor, resource_id=resource,
             auth_claims=auth_claims, nonce=nonce,
-            evidence_digest=evidence_digest)
+            evidence_digest=evidence_digest, now=now)
         return await self._run(token, action, canonical, actor, resource, transaction_id, None,
                                tenant_id=tenant_id, consensus_votes=votes, evidence=attestation)
 
@@ -488,6 +529,19 @@ class GovernanceService:
                 raise RuntimeError("no upstream configured")
             return await self.upstream(action, forward_context)
 
+        # Deliberately NEVER pass ``now=`` into ``coordinator.enforce()``
+        # here (see tests/test_velocity.py::
+        # test_no_production_call_site_passes_an_explicit_now_to_velocity_
+        # reserve): that single parameter also reaches
+        # ``VelocityRegistry.reserve()``, and ``InMemoryVelocityRegistry``
+        # deliberately uses ``time.monotonic()`` (not epoch time) for its
+        # window bookkeeping -- a wall-clock ``now`` threaded in from here
+        # would be silently incomparable to it. The gate's token-validity
+        # check and ``ApprovalService.consume()`` each resolve their own
+        # trusted ``now`` independently instead (``ExecutionGate``'s own
+        # ``time_source``; ``ApprovalService.time_source`` -- see
+        # ``trusted_time.py``), which keeps this invariant intact while
+        # still closing the clock-skew gap in each of those components.
         result = await self.coordinator.enforce(
             token=token, action=action, payload=forward_context, executor=executor,
             request_binding={"actor_id": actor, "resource_id": resource,

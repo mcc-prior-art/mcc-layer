@@ -655,7 +655,9 @@ class TestCaseL_PayloadSubstitutionAfterApproval:
                 tenant_id="pilot", payload={"priority": 1, "channel": "email"},
             )
             await svc.registry.create(bypassing_record)
-            await svc.registry.set_state(rid, expect=[ApprovalState.PENDING], to=ApprovalState.APPROVED)
+            await svc.registry.set_state(
+                rid, expect=[ApprovalState.PENDING], to=ApprovalState.APPROVED, now=0,
+            )
             return await svc.consume(
                 rid, action_hash=hash_action("send_notification"), transaction_id=None,
                 payload_hash=hash_payload({"priority": 9, "channel": "email"}),

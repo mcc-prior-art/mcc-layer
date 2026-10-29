@@ -38,6 +38,12 @@ from .core import Verdict
 from .idempotency import ReserveStatus
 from .profiles import ProfileRegistry
 from .signing import hash_document
+from .trusted_time import (
+    LocalTimeSource,
+    TimeTrustError,
+    TrustedTimeSource,
+    _validate_positive_finite,
+)
 from .velocity import VelocityLimit, VelocityOutcome
 
 
@@ -85,6 +91,8 @@ class EnforcementCoordinator:
         require_consensus: bool = False,
         challenges: Optional[Any] = None,
         require_challenge: bool = False,
+        time_source: Optional[TrustedTimeSource] = None,
+        max_dispatch_staleness_seconds: Optional[float] = None,
     ) -> None:
         self.gate = gate
         self.idempotency = idempotency
@@ -92,6 +100,56 @@ class EnforcementCoordinator:
         self.audit = audit
         self.profiles = profiles or ProfileRegistry()
         self.velocity_limits_for = velocity_limits_for or (lambda action: [])
+        # Clock-skew hardening (PR #122 round 5): bounds the real-time gap
+        # between the trusted `now` this call authorized gate/consensus/
+        # challenge/approval AGAINST (resolved once, near the top of
+        # ``enforce()``) and the point of durable dispatch commit (step f)
+        # below. Every authorization check above is correctly evaluated
+        # against ONE consistent, trusted timestamp -- but a slow
+        # idempotency/velocity/audit backend between that resolution and
+        # actual dispatch could otherwise let a token/mandate/approval that
+        # was valid at the moment it was checked reach actuation long after
+        # it would have genuinely expired by true wall-clock time. This
+        # does NOT re-verify or re-consume the token/mandate/approval/
+        # challenge (that would mean a second consumption of a single-use
+        # grant) -- it only re-samples the SAME trusted time source and
+        # measures elapsed real time, failing closed (and releasing
+        # whatever capacity/logical-operation reservation is still safely
+        # releasable -- see ``_release``) if that gap is excessive. ``None``
+        # (default) disables the check entirely, matching this class's
+        # pre-existing behavior exactly.
+        #
+        # PR #122 round 6, Finding 2: validated here (not just at the
+        # env-parsing boundary in gateway/governance_api.py) so EVERY
+        # construction path -- direct, test, or env-driven -- is protected.
+        # A bare ``float("nan")``/``float("inf")`` parses without raising,
+        # and ``staleness > nan`` and ``staleness > inf`` are BOTH always
+        # False in Python -- either would SILENTLY DISABLE this protection
+        # entirely (a configuration that looks "on" but never fires) rather
+        # than refusing to start. Reuses the same helper RedisTimeSource
+        # already uses for its own threshold validation (see
+        # ``trusted_time.py``) -- one validated-positive-finite-seconds
+        # contract across every clock-trust threshold in this codebase.
+        self.max_dispatch_staleness_seconds: Optional[float] = (
+            None if max_dispatch_staleness_seconds is None
+            else _validate_positive_finite(
+                max_dispatch_staleness_seconds, "max_dispatch_staleness_seconds"
+            )
+        )
+        # Clock-skew hardening (PR #122 round 4): the trusted-time source
+        # this coordinator resolves ITS OWN `now` from, for its internal
+        # fan-out to consensus/challenge verification below, WHEN THE
+        # CALLER passes no explicit `now` (the production case -- see
+        # tests/test_velocity.py's static guard, which forbids
+        # governance_service.py et al. from ever passing an explicit now=
+        # into .enforce()). Deliberately NEVER substituted for the `now`
+        # passed to VelocityRegistry.reserve()/release() below, which keeps
+        # using the caller's own (always-None-in-production) `now`
+        # unchanged, so InMemoryVelocityRegistry's deliberate
+        # time.monotonic() semantics are untouched -- see that same guard's
+        # rationale. Defaults to this process's own clock (pre-existing
+        # behavior) when not configured.
+        self.time_source: TrustedTimeSource = time_source or LocalTimeSource()
         # Mandatory Multi-Context Consensus: when ``require_consensus`` is set, no
         # action reaches actuation unless a valid N-of-M consensus, bound to the
         # token's exact action/actor/payload/resource/policy_hash/nonce, is
@@ -136,6 +194,27 @@ class EnforcementCoordinator:
         evidence: Optional[Dict[str, Any]] = None,
         now: Optional[int] = None,
     ) -> ActuationResult:
+        # Clock-skew hardening (PR #122 round 4): resolve ONE trusted `now`
+        # for this call's gate/consensus/challenge/approval checks below --
+        # never for VelocityRegistry.reserve()/release(), which keeps using
+        # the raw, unresolved `now` parameter exactly as before (see
+        # __init__'s time_source comment / tests/test_velocity.py's static
+        # guard). ``now`` is always None from every production caller
+        # today (governance_service.py never passes it -- same guard), so
+        # this always resolves via ``self.time_source`` in production;
+        # fails closed (BLOCKED) rather than falling back to an unchecked
+        # local clock.
+        now_was_explicit = now is not None
+        if now_was_explicit:
+            trusted_now = int(now)
+        else:
+            try:
+                trusted_now = await self.time_source.now()
+            except TimeTrustError as exc:
+                reason = f"{exc.reason}: {exc.detail}"
+                self._record(kind="actuation_rejected", action=action, reason=reason)
+                return ActuationResult(ActuationStatus.BLOCKED, reason)
+
         # (a) validate token + operation binding + PR-3 evidence-bound
         # execution ticket binding, (b) consume nonce. ``evidence`` is the
         # exact raw evidence artifact for this operation (when the caller
@@ -143,7 +222,7 @@ class EnforcementCoordinator:
         # one -- passing None here for a non-evidence-bound token is a no-op.
         gate_result = await self.gate.verify(
             token, action=action, payload=payload, binding=request_binding,
-            evidence=evidence, now=now,
+            evidence=evidence, now=trusted_now,
         )
         if not gate_result.allowed:
             self._record(kind="actuation_rejected", action=action, reason=gate_result.reason)
@@ -201,7 +280,7 @@ class EnforcementCoordinator:
                 result = self.consensus_verifier.verify(
                     consensus_votes, action=action, payload=payload,
                     actor=token.get("actor_id"), resource=token.get("resource_id"),
-                    policy_hash=token.get("policy_hash"), nonce=token.get("nonce"), now=now)
+                    policy_hash=token.get("policy_hash"), nonce=token.get("nonce"), now=trusted_now)
             if result is None or result.verdict != Verdict.ALLOW:
                 reason = ("consensus required: " +
                           (result.reason if result is not None else
@@ -230,7 +309,7 @@ class EnforcementCoordinator:
                 payload_hash=token.get("payload_hash"),
                 policy_hash=token.get("policy_hash"),
                 nonce=token.get("nonce"),
-                now=now,
+                now=trusted_now,
             )
             if not consumed.ok:
                 reason = f"challenge {challenge_id} not consumable: {consumed.reason}"
@@ -259,7 +338,7 @@ class EnforcementCoordinator:
                 action_hash=token.get("action_hash"),
                 transaction_id=token.get("transaction_id"),
                 payload_hash=token.get("payload_hash"),
-                now=now,
+                now=trusted_now,
             )
             if not consumed.ok:
                 reason = f"approval {approval_id} not consumable: {consumed.reason}"
@@ -364,6 +443,85 @@ class EnforcementCoordinator:
             return ActuationResult(
                 ActuationStatus.BLOCKED, "audit-before-actuation failed; fail-closed"
             )
+
+        # Clock-skew hardening (PR #122 round 5, hardened round 6): the LAST
+        # safe point to check staleness -- still strictly before step (f)'s
+        # point of no return, so releasing is still safe, and as close to
+        # actual dispatch as this method gets. Every authorization check
+        # above (gate/consensus/challenge/approval) was evaluated against
+        # ``trusted_now``, resolved once near the top of this call; the
+        # idempotency reserve, velocity reserve, and audit write just above
+        # may each have taken real wall-clock time (a slow backend,
+        # contention, a network hiccup). Skipped entirely when this call
+        # resolved its own trusted ``now`` (``now_was_explicit`` is False
+        # guards every branch below) -- a caller that supplied an explicit
+        # ``now`` (tests, or any future direct caller) is using its own
+        # clock contract and is not second-guessed here.
+        if not now_was_explicit:
+            try:
+                dispatch_now = await self.time_source.now()
+            except TimeTrustError as exc:
+                await self._release(reserved_limits, descriptor, idem_key, tenant_id, idem_fence, now)
+                reason = f"{exc.reason}: {exc.detail}"
+                self._record(kind="actuation_rejected", action=action, reason=reason)
+                return ActuationResult(ActuationStatus.BLOCKED, reason)
+
+            # PR #122 round 6, Finding 1: re-check the TOKEN'S OWN signed
+            # exp/nbf against this fresh ``dispatch_now`` -- UNCONDITIONALLY,
+            # never gated behind ``max_dispatch_staleness_seconds``. This is
+            # a plain comparison against claims the gate already
+            # cryptographically verified at the top of this call (``ts >=
+            # exp`` / ``ts < nbf`` in ``ExecutionGate.verify()``); it never
+            # re-verifies the signature, never re-consumes the nonce, and
+            # never consults the gate again. Why it is necessary even with
+            # the elapsed-gap check below: that check only bounds the GAP
+            # against a fixed, configured threshold (default 30s) -- it says
+            # nothing about the token's OWN, possibly much shorter, TTL. A
+            # token issued with a 5-second TTL that is still "fresh" by a
+            # generous 30-second staleness bound has nonetheless, by true
+            # wall-clock time, already expired by the time dispatch reaches
+            # this point -- the gap-only check cannot see that, because it
+            # was never comparing against the token's own validity window in
+            # the first place. Confirmed via reproduction before this fix:
+            # see tests/test_dispatch_staleness.py's
+            # test_token_expired_before_dispatch_blocks_even_within_staleness_bound.
+            exp = token.get("exp")
+            if isinstance(exp, int) and dispatch_now >= exp:
+                await self._release(reserved_limits, descriptor, idem_key, tenant_id, idem_fence, now)
+                reason = (
+                    f"TOKEN_EXPIRED_BEFORE_DISPATCH: token exp={exp} has passed by dispatch "
+                    f"(dispatch_now={dispatch_now}), even though it was valid when the gate "
+                    f"verified it (trusted_now={trusted_now}); fail-closed"
+                )
+                self._record(kind="actuation_rejected", action=action, reason=reason)
+                return ActuationResult(ActuationStatus.BLOCKED, reason)
+            nbf = token.get("nbf")
+            if isinstance(nbf, int) and dispatch_now < nbf:
+                await self._release(reserved_limits, descriptor, idem_key, tenant_id, idem_fence, now)
+                reason = (
+                    f"TOKEN_NOT_YET_VALID_AT_DISPATCH: token nbf={nbf} is still in the future "
+                    f"at dispatch (dispatch_now={dispatch_now}); fail-closed"
+                )
+                self._record(kind="actuation_rejected", action=action, reason=reason)
+                return ActuationResult(ActuationStatus.BLOCKED, reason)
+
+            # The pre-existing elapsed-gap check: bounds real time spent in
+            # the idempotency/velocity/audit steps above against a fixed,
+            # configured threshold -- a SEPARATE, opt-in, defense-in-depth
+            # control from the unconditional token-expiry recheck above, not
+            # a replacement for it. Reuses the SAME ``dispatch_now`` sample
+            # (no second round trip to the time source).
+            if self.max_dispatch_staleness_seconds is not None:
+                staleness = dispatch_now - trusted_now
+                if staleness > self.max_dispatch_staleness_seconds:
+                    await self._release(reserved_limits, descriptor, idem_key, tenant_id, idem_fence, now)
+                    reason = (
+                        f"AUTHORIZATION_STALE: {staleness}s elapsed between authorization "
+                        f"(trusted_now={trusted_now}) and dispatch (dispatch_now={dispatch_now}), "
+                        f"exceeding the {self.max_dispatch_staleness_seconds}s bound; fail-closed"
+                    )
+                    self._record(kind="actuation_rejected", action=action, reason=reason)
+                    return ActuationResult(ActuationStatus.BLOCKED, reason)
 
         # (f) durably commit dispatch ownership -- THE point of no return.
         # From here on, no failure (exception, timeout, disconnect, process

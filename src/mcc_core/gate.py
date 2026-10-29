@@ -24,7 +24,6 @@ Any exception anywhere resolves to deny.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -33,6 +32,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from .core import Verdict
 from .nonce import NonceRegistry
 from .signing import hash_action, hash_document, hash_payload, is_valid_digest, verify_token
+from .trusted_time import LocalTimeSource, TimeTrustError, TrustedTimeSource
 
 
 @dataclass
@@ -52,6 +52,7 @@ class ExecutionGate:
         nonce_ttl_seconds: int = 300,
         min_nonce_ttl_seconds: int = 1,
         nonce_clock_skew_seconds: int = 30,
+        time_source: Optional[TrustedTimeSource] = None,
     ) -> None:
         self.trusted_keys = trusted_keys
         self.audience = audience
@@ -63,6 +64,16 @@ class ExecutionGate:
         self.max_nonce_ttl_seconds = nonce_ttl_seconds
         self.min_nonce_ttl_seconds = min_nonce_ttl_seconds
         self.nonce_clock_skew_seconds = nonce_clock_skew_seconds
+        # Clock-skew hardening (PR #122 round 3): the default source of
+        # ``now`` below when the caller (``coordinator.enforce()``, which
+        # deliberately never passes an explicit ``now`` -- see
+        # tests/test_velocity.py's static guard) does not supply one.
+        # Defaults to this process's own clock (the pre-existing behavior)
+        # when not configured. This is independent of, and does not alter,
+        # ``EnforcementCoordinator``'s own ``now`` parameter or
+        # ``VelocityRegistry``'s distinct (and deliberately untouched)
+        # monotonic-vs-wall-clock semantics.
+        self.time_source: TrustedTimeSource = time_source or LocalTimeSource()
 
     def _nonce_ttl(self, exp: int, now: int) -> int:
         """Derive the nonce record's TTL from the token's validity window.
@@ -116,7 +127,13 @@ class ExecutionGate:
         if token.get("aud") != self.audience:
             return GateResult(False, "AUDIENCE_MISMATCH: token bound to another gate")
 
-        ts = int(now if now is not None else time.time())
+        if now is not None:
+            ts = int(now)
+        else:
+            try:
+                ts = await self.time_source.now()
+            except TimeTrustError as exc:
+                return GateResult(False, f"{exc.reason}: {exc.detail}")
         nbf, exp = token.get("nbf"), token.get("exp")
         if not isinstance(nbf, int) or not isinstance(exp, int):
             return GateResult(False, "INVALID_TIME_WINDOW: missing nbf/exp")
