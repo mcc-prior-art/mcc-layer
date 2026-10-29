@@ -444,6 +444,7 @@ mcc-layer/
 │   │   ├── MCC_CORE_STRATEGIC_ROADMAP_v1.2.md ← approved Strategic Engineering Roadmap v1.2 (28 Oct 2026): P0–P3 workstreams + acceptance gates, trusted-time assurance spec, failure-modes/recovery matrix, threat-model governance/PR traceability
 │   │   ├── MCC_CORE_THREAT_MODEL_v1.0.md      ← STRIDE threat model v1.0 (28 Oct 2026): stable T-01…T-12 register, 6 trust boundaries, trusted-time/anti-NTP-spoofing spec, failure/recovery/attribution table, threat-to-PR traceability + PR description templates
 │   │   ├── PR122_POST_MERGE_ADDENDUM.md       ← post-merge status update (29 Oct 2026) to the two docs above: PR #122 actually merged (`fdd7fe0`, final head `ee896c1`), Round 4–6 TrustedTime/dispatch-staleness/mandate-exp-clamp closure evidence, updated threat-to-control-to-test traceability; does not edit or re-date the originals
+│   │   ├── PR124_P1_COMPLETION_ADDENDUM.md    ← post-merge status update (29 Oct 2026): P1 (Verifiable Delegation & Intent Binding, PR #124) merged at `9f1c8a7` (head `357dfdd`); scope-accurate STRIDE T-01/T-03/T-05/T-06/T-09 status table (do not generalize beyond the delegation path); P2-A/P2-B named next, not claimed complete; does not edit or re-date the originals
 │   │   └── README.md                          ← index; relationship to the pre-existing, differently-scoped docs/THREAT_MODEL.md, docs/SECURITY_MODEL.md, docs/ROADMAP.md
 │   └── exhibits/              ← NIW exhibits (protected)
 ├── certifications/
