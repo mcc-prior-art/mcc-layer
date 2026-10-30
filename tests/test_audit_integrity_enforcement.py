@@ -590,3 +590,222 @@ def test_governance_service_default_has_no_integrity_monitor():
     mandate_key = SigningKey.generate("issuer-1")
     service = _governance_service(mandate_key=mandate_key)  # no integrity_monitor kwarg at all
     assert service.integrity_monitor is None
+
+
+# ===========================================================================
+# 9. Hardening round, Finding 1 (P1): journal deletion/truncation AFTER a
+#    legitimate initialization must never be absorbed as "a fresh
+#    bootstrap", through BOTH enforcement boundaries, with zero actuator
+#    calls -- even with allow_empty_bootstrap=True.
+# ===========================================================================
+
+
+@pytest.mark.parametrize("destroy", ["delete", "truncate_to_zero"])
+def test_journal_deletion_after_initialization_blocks_direct_coordinator_call(destroy):
+    audit = _tmp_audit()
+    audit.append({"seed": "real-history"})
+    registry = InMemoryIntegrityStateRegistry()
+    monitor = AuditIntegrityMonitor(audit, registry, allow_empty_bootstrap=True)
+    assert run(monitor.verify_once()) == IntegrityState.HEALTHY
+
+    if destroy == "delete":
+        Path(audit.path).unlink()
+    else:
+        Path(audit.path).write_text("", encoding="utf-8")
+
+    # Same process, same AuditLog instance -- the zero-delay prev_hash fast
+    # path closes the race window without waiting for another pass.
+    second_pass = run(monitor.verify_once())
+    assert second_pass == IntegrityState.UNHEALTHY
+
+    coord = _bare_coordinator(audit, integrity_monitor=monitor)
+    calls = {"n": 0}
+
+    async def executor():
+        calls["n"] += 1
+        return {"ok": True}
+
+    result = run(coord.enforce(token=_token("deletion-1"), action=ACTION, payload={}, executor=executor))
+    assert result.status == ActuationStatus.BLOCKED
+    assert "AUDIT_INTEGRITY_NOT_HEALTHY" in result.reason
+    assert calls["n"] == 0
+
+
+@pytest.mark.parametrize("destroy", ["delete", "truncate_to_zero"])
+def test_journal_deletion_after_initialization_blocks_mandate_issuance(destroy):
+    mandate_key = SigningKey.generate("issuer-1")
+    audit = _tmp_audit()
+    audit.append({"seed": "real-history"})
+    registry = InMemoryIntegrityStateRegistry()
+    monitor = AuditIntegrityMonitor(audit, registry, allow_empty_bootstrap=True)
+    assert run(monitor.verify_once()) == IntegrityState.HEALTHY
+
+    if destroy == "delete":
+        Path(audit.path).unlink()
+    else:
+        Path(audit.path).write_text("", encoding="utf-8")
+    assert run(monitor.verify_once()) == IntegrityState.UNHEALTHY
+
+    coordinator = EnforcementCoordinator(
+        gate=ExecutionGate(
+            trusted_keys={}, audience="pilot", nonce_registry=InMemoryNonceRegistry(),
+            policy_hash=POLICY_HASH,
+        ),
+        idempotency=InMemoryIdempotencyRegistry(), velocity=InMemoryVelocityRegistry(),
+        audit=audit, profiles=ProfileRegistry.default_pilot(),
+        revocation_registry=InMemoryRevocationRegistry(), integrity_monitor=monitor,
+    )
+    trust_set = TrustSet()
+    trust_set.add_runtime_issuer("axlogiq/pilot", mandate_key.kid, mandate_key.public_key())
+    approver_key = SigningKey.generate("approver-1")
+    trust_set.add_runtime_issuer("mcc/approvals", approver_key.kid, approver_key.public_key())
+    signing_key = SigningKey.generate("gw-signing-1")
+    engine = DecisionEngine(signing_key=signing_key, issuer="mcc/core", audience="pilot",
+                            policy_id="pilot/v1", policy_hash=POLICY_HASH)
+    issue_calls = {"n": 0}
+    original_issue_token = engine.issue_token
+
+    def counting_issue_token(*a, **kw):
+        issue_calls["n"] += 1
+        return original_issue_token(*a, **kw)
+
+    engine.issue_token = counting_issue_token
+    upstream = _CountingUpstream()
+    service = GovernanceService(
+        engine=engine, coordinator=coordinator, trust_set=trust_set,
+        revocation_registry=InMemoryRevocationRegistry(),
+        approvals=ApprovalService(InMemoryApprovalRegistry(), approver_key),
+        profiles=ProfileRegistry.default_pilot(), upstream=upstream, policy_hash=POLICY_HASH,
+        integrity_monitor=monitor,
+    )
+    mandate = _mandate(mandate_key)
+    out = run(service.execute_with_mandate(
+        mandate=mandate, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
+        context=_raw_context(), idempotency_key="deletion-mandate-1", tenant_id="tenant-1",
+    ))
+    assert out.status == "BLOCKED"
+    assert "AUDIT_INTEGRITY_NOT_HEALTHY" in out.reason
+    assert issue_calls["n"] == 0, "issue_token must never be called after journal deletion"
+    assert upstream.calls == 0
+
+
+def test_non_vacuity_reusable_bootstrap_would_have_resurrected_healthy():
+    """Non-vacuity companion: reproduces the PRE-FIX ``_verify_once_locked``
+    logic directly (treat empty/missing as bootstrap on EVERY pass,
+    without the one-way latch this hardening round adds) to prove the P1
+    bug was real -- deleting the journal after legitimate initialization
+    would otherwise have been silently absorbed as "a fresh bootstrap"
+    and reported HEALTHY again."""
+    audit = _tmp_audit()
+    audit.append({"seed": "real-history"})
+    registry = InMemoryIntegrityStateRegistry()
+    monitor = AuditIntegrityMonitor(audit, registry, allow_empty_bootstrap=True)
+    assert run(monitor.verify_once()) == IntegrityState.HEALTHY
+
+    Path(audit.path).unlink()
+
+    async def pre_fix_verify_once() -> IntegrityState:
+        # The exact pre-fix branch this hardening round replaced: empty/
+        # missing is ALWAYS eligible for allow_empty_bootstrap, with no
+        # one-way "ever initialized" latch at all.
+        import os as _os
+
+        if not _os.path.exists(audit.path) or _os.path.getsize(audit.path) == 0:
+            return IntegrityState.HEALTHY  # allow_empty_bootstrap=True, unconditionally
+        return await monitor.verify_once()
+
+    resurrected = run(pre_fix_verify_once())
+    assert resurrected == IntegrityState.HEALTHY, (
+        "expected the reproduced pre-fix logic to incorrectly resurrect "
+        "HEALTHY after journal deletion -- if it no longer does, this "
+        "non-vacuity check itself needs revisiting"
+    )
+    # And the ACTUAL fixed monitor, on the same destroyed file, correctly
+    # fails closed instead.
+    assert run(monitor.verify_once()) == IntegrityState.UNHEALTHY
+
+
+# ===========================================================================
+# 10. Hardening round, Finding 3: multi-worker integrity isolation -- a
+#     worker whose OWN audit log differs from the one a shared registry's
+#     HEALTHY result was computed over must never inherit it.
+# ===========================================================================
+
+
+def test_worker_with_different_audit_log_does_not_inherit_shared_healthy():
+    shared_registry = InMemoryIntegrityStateRegistry()
+
+    # Worker B establishes trust in ITS OWN audit log first (exactly what
+    # the mandatory synchronous startup verification does in every real
+    # deployment path) -- its own identity is now cached locally.
+    audit_b = _tmp_audit()
+    audit_b.append({"seed": "worker-b-genuine-history"})
+    mon_b = AuditIntegrityMonitor(audit_b, shared_registry)
+    assert run(mon_b.verify_once()) == IntegrityState.HEALTHY
+    assert run(mon_b.current_state()) == IntegrityState.HEALTHY
+
+    # Worker A is misconfigured (or its local file was corrupted/replaced)
+    # to point at a DIFFERENT audit log than worker B's, while sharing the
+    # SAME registry key. A's own periodic pass overwrites the shared
+    # record with A's result and A's identity.
+    audit_a = _tmp_audit()
+    audit_a.append({"seed": "worker-a-DIFFERENT-history"})
+    mon_a = AuditIntegrityMonitor(audit_a, shared_registry)
+    assert run(mon_a.verify_once()) == IntegrityState.HEALTHY
+
+    coord_b = _bare_coordinator(audit_b, integrity_monitor=mon_b)
+    calls = {"n": 0}
+
+    async def executor():
+        calls["n"] += 1
+        return {"ok": True}
+
+    # Worker B must NOT inherit A's (different-log) HEALTHY result just
+    # because the shared registry now reports HEALTHY -- B's own
+    # previously-established identity no longer matches what the registry
+    # holds.
+    assert run(mon_b.current_state()) == IntegrityState.UNHEALTHY, (
+        "worker B's own identity does not match the shared registry's "
+        "most-recently-written identity (worker A's, a different log) -- "
+        "must fail closed, never silently inherit a different worker's "
+        "result for a different log"
+    )
+
+    result = run(coord_b.enforce(token=_token("cross-worker-1"), action=ACTION, payload={}, executor=executor))
+    assert result.status == ActuationStatus.BLOCKED
+    assert calls["n"] == 0
+
+
+def test_non_vacuity_shared_healthy_without_identity_check_would_be_inherited():
+    """Non-vacuity companion: reproduces the PRE-FIX current_state() logic
+    (no identity comparison at all) to prove Finding 3's bug was real."""
+    shared_registry = InMemoryIntegrityStateRegistry()
+
+    audit_b = _tmp_audit()
+    audit_b.append({"seed": "worker-b-genuine-history"})
+    mon_b = AuditIntegrityMonitor(audit_b, shared_registry)
+    assert run(mon_b.verify_once()) == IntegrityState.HEALTHY
+
+    audit_a = _tmp_audit()
+    audit_a.append({"seed": "worker-a-DIFFERENT-history"})
+    mon_a = AuditIntegrityMonitor(audit_a, shared_registry)
+    assert run(mon_a.verify_once()) == IntegrityState.HEALTHY
+
+    async def pre_fix_current_state() -> IntegrityState:
+        # The exact pre-fix logic: trust the registry's stored HEALTHY
+        # verbatim (subject only to freshness), with no identity check.
+        status = await shared_registry.get()
+        if status is None:
+            return IntegrityState.UNVERIFIED
+        if status.state != IntegrityState.HEALTHY:
+            return status.state
+        return IntegrityState.HEALTHY
+
+    inherited = run(pre_fix_current_state())
+    assert inherited == IntegrityState.HEALTHY, (
+        "expected the reproduced pre-fix logic to incorrectly inherit "
+        "worker A's HEALTHY for worker B's own (different) log -- if it "
+        "no longer does, this non-vacuity check itself needs revisiting"
+    )
+    # The ACTUAL fixed monitor correctly distinguishes them.
+    assert run(mon_b.current_state()) == IntegrityState.UNHEALTHY

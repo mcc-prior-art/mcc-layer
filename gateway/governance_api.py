@@ -523,7 +523,30 @@ def build_governance_service(
             )
         import asyncio
 
-        startup_state = asyncio.run(integrity_monitor.run_startup_verification())
+        async def _run_startup_check_and_release_connections():
+            # Hardening-round Finding 2: this whole block runs before any
+            # ASGI event loop exists (build_governance_service() itself is
+            # synchronous), so this is the FIRST use of a Redis-backed
+            # registry's async client, and it happens inside a throwaway
+            # loop that asyncio.run() tears down the instant this
+            # coroutine returns. redis.asyncio connections are bound to
+            # whichever loop is running when first used; reusing them from
+            # a LATER, different loop (gateway/app.py's own startup hook
+            # running start_periodic_verification(), and every live
+            # request's current_state() call -- all on the real uvicorn
+            # loop) raises/hangs. Disconnecting here, still inside THIS
+            # SAME throwaway loop before it is torn down, makes the
+            # registry lazily establish brand-new connections, bound to
+            # whichever loop next uses it, the next time it is touched.
+            # See tests/test_audit_integrity_redis_event_loop.py (real
+            # Redis, not a mock) and
+            # AuditIntegrityMonitor.reset_connections_for_new_event_loop's
+            # own docstring.
+            state = await integrity_monitor.run_startup_verification()
+            await integrity_monitor.reset_connections_for_new_event_loop()
+            return state
+
+        startup_state = asyncio.run(_run_startup_check_and_release_connections())
         if str(getattr(startup_state, "value", startup_state)) != "HEALTHY":
             raise RuntimeError(
                 "MCC_REQUIRE_AUDIT_INTEGRITY is set but the startup audit-chain "

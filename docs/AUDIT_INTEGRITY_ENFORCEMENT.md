@@ -46,15 +46,19 @@ Only `HEALTHY` ever satisfies a gate check (`is_healthy()` in
 boolean-shaped, so no gate can accidentally treat an unrecognized or
 ambiguous state as "probably fine."
 
-### Why `VERIFYING` is not shared across workers
+### Why `VERIFYING` is not shared across workers, and never blocks gating
 
 `VERIFYING` is reported only for the lifetime of a `verify_once()` call in
-*this* process. It is never written to the shared registry. The only
-state another worker needs to make a correct fail-closed decision is the
-last **completed** outcome (`HEALTHY`/`UNHEALTHY`) plus its freshness — a
-remote `VERIFYING` flag would need its own liveness/expiry tracking to
-avoid being indistinguishable from a wedged verifier, adding complexity
-without closing any bypass this task's adversarial requirements name.
+*this* process. It is never written to the shared registry, and — since
+the hardening round below — it is also never consulted by
+`current_state()`'s gating decision. The only state another worker (or a
+live request on the SAME worker) needs for a correct fail-closed decision
+is the last **completed** outcome (`HEALTHY`/`UNHEALTHY`) plus its
+freshness: a pass happening to be in flight right now does not make the
+last durably-recorded result any less trustworthy, so blocking on it would
+only ever cost availability, never buy security. `VERIFYING` remains
+available as *diagnostic-only* information via
+`AuditIntegrityMonitor.verification_in_progress` (e.g. for `/ready`).
 
 ## The one invariant every caller must understand
 
@@ -83,8 +87,26 @@ A missing or empty audit file is `UNHEALTHY` by **default** — "never
 silently accept corrupted audit data" applies equally to "there is no
 audit data at all." `AuditIntegrityMonitor(..., allow_empty_bootstrap=True)`
 is the only way to treat a genuinely fresh start as trusted; it is never
-the default, and it is a one-time, explicit construction-time decision, not
-something a corrupted deployment can trigger on its own.
+the default.
+
+**This grant is ONE-TIME, not a standing permission (hardening round,
+Finding 1).** The moment this audit log is observed genuinely non-empty —
+by this process's own `AuditLog.prev_hash` advancing off `GENESIS` (zero
+delay), or by a durable, cross-worker, one-way registry latch
+(`mark_initialized`/`is_initialized`) — `allow_empty_bootstrap` stops
+mattering: an empty/missing file from that point on is **always**
+`UNHEALTHY`, with a distinct reason
+(`AUDIT_FILE_MISSING_OR_EMPTY_AFTER_INITIALIZATION`), regardless of how
+`allow_empty_bootstrap` was configured. Without this latch, a journal
+deleted or truncated to zero *after* legitimate history already existed
+would otherwise be silently re-accepted as "a fresh bootstrap" — exactly
+the total-audit-destruction event this control exists to catch, being
+absorbed as normal.
+
+There is no method anywhere in this module that clears that latch. A
+confirmed-corrupted deployment's recovery is always an explicit,
+out-of-band operator action — see "Hardening round" → "Disaster recovery"
+below — never something a code path here does automatically.
 
 ## Two independent fail-closed enforcement boundaries
 
@@ -132,6 +154,17 @@ exactly — is:
 **never silently falls back** — `redis` without a usable `MCC_REDIS_URL`
 raises `IntegrityConfigError`, exactly like `nonce_registry_from_env`.
 
+**Deployment invariant, mechanically checked (hardening round, Finding
+3):** every worker sharing one integrity-state registry key MUST point at
+the exact same physical audit log, on shared, consistent storage. This is
+no longer only documented — `current_state()` compares the registry's
+recorded `log_identity` (an `AuditLog.genesis_fingerprint_safe()`
+fingerprint, computed once from the log's first record and cached) against
+THIS worker's own most recently observed identity, and fails closed on a
+mismatch. A worker that is, via misconfiguration or a corrupted/replaced
+local file, actually looking at a *different* audit log can never silently
+inherit another worker's `HEALTHY` result for itself.
+
 ## Concurrency with `append()`
 
 A full-chain verification pass reuses `AuditLog`'s **own** existing
@@ -176,6 +209,86 @@ purely for **operational visibility**. This is additive; it does **not**
 replace the two mandatory enforcement boundaries above, which run on every
 governed call regardless of whether anything ever reads `/ready`.
 
+## Hardening round (independent review follow-up)
+
+Four findings from an independent review of the original P2-A3 design, all
+fixed on top of it without weakening any existing control.
+
+### Finding 1 (P1) — trusted-bootstrap was reusable, not one-time
+
+Fixed above ("Explicit trusted-bootstrap policy"): a durable, one-way
+`IntegrityStateRegistry.mark_initialized()`/`is_initialized()` latch (an
+atomic Redis `SET ... NX`, or an equivalent lock-guarded boolean
+in-process) plus a zero-delay, process-local `AuditLog.prev_hash` fast
+path. **Residual, disclosed limitation:** the durable latch converges
+across *other* workers (ones that did not themselves perform the append)
+only as fast as their own next periodic pass — bounded by
+`MCC_AUDIT_INTEGRITY_INTERVAL_SECONDS`, the same bound this design already
+accepts everywhere else. The worker that is itself appending is protected
+with **zero** delay via its own `prev_hash`, and every worker's own
+periodic pass also opportunistically re-latches on every non-empty
+observation, so the durable latch converges as soon as *any* worker's pass
+sees non-emptiness, not only the one that performed the write.
+
+**Disaster recovery (explicit, out-of-band, never in-band):** once
+latched, nothing in this module clears it. A genuinely authorized reset —
+e.g. after deliberately reprovisioning audit storage — requires an
+operator to directly delete the registry's bootstrap key (for the Redis
+backend: `DEL <key>:bootstrap`, where `<key>` is the configured
+`MCC_AUDIT_INTEGRITY_BACKEND=redis` key from `redis_keys.singleton_key`)
+*after* independently re-establishing trust in the replacement audit log.
+There is no API call, flag, or environment variable that does this from
+inside the governed runtime.
+
+### Finding 2 — Redis async client reused across event loops
+
+`build_governance_service()` runs the mandatory startup verification pass
+synchronously via a throwaway `asyncio.run()`, before any ASGI event loop
+exists. For the `redis` backend, that is the *first* use of the
+`redis.asyncio.Redis` client — which binds real socket connections to
+whichever event loop is running at that moment. Reusing that same client
+afterward from a *different* loop (the real server loop that runs
+`start_periodic_verification()` and every live request's
+`current_state()` call) raises `RuntimeError: Event loop is closed` (or
+equivalent) on every subsequent Redis operation, confirmed against a real
+`redis-server`, not a mock (see
+`tests/test_audit_integrity_redis_event_loop.py`).
+
+This resolves safely rather than dangerously — the existing broad
+`except Exception: ... -> IntegrityBackendUnavailable -> UNHEALTHY`
+handling converts the cross-loop error into a clean fail-closed
+`UNHEALTHY`, never a crash, a hang, or a false `HEALTHY` — but left
+unfixed it would turn into a **permanent, self-inflicted integrity-service
+outage** the moment the first periodic cycle (or the first live request)
+touches the stale connection, under `MCC_REQUIRE_AUDIT_INTEGRITY=1`
+blocking every governed action in the process forever after. Fixed by a
+new `AuditIntegrityMonitor.reset_connections_for_new_event_loop()` /
+`RedisIntegrityStateRegistry.aclose()`, called inside the *same*
+`asyncio.run()` invocation as the startup check, immediately before that
+throwaway loop tears down — the registry's client then lazily establishes
+brand-new connections, bound to whichever loop next uses it, on its next
+operation. `build_governance_service()` remains fully synchronous and its
+fail-closed-at-startup guarantee is unchanged for every caller (ASGI or
+not); only the connection lifecycle changed.
+
+### Finding 3 — no shared-audit-file identity check
+
+Fixed above ("Multi-worker / cross-process consistency").
+
+### Finding 4 — local `VERIFYING` caused avoidable recurring outages
+
+Fixed above ("Why `VERIFYING` is not shared across workers, and never
+blocks gating"). Before this fix, `current_state()` blocked gating for the
+*entire duration* of every periodic verification pass — including every
+routine one, not only the first — even though the durable, already-fresh
+`HEALTHY` result from the *previous* pass remained perfectly trustworthy.
+At the measured full-chain-scan cost of ~350–430ms for a 50k-entry log
+(see `docs/AUDITLOG_OPTIMIZATION.md`), this meant a real, entirely
+avoidable mini-outage on whichever worker happened to be running the pass,
+once per `MCC_AUDIT_INTEGRITY_INTERVAL_SECONDS`, forever — with no
+corresponding security benefit, since blocking during a scan does not make
+the already-completed prior result any more or less trustworthy.
+
 ## Known limitations
 
 * **Detection latency is bounded, not instantaneous** — see "The one
@@ -187,7 +300,22 @@ governed call regardless of whether anything ever reads `/ready`.
   is then correctly verified by the *next* pass, never mistaken for
   corruption; a genuinely corrupted, non-empty file can never be mistaken
   for "empty."
-* **`VERIFYING` is per-process, not cluster-wide** (see above) — a
+* **`VERIFYING` is per-process, not cluster-wide**, and (since the
+  hardening round) purely diagnostic — never consulted for gating. A
   deliberate scope choice, not an oversight.
+* **Finding 1's cross-worker latch-convergence bound** — see "Hardening
+  round" above: zero delay for the appending worker, bounded by the
+  periodic interval for every other worker.
+* **Finding 3's identity check has a narrow startup window**: a worker
+  that has never yet completed its own first verification pass has no
+  local identity to compare against, so it reads the shared registry's
+  `HEALTHY` verbatim until its own first pass completes. Every production
+  deployment path runs a mandatory synchronous startup verification before
+  a monitor is ever wired into a gate, so this window is not reachable
+  from a real enforcement decision in practice.
 * **TLA+/mutation coverage**: see the PR's own assurance report for exactly
-  what was and was not modeled/mutated for this change.
+  what was and was not modeled/mutated for this change. No dedicated TLA+
+  model exists for the 4-state integrity machine, including after the
+  hardening round's bootstrap-latch addition — this is explicitly **NOT
+  PROVEN** by formal methods; only by the unit/adversarial/non-vacuity test
+  suite and mutation testing.

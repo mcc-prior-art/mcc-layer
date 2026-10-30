@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from mcc_core.audit import AuditLog
+from mcc_core.audit import GENESIS, AuditLog
 from mcc_core.audit_integrity import (
     AuditIntegrityMonitor,
     IntegrityBackendUnavailable,
@@ -106,11 +106,9 @@ def test_unhealthy_after_genuine_corruption(tmp_path, corruption):
     assert run(mon.current_state()) == IntegrityState.UNHEALTHY
 
 
-def test_verifying_is_observable_during_a_slow_pass(tmp_path, monkeypatch):
-    log = _audit(tmp_path)
-    log.append({"i": 0})
-    mon = AuditIntegrityMonitor(log, InMemoryIntegrityStateRegistry())
-
+def _slow_verify_harness(log, monkeypatch):
+    """Shared fixture logic: monkeypatch AuditLog.verify_chain_safe to block
+    on ``release`` so a test can observe current_state() mid-pass."""
     release = threading.Event()
     entered = threading.Event()
     real = AuditLog.verify_chain_safe
@@ -121,6 +119,19 @@ def test_verifying_is_observable_during_a_slow_pass(tmp_path, monkeypatch):
         return real(self)
 
     monkeypatch.setattr(AuditLog, "verify_chain_safe", slow_verify)
+    return release, entered
+
+
+def test_first_ever_pass_is_unverified_while_in_flight(tmp_path, monkeypatch):
+    """No durable record exists yet, so a concurrent in-flight FIRST pass
+    must still report UNVERIFIED (never VERIFYING as a gating answer, and
+    never a premature HEALTHY) -- unaffected by the Finding 4 fix below,
+    which only changes behavior once a fresh HEALTHY record already
+    exists."""
+    log = _audit(tmp_path)
+    log.append({"i": 0})
+    mon = AuditIntegrityMonitor(log, InMemoryIntegrityStateRegistry())
+    release, entered = _slow_verify_harness(log, monkeypatch)
 
     async def observe_during_pass():
         task = asyncio.create_task(mon.verify_once())
@@ -131,8 +142,76 @@ def test_verifying_is_observable_during_a_slow_pass(tmp_path, monkeypatch):
         return state_during, final_state
 
     during, final = run(observe_during_pass())
-    assert during == IntegrityState.VERIFYING
+    assert during == IntegrityState.UNVERIFIED
     assert final == IntegrityState.HEALTHY
+    assert mon.verification_in_progress is False  # pass has completed
+
+
+def test_routine_periodic_pass_does_not_block_gating_when_prior_result_is_fresh(
+    tmp_path, monkeypatch,
+):
+    """Finding 4 (hardening round): once a fresh HEALTHY result is already
+    durably recorded, a NEW (e.g. routine periodic) pass running
+    concurrently must NOT cause current_state() to block gating -- the
+    last COMPLETED result is still trustworthy and fresh, so blocking here
+    would be a pure, avoidable, self-inflicted outage with no security
+    benefit. ``verification_in_progress`` still observes the in-flight
+    pass, but only as diagnostic information, never for gating."""
+    log = _audit(tmp_path)
+    log.append({"i": 0})
+    mon = AuditIntegrityMonitor(log, InMemoryIntegrityStateRegistry())
+    assert run(mon.verify_once()) == IntegrityState.HEALTHY  # establishes the prior HEALTHY
+
+    release, entered = _slow_verify_harness(log, monkeypatch)
+
+    async def observe_during_second_pass():
+        task = asyncio.create_task(mon.verify_once())
+        await asyncio.get_event_loop().run_in_executor(None, entered.wait, 5)
+        state_during = await mon.current_state()
+        in_progress_during = mon.verification_in_progress
+        release.set()
+        final_state = await task
+        return state_during, in_progress_during, final_state
+
+    during, in_progress_during, final = run(observe_during_second_pass())
+    assert during == IntegrityState.HEALTHY, (
+        "a routine periodic pass must not block an otherwise-authorized "
+        "request while the prior, still-fresh HEALTHY result stands"
+    )
+    assert in_progress_during is True  # diagnostic signal still observable
+    assert final == IntegrityState.HEALTHY
+
+
+def test_non_vacuity_local_verifying_flag_would_have_blocked(tmp_path, monkeypatch):
+    """Non-vacuity companion: reproduces the PRE-FIX behavior directly
+    (gating on the local ``_verifying`` flag) to prove Finding 4's bug was
+    real and that the test above would have caught its absence."""
+    log = _audit(tmp_path)
+    log.append({"i": 0})
+    mon = AuditIntegrityMonitor(log, InMemoryIntegrityStateRegistry())
+    assert run(mon.verify_once()) == IntegrityState.HEALTHY
+
+    release, entered = _slow_verify_harness(log, monkeypatch)
+
+    async def pre_fix_current_state() -> IntegrityState:
+        # The exact pre-fix short-circuit this hardening round removed.
+        if mon.verification_in_progress:
+            return IntegrityState.VERIFYING
+        return await mon.current_state()
+
+    async def observe():
+        task = asyncio.create_task(mon.verify_once())
+        await asyncio.get_event_loop().run_in_executor(None, entered.wait, 5)
+        state_during = await pre_fix_current_state()
+        release.set()
+        await task
+        return state_during
+
+    during = run(observe())
+    assert during == IntegrityState.VERIFYING, (
+        "expected the reproduced pre-fix logic to incorrectly block here -- "
+        "if it no longer does, this non-vacuity check itself needs revisiting"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +327,77 @@ def test_recovery_from_unhealthy_requires_an_explicit_new_pass(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Hardening round, Finding 1 (P1): one-time, not reusable, trusted bootstrap
+# ---------------------------------------------------------------------------
+
+
+def test_bootstrap_latch_blocks_reuse_even_across_a_fresh_process_restart(tmp_path):
+    """The durable, cross-process latch (not just this process's own
+    prev_hash fast path) must independently close the race: simulate a
+    process restart by constructing a BRAND NEW AuditLog + AuditIntegrityMonitor
+    (fresh ``prev_hash`` == GENESIS, as a real restarted process would have)
+    against the SAME registry that already recorded "ever initialized"."""
+    log = _audit(tmp_path)
+    log.append({"seed": "real-history"})
+    registry = InMemoryIntegrityStateRegistry()
+    first_process_monitor = AuditIntegrityMonitor(log, registry, allow_empty_bootstrap=True)
+    assert run(first_process_monitor.verify_once()) == IntegrityState.HEALTHY
+    assert run(registry.is_initialized()) is True
+
+    Path(log.path).unlink()
+
+    # A fresh AuditLog instance against the now-deleted path has prev_hash
+    # == GENESIS (it never itself appended anything) -- the ONLY thing that
+    # can still catch this is the durable registry latch, not the
+    # process-local fast path.
+    restarted_log = AuditLog(log.path)
+    assert restarted_log.prev_hash == GENESIS
+    restarted_monitor = AuditIntegrityMonitor(
+        restarted_log, registry, allow_empty_bootstrap=True,
+    )
+    assert run(restarted_monitor.verify_once()) == IntegrityState.UNHEALTHY
+
+
+def test_bootstrap_latch_is_one_way_no_method_clears_it(tmp_path):
+    log = _audit(tmp_path)
+    log.append({"seed": "x"})
+    registry = InMemoryIntegrityStateRegistry()
+    mon = AuditIntegrityMonitor(log, registry, allow_empty_bootstrap=True)
+    assert run(mon.verify_once()) == IntegrityState.HEALTHY
+    assert run(registry.is_initialized()) is True
+    # No public method on either registry clears this latch.
+    public_methods = {n for n in dir(registry) if not n.startswith("_")}
+    forbidden = {"clear_initialized", "reset_initialized", "unset_initialized", "clear", "reset"}
+    assert not (public_methods & forbidden), public_methods & forbidden
+
+
+def test_genesis_fingerprint_differs_for_different_logs_and_is_stable(tmp_path):
+    log_a = AuditLog(str(tmp_path / "a.jsonl"))
+    log_a.append({"seed": "A"})
+    log_b = AuditLog(str(tmp_path / "b.jsonl"))
+    log_b.append({"seed": "B"})
+
+    fp_a1 = log_a.genesis_fingerprint_safe()
+    fp_a2 = log_a.genesis_fingerprint_safe()
+    fp_b = log_b.genesis_fingerprint_safe()
+
+    assert fp_a1 is not None and fp_b is not None
+    assert fp_a1 == fp_a2  # stable/deterministic for the same file
+    assert fp_a1 != fp_b  # different for genuinely different logs
+
+    log_a.append({"more": "entries"})
+    fp_a3 = log_a.genesis_fingerprint_safe()
+    assert fp_a3 == fp_a1  # identity is the GENESIS record, unaffected by later appends
+
+
+def test_genesis_fingerprint_is_none_for_missing_or_empty_file(tmp_path):
+    missing = _audit(tmp_path)
+    assert missing.genesis_fingerprint_safe() is None
+    Path(missing.path).write_text("", encoding="utf-8")
+    assert missing.genesis_fingerprint_safe() is None
+
+
+# ---------------------------------------------------------------------------
 # Registry: InMemory generation CAS semantics
 # ---------------------------------------------------------------------------
 
@@ -306,15 +456,31 @@ class _FakeRedis:
 
     async def eval(self, script, numkeys, key, *argv):
         assert script is not None and numkeys == 1
-        generation, state, verified_at, reason = argv
+        generation, state, verified_at, reason, log_identity = argv
         cur = self.store.get(key)
         if isinstance(cur, dict) and int(cur.get("generation", -1)) >= int(generation):
             return 0
+        prior = cur.get("log_identity") if isinstance(cur, dict) else None
         self.store[key] = {
             "generation": generation, "state": state,
             "last_verified_at": verified_at, "reason": reason,
+            "log_identity": log_identity if log_identity else (prior or ""),
         }
         return 1
+
+    async def set(self, key, value, nx=False):
+        # Models Redis SET ... NX -- the bootstrap-latch primitive.
+        if nx and key in self.store:
+            return None
+        self.store[key] = value
+        return True
+
+    async def get(self, key):
+        val = self.store.get(key)
+        return val if isinstance(val, str) else None
+
+    async def aclose(self):
+        return None
 
 
 class _BrokenRedis(_FakeRedis):
@@ -325,6 +491,12 @@ class _BrokenRedis(_FakeRedis):
         raise ConnectionError("redis unreachable (test double)")
 
     async def eval(self, *a, **kw):
+        raise ConnectionError("redis unreachable (test double)")
+
+    async def set(self, *a, **kw):
+        raise ConnectionError("redis unreachable (test double)")
+
+    async def get(self, *a, **kw):
         raise ConnectionError("redis unreachable (test double)")
 
 
@@ -379,6 +551,32 @@ def test_multi_worker_corruption_visible_across_shared_redis(tmp_path):
         fh.write("corrupt\n")
     assert run(mon_a.verify_once()) == IntegrityState.UNHEALTHY
     assert run(mon_b.current_state()) == IntegrityState.UNHEALTHY  # visible to B immediately
+
+
+def test_redis_bootstrap_latch_is_atomic_first_writer_wins():
+    shared_store: dict = {}
+    reg_a = RedisIntegrityStateRegistry(_FakeRedis(shared_store), key="mcc:test:latch")
+    reg_b = RedisIntegrityStateRegistry(_FakeRedis(shared_store), key="mcc:test:latch")
+    assert run(reg_a.is_initialized()) is False
+    assert run(reg_b.is_initialized()) is False
+
+    run(reg_a.mark_initialized())
+    # Visible to reg_b immediately (same underlying store -- models the
+    # same real Redis instance).
+    assert run(reg_b.is_initialized()) is True
+
+    # A later caller's mark_initialized() is a durable no-op, never an
+    # error and never any kind of "re-latch"/reset.
+    run(reg_b.mark_initialized())
+    assert run(reg_a.is_initialized()) is True
+
+
+def test_redis_bootstrap_latch_backend_down_raises_backend_unavailable():
+    reg = RedisIntegrityStateRegistry(_BrokenRedis(), key="mcc:test:latch-down")
+    with pytest.raises(IntegrityBackendUnavailable):
+        run(reg.mark_initialized())
+    with pytest.raises(IntegrityBackendUnavailable):
+        run(reg.is_initialized())
 
 
 def test_malformed_redis_record_raises_backend_unavailable():

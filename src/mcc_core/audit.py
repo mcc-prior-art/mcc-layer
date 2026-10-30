@@ -364,6 +364,32 @@ class AuditLog:
         with self._locked():
             return self.verify_chain(self.path)
 
+    def genesis_fingerprint_safe(self) -> "str | None":
+        """A cheap (O(1) relative to file size -- reads only the first
+        line), fail-safe identity fingerprint for THIS specific audit log,
+        derived from its first non-blank record. ``None`` if the file does
+        not exist or is empty.
+
+        Used exclusively by ``mcc_core.audit_integrity`` to detect a
+        worker's shared integrity-state registry holding a result computed
+        over a DIFFERENT underlying audit log than this process's own --
+        e.g. two workers misconfigured to point at different files sharing
+        one Redis registry key. Never consulted by ``append()``'s hot path
+        and never a substitute for ``verify_chain()``'s own full-chain
+        check. Performed under the SAME inter-process lock as
+        ``append()``/``verify_chain_safe()`` so it never reads a half-
+        written first line.
+        """
+        with self._locked():
+            try:
+                with open(self.path, "rb") as fh:
+                    first_line = fh.readline()
+            except FileNotFoundError:
+                return None
+            if not first_line.strip():
+                return None
+            return hashlib.sha256(first_line).hexdigest()
+
     @staticmethod
     def verify_chain(path: str) -> bool:
         """Recompute every entry hash and check linkage. The legacy genesis

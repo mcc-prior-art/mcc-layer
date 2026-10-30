@@ -488,12 +488,37 @@ DEFECTS: List[Defect] = [
         replace="        if True:  # MUTATED: audit-integrity issuance gate disabled\n            return None",
         detector_tests=("tests/test_audit_integrity_enforcement.py::test_mandate_issuance_blocked_when_integrity_not_healthy",),
     ),
+    # P2-A3 hardening round (independent review follow-up): the two new
+    # defenses added on top of the original P2-A3 control. See
+    # docs/AUDIT_INTEGRITY_ENFORCEMENT.md's "Hardening round" section.
+    Defect(
+        id="audit-integrity-bootstrap-latch-disabled",
+        description="AuditIntegrityMonitor's one-way 'ever initialized' bootstrap latch is disabled -- a journal deleted/truncated AFTER legitimate initialization is silently re-accepted as a fresh trusted bootstrap (allow_empty_bootstrap=True resurrects HEALTHY), defeating the entire point of the integrity control.",
+        file_path="src/mcc_core/audit_integrity.py",
+        find="            if ever_initialized:",
+        replace="            if False:  # MUTATED: bootstrap one-way latch disabled",
+        detector_tests=("tests/test_audit_integrity.py::test_bootstrap_latch_blocks_reuse_even_across_a_fresh_process_restart",),
+    ),
+    Defect(
+        id="audit-integrity-cross-worker-identity-check-disabled",
+        description="AuditIntegrityMonitor.current_state() no longer checks the shared registry's audit-log identity against this worker's own -- a worker whose own file differs from (or is corrupted relative to) another worker's can silently inherit that other worker's HEALTHY result.",
+        file_path="src/mcc_core/audit_integrity.py",
+        find=(
+            "        if (\n"
+            "            status.log_identity is not None\n"
+            "            and self._last_observed_identity is not None\n"
+            "            and status.log_identity != self._last_observed_identity\n"
+            "        ):"
+        ),
+        replace="        if False:  # MUTATED: cross-worker audit-log identity check disabled",
+        detector_tests=("tests/test_audit_integrity_enforcement.py::test_worker_with_different_audit_log_does_not_inherit_shared_healthy",),
+    ),
 ]
 
 DEFECT_IDS = tuple(d.id for d in DEFECTS)
 
-assert len(DEFECT_IDS) == 41, f"expected exactly 41 targeted defects, found {len(DEFECT_IDS)}"
-assert len(set(DEFECT_IDS)) == 41, "defect ids must be unique"
+assert len(DEFECT_IDS) == 43, f"expected exactly 43 targeted defects, found {len(DEFECT_IDS)}"
+assert len(set(DEFECT_IDS)) == 43, "defect ids must be unique"
 
 GATE_FAIL_OPEN_DEFECT_IDS = tuple(d.id for d in DEFECTS if d.id == "gate-fail-open" or d.id.startswith("gate-") and d.id.endswith("-fail-open"))
 assert len(GATE_FAIL_OPEN_DEFECT_IDS) == 14, (

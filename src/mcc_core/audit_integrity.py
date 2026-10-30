@@ -13,17 +13,40 @@ actuation dispatch (``src/mcc_core/coordinator.py``).
 State machine
 -------------
     UNVERIFIED -- no verification pass has completed yet (startup default).
-    VERIFYING  -- a verification pass is in flight, in THIS process.
+    VERIFYING  -- diagnostic only (e.g. ``/ready``): a verification pass is
+                  in flight, in THIS process. NEVER consulted by
+                  ``current_state()``'s gating decision (hardening-round
+                  Finding 4) -- a pass happening to be running right now
+                  does not make the last DURABLY RECORDED result any less
+                  trustworthy, so gating never blocks on this alone.
     HEALTHY    -- the most recently completed pass found the chain intact,
-                  AND that result is still "fresh" (see below).
+                  that result is still "fresh" (see below), AND (when
+                  known) it was computed over THIS worker's own audit log,
+                  not a different one sharing the same registry key
+                  (hardening-round Finding 3).
     UNHEALTHY  -- the most recent pass failed, OR the last known-HEALTHY
-                  result is stale, OR the shared state backend cannot
-                  currently be reached/read.
+                  result is stale, OR it belongs to a different audit log
+                  than this worker's own, OR the shared state backend
+                  cannot currently be reached/read.
 
 Only ``HEALTHY`` ever satisfies a gate check. Every other state blocks --
 deliberately simple and boolean-shaped for callers (fail-closed by
 construction: an unrecognized or unreachable state is never treated as
 "probably fine").
+
+Trusted bootstrap is ONE-TIME, not a standing permission
+----------------------------------------------------------
+``allow_empty_bootstrap=True`` only ever has effect for a genuinely fresh
+deployment that has NEVER recorded anything. The moment this audit log is
+observed non-empty -- by this process's own ``AuditLog.prev_hash`` (zero
+delay) or by a durable, cross-worker, one-way registry latch
+(``mark_initialized``/``is_initialized``) -- an empty/missing file is
+UNHEALTHY forever after, regardless of ``allow_empty_bootstrap``'s
+configured value. There is no method anywhere in this module that clears
+that latch; a confirmed-corrupted deployment's recovery is always an
+explicit, out-of-band operator action (see
+``docs/AUDIT_INTEGRITY_ENFORCEMENT.md``), never something a code path here
+does automatically.
 
 The one invariant every caller of this module must understand
 ----------------------------------------------------------------
@@ -63,6 +86,16 @@ restarted verifier can never resurrect a stale ``HEALTHY`` over a newer
 ``UNHEALTHY`` (every write is a monotonic-generation compare-and-set, never
 a blind overwrite).
 
+**Deployment invariant (mechanically checked, not merely assumed):** every
+worker sharing one integrity-state registry key MUST point at the exact
+same physical audit log, on shared, consistent storage. This is no longer
+just documented -- ``current_state()`` compares the registry's recorded
+``log_identity`` (an ``AuditLog.genesis_fingerprint_safe()`` fingerprint)
+against THIS worker's own most recently observed identity and fails closed
+on a mismatch, so a worker that is (via misconfiguration, or a
+corrupted/replaced local file) actually looking at a DIFFERENT audit log
+can never silently inherit another worker's ``HEALTHY`` result for itself.
+
 Concurrency with ``append()``
 ------------------------------
 A full-chain verification pass reuses ``AuditLog``'s OWN existing
@@ -84,7 +117,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping, Optional
 
-from .audit import AuditLog
+from .audit import GENESIS, AuditLog
 from .trusted_time import (
     LocalTimeSource,
     TimeTrustError,
@@ -126,6 +159,12 @@ class IntegrityStatus:
     reason: str
     last_verified_at: Optional[int] = None
     generation: int = 0
+    # Finding 3 (hardening round): an identity fingerprint for the SPECIFIC
+    # audit log this result was computed over (AuditLog.genesis_fingerprint_safe()).
+    # None only for a result recorded while the file was empty/missing (no
+    # genesis record exists yet to fingerprint). See AuditIntegrityMonitor's
+    # own identity check in current_state().
+    log_identity: Optional[str] = None
 
 
 class IntegrityConfigError(Exception):
@@ -156,6 +195,12 @@ class InMemoryIntegrityStateRegistry:
         self._lock = threading.Lock()
         self._generation = 0
         self._status: Optional[IntegrityStatus] = None
+        # Finding 1 (hardening round, P1): a durable (for this process's
+        # lifetime), ONE-WAY latch -- once the audit log has ever been
+        # observed genuinely non-empty, it stays "initialized" forever.
+        # Nothing in this class ever clears it; there is deliberately no
+        # method that does.
+        self._initialized = False
 
     async def allocate_generation(self) -> int:
         with self._lock:
@@ -163,19 +208,39 @@ class InMemoryIntegrityStateRegistry:
             return self._generation
 
     async def set_if_newer(
-        self, *, generation: int, state: "IntegrityState", reason: str, verified_at: int
+        self, *, generation: int, state: "IntegrityState", reason: str, verified_at: int,
+        log_identity: Optional[str] = None,
     ) -> bool:
         with self._lock:
             if self._status is not None and generation <= self._status.generation:
                 return False
+            # A pass that observed an empty/missing file (log_identity is
+            # None) must never blank out a previously-recorded identity --
+            # it simply has nothing new to report about identity.
+            prior_identity = self._status.log_identity if self._status is not None else None
             self._status = IntegrityStatus(
-                state=state, reason=reason, last_verified_at=verified_at, generation=generation
+                state=state, reason=reason, last_verified_at=verified_at, generation=generation,
+                log_identity=log_identity if log_identity is not None else prior_identity,
             )
             return True
 
     async def get(self) -> Optional[IntegrityStatus]:
         with self._lock:
             return self._status
+
+    async def mark_initialized(self) -> None:
+        with self._lock:
+            self._initialized = True
+
+    async def is_initialized(self) -> bool:
+        with self._lock:
+            return self._initialized
+
+    async def aclose(self) -> None:
+        """No real connection to tear down -- present only so callers can
+        treat every registry backend uniformly (see
+        ``AuditIntegrityMonitor.reset_connections_for_new_event_loop``)."""
+        return None
 
 
 # Lua CAS: only applies the write if the new generation is strictly greater
@@ -184,6 +249,9 @@ class InMemoryIntegrityStateRegistry:
 # one) unable to resurrect a stale result over a newer one. Mirrors the
 # atomic-compare-and-set style already used throughout this codebase's
 # other Redis registries (see idempotency.py's ``_RESERVE_LUA`` family).
+# ARGV[5] (log_identity) is only applied when non-empty -- a pass that
+# observed an empty/missing file has no identity to report and must never
+# blank out a previously-recorded one (Finding 3, hardening round).
 _SET_IF_NEWER_LUA = """
 local cur = redis.call('HGET', KEYS[1], 'generation')
 if cur and tonumber(cur) >= tonumber(ARGV[1]) then
@@ -191,8 +259,20 @@ if cur and tonumber(cur) >= tonumber(ARGV[1]) then
 end
 redis.call('HSET', KEYS[1],
     'generation', ARGV[1], 'state', ARGV[2], 'last_verified_at', ARGV[3], 'reason', ARGV[4])
+if ARGV[5] ~= '' then
+    redis.call('HSET', KEYS[1], 'log_identity', ARGV[5])
+end
 return 1
 """
+
+# Finding 1 (hardening round, P1): SET ... NX is the atomic, race-safe
+# primitive for a durable, cross-worker, ONE-WAY "has this audit log ever
+# been observed genuinely initialized" latch -- the first writer wins, every
+# later writer is a no-op, and there is deliberately no DEL/reset exposed
+# anywhere in this module (an authorized disaster-recovery reset is an
+# explicit, out-of-band operator action -- see
+# docs/AUDIT_INTEGRITY_ENFORCEMENT.md -- never an in-band API call).
+_BOOTSTRAP_LATCH_VALUE = "1"
 
 
 class RedisIntegrityStateRegistry:
@@ -215,6 +295,7 @@ class RedisIntegrityStateRegistry:
         self._redis = redis_client
         self._key = key
         self._gen_key = key + ":gen"
+        self._bootstrap_key = key + ":bootstrap"
         self._op_timeout = op_timeout_seconds
 
     @classmethod
@@ -241,7 +322,8 @@ class RedisIntegrityStateRegistry:
             ) from exc
 
     async def set_if_newer(
-        self, *, generation: int, state: "IntegrityState", reason: str, verified_at: int
+        self, *, generation: int, state: "IntegrityState", reason: str, verified_at: int,
+        log_identity: Optional[str] = None,
     ) -> bool:
         state_value = state.value if isinstance(state, IntegrityState) else str(state)
         try:
@@ -249,7 +331,7 @@ class RedisIntegrityStateRegistry:
                 self._redis.eval(
                     _SET_IF_NEWER_LUA, 1, self._key,
                     str(int(generation)), state_value, str(int(verified_at)),
-                    (reason or "")[:2000],
+                    (reason or "")[:2000], (log_identity or ""),
                 )
             )
         except Exception as exc:  # noqa: BLE001
@@ -273,11 +355,49 @@ class RedisIntegrityStateRegistry:
                 reason=raw.get("reason", ""),
                 last_verified_at=int(raw["last_verified_at"]),
                 generation=int(raw["generation"]),
+                log_identity=raw.get("log_identity") or None,
             )
         except (KeyError, ValueError) as exc:
             raise IntegrityBackendUnavailable(
                 f"malformed integrity-state record in backend: {exc}"
             ) from exc
+
+    async def mark_initialized(self) -> None:
+        """Atomic, idempotent, one-way latch (Finding 1, hardening round):
+        the first call durably records "this audit log has been observed
+        genuinely initialized"; every later call -- from any worker -- is a
+        no-op against the same key. There is deliberately no method on this
+        class that clears it."""
+        try:
+            await self._c(self._redis.set(self._bootstrap_key, _BOOTSTRAP_LATCH_VALUE, nx=True))
+        except Exception as exc:  # noqa: BLE001
+            raise IntegrityBackendUnavailable(
+                f"could not persist audit-log initialization latch: {exc}"
+            ) from exc
+
+    async def is_initialized(self) -> bool:
+        try:
+            val = await self._c(self._redis.get(self._bootstrap_key))
+        except Exception as exc:  # noqa: BLE001
+            raise IntegrityBackendUnavailable(
+                f"could not read audit-log initialization latch: {exc}"
+            ) from exc
+        return val is not None
+
+    async def aclose(self) -> None:
+        """Disconnect this registry's Redis connections (Finding 2,
+        hardening round). Call this inside the SAME event loop that first
+        used this registry's client, immediately before that loop is torn
+        down (e.g. at the end of a throwaway ``asyncio.run()`` startup
+        check), so a LATER, different event loop (the real server loop)
+        lazily establishes brand-new connections rather than reusing
+        transport objects bound to a now-closed loop. Best-effort: a
+        failure here is not fatal (the client will simply reconnect fresh
+        on next use regardless)."""
+        try:
+            await self._redis.aclose()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def integrity_state_registry_from_env(env: Optional[Mapping[str, str]] = None) -> Any:
@@ -371,6 +491,14 @@ class AuditIntegrityMonitor:
         self._verifying = False
         self._periodic_task: Optional["asyncio.Task[None]"] = None
         self._stop_event: Optional[asyncio.Event] = None
+        # Finding 3 (hardening round): this worker's OWN most recently
+        # observed identity fingerprint for the audit log it is itself
+        # configured against (AuditLog.genesis_fingerprint_safe(), set by
+        # this instance's own verify_once() passes). Compared against the
+        # shared registry's recorded identity in current_state() -- never
+        # blindly inherited. None until this instance's own first pass
+        # over a genuinely non-empty file completes.
+        self._last_observed_identity: Optional[str] = None
 
     # ---- the one full-chain pass ----
 
@@ -407,20 +535,48 @@ class AuditIntegrityMonitor:
             # the (possibly expensive) scan at all.
             return IntegrityState.UNHEALTHY
 
+        # Finding 1 (hardening round, P1): the trusted-bootstrap policy
+        # (``allow_empty_bootstrap``) is a ONE-TIME grant for a genuinely
+        # fresh deployment -- never a standing permission to treat a LATER
+        # empty/missing file (deletion, truncation, unauthorized
+        # replacement, after real history already existed) as a fresh
+        # bootstrap. ``ever_initialized`` is true the moment EITHER (a)
+        # this process's own AuditLog has itself durably appended at least
+        # one entry (``prev_hash`` advances off GENESIS instantly, with
+        # zero delay, the moment that happens -- no registry round trip
+        # needed to protect the very process that is doing the writing),
+        # or (b) the durable, cross-process, one-way registry latch is
+        # already set (by this worker's own prior pass, or by any other
+        # worker's). Once true, it can never again become false here.
+        try:
+            ever_initialized = await self._registry.is_initialized()
+        except IntegrityBackendUnavailable:
+            return IntegrityState.UNHEALTHY
+        if not ever_initialized and self._audit.prev_hash != GENESIS:
+            ever_initialized = True
+
         ok: bool
         reason: str
+        observed_identity: Optional[str] = None
         path = self._audit.path
         if not os.path.exists(path) or os.path.getsize(path) == 0:
-            # Explicit trusted-bootstrap policy (see __init__). This check
-            # happens outside AuditLog's own lock -- a tiny, strictly
-            # SAFE race window: if a concurrent append() creates/extends
-            # the file a moment later, the worst case is that this pass
-            # treats a now-nonexistent "empty" state as bootstrap when a
-            # real record already exists, which the NEXT pass (run at the
-            # configured periodic interval) sees and correctly verifies.
-            # It can never cause a genuinely corrupted, non-empty file to
-            # be mistaken for an empty one.
-            if self._allow_empty_bootstrap:
+            # This check happens outside AuditLog's own lock -- a tiny,
+            # strictly SAFE race window: if a concurrent append()
+            # creates/extends the file a moment later, the worst case is
+            # that this pass treats a now-nonexistent "empty" state as
+            # bootstrap when a real record already exists, which the NEXT
+            # pass (or this same process's own ``ever_initialized`` fast
+            # path above, for every pass after that append lands) sees and
+            # correctly verifies. It can never cause a genuinely corrupted,
+            # non-empty file to be mistaken for an empty one.
+            if ever_initialized:
+                ok, reason = False, (
+                    "AUDIT_FILE_MISSING_OR_EMPTY_AFTER_INITIALIZATION: audit history was "
+                    "previously initialized (observed non-empty); an empty/missing file "
+                    "now indicates deletion, truncation, or unauthorized replacement -- "
+                    "not a fresh bootstrap -- fail-closed regardless of allow_empty_bootstrap"
+                )
+            elif self._allow_empty_bootstrap:
                 ok, reason = True, "audit file missing or empty; trusted empty bootstrap"
             else:
                 ok, reason = False, (
@@ -433,15 +589,36 @@ class AuditIntegrityMonitor:
                 ok = await asyncio.to_thread(self._audit.verify_chain_safe)
             except Exception as exc:  # noqa: BLE001 - AuditLockError or any I/O failure
                 ok = False
-                exc = exc  # noqa: PLW2901 - keep name for the f-string below
                 reason = f"VERIFICATION_ERROR: {type(exc).__name__}: {exc}"
             else:
                 reason = "chain intact" if ok else "hash-chain verification failed"
+            # The file is genuinely non-empty -- latch "initialized"
+            # durably (idempotent SET-if-not-exists; a cheap no-op once
+            # already set by this worker or any other). Always attempted
+            # on every non-empty pass, not only the first one THIS
+            # instance notices via its own prev_hash fast path above, so
+            # the durable, cross-worker latch converges as soon as
+            # possible regardless of which worker's pass first observes
+            # non-emptiness. Corrupt-but-nonempty latches too: that is
+            # also definitely not "a fresh bootstrap" either. If this
+            # durable write cannot be confirmed, the result of this pass
+            # cannot be trusted as durably recorded -- fail closed.
+            try:
+                await self._registry.mark_initialized()
+            except IntegrityBackendUnavailable:
+                return IntegrityState.UNHEALTHY
+            try:
+                observed_identity = await asyncio.to_thread(self._audit.genesis_fingerprint_safe)
+            except Exception:  # noqa: BLE001
+                observed_identity = None
+            if observed_identity is not None:
+                self._last_observed_identity = observed_identity
 
         state = IntegrityState.HEALTHY if ok else IntegrityState.UNHEALTHY
         try:
             await self._registry.set_if_newer(
                 generation=generation, state=state, reason=reason, verified_at=now,
+                log_identity=observed_identity,
             )
         except IntegrityBackendUnavailable:
             # The scan itself may have succeeded, but the result could not
@@ -462,12 +639,22 @@ class AuditIntegrityMonitor:
     async def current_state(self) -> IntegrityState:
         """The single question every enforcement boundary asks. Fail-closed
         on every ambiguous or unfavorable answer: an unreachable registry,
-        a stale HEALTHY, a genuinely UNHEALTHY result, or no result at all
-        (``UNVERIFIED``) are all reported as something other than
-        ``HEALTHY`` -- only a FRESH, explicitly recorded ``HEALTHY`` pass
-        ever satisfies ``is_healthy()``."""
-        if self._verifying:
-            return IntegrityState.VERIFYING
+        a stale HEALTHY, an identity mismatch, a genuinely UNHEALTHY
+        result, or no result at all (``UNVERIFIED``) are all reported as
+        something other than ``HEALTHY`` -- only a FRESH, explicitly
+        recorded ``HEALTHY`` pass, over THIS worker's own audit log, ever
+        satisfies ``is_healthy()``.
+
+        Finding 4 (hardening round): deliberately does NOT consult
+        ``self._verifying`` -- a verification pass happening to be in
+        flight in THIS process right now does not, by itself, make the
+        last DURABLY RECORDED result any less trustworthy, so gating must
+        never block on that alone (that would turn every routine periodic
+        pass into an avoidable, self-inflicted mini-outage with no
+        corresponding security benefit). ``self._verifying`` remains
+        available as diagnostic-only information via
+        ``verification_in_progress`` (e.g. for ``/ready`` reporting).
+        """
         try:
             status = await self._registry.get()
         except IntegrityBackendUnavailable:
@@ -481,6 +668,24 @@ class AuditIntegrityMonitor:
             # stored value is surfaced verbatim rather than silently
             # coerced.
             return status.state
+        # Finding 3 (hardening round): a stored HEALTHY result is only
+        # trustworthy for THIS worker if it was computed over the SAME
+        # underlying audit log this worker is itself configured against --
+        # never blindly inherited across workers that might (via
+        # misconfiguration, or a corrupted/replaced local file) be looking
+        # at something different. Skipped only while this worker has not
+        # yet completed its OWN first pass over a non-empty file
+        # (``_last_observed_identity`` is still None) -- every production
+        # deployment path runs a mandatory synchronous startup
+        # verification before this monitor is ever wired into a gate (see
+        # ``run_startup_verification``), so that window is not reachable
+        # from a real enforcement decision in practice.
+        if (
+            status.log_identity is not None
+            and self._last_observed_identity is not None
+            and status.log_identity != self._last_observed_identity
+        ):
+            return IntegrityState.UNHEALTHY
         try:
             now = await self._time_source.now()
         except TimeTrustError:
@@ -489,6 +694,31 @@ class AuditIntegrityMonitor:
         if age > self._freshness_grace_seconds:
             return IntegrityState.UNHEALTHY
         return IntegrityState.HEALTHY
+
+    @property
+    def verification_in_progress(self) -> bool:
+        """Diagnostic only (e.g. ``/ready``) -- NEVER consulted by
+        ``current_state()`` for a gating decision (see Finding 4's fix
+        above)."""
+        return self._verifying
+
+    async def reset_connections_for_new_event_loop(self) -> None:
+        """Finding 2 (hardening round): tear down this monitor's registry
+        backend connections (if any), still inside the SAME event loop
+        that first used them, immediately before that loop is torn down.
+        Call this right after a one-off synchronous startup check (e.g.
+        inside the same ``asyncio.run(...)`` call, before it returns) so a
+        LATER, different event loop (the real server loop that will run
+        the periodic task and every live request's ``current_state()``
+        call) lazily establishes fresh connections instead of reusing
+        transport objects bound to a now-closed loop -- redis-py's asyncio
+        client does not tolerate being used across event loops. A no-op
+        for a registry with nothing to disconnect (e.g.
+        ``InMemoryIntegrityStateRegistry``).
+        """
+        closer = getattr(self._registry, "aclose", None)
+        if closer is not None:
+            await closer()
 
     async def status(self) -> Optional[IntegrityStatus]:
         """The raw stored status (for diagnostics/``/ready`` reporting), not
