@@ -154,16 +154,35 @@ exactly — is:
 **never silently falls back** — `redis` without a usable `MCC_REDIS_URL`
 raises `IntegrityConfigError`, exactly like `nonce_registry_from_env`.
 
-**Deployment invariant, mechanically checked (hardening round, Finding
-3):** every worker sharing one integrity-state registry key MUST point at
-the exact same physical audit log, on shared, consistent storage. This is
-no longer only documented — `current_state()` compares the registry's
-recorded `log_identity` (an `AuditLog.genesis_fingerprint_safe()`
-fingerprint, computed once from the log's first record and cached) against
-THIS worker's own most recently observed identity, and fails closed on a
-mismatch. A worker that is, via misconfiguration or a corrupted/replaced
-local file, actually looking at a *different* audit log can never silently
-inherit another worker's `HEALTHY` result for itself.
+**Deployment invariant, mechanically checked (hardening round, Finding 3;
+strengthened in the second hardening round):** every worker sharing one
+integrity-state registry key MUST point at the exact same physical audit
+log — in this repository's actual shared-storage model, a single Docker
+volume bind-mounted into every worker container on one host (see
+`docker-compose.*.yml`'s shared `/data/*.jsonl` volumes). This is
+mechanically enforced, not merely documented, by TWO layers:
+
+* **The write path is the primary, airtight enforcement.**
+  `AuditLog.physical_identity_safe()` (device+inode — a genuine
+  physical-storage proof, not a content fingerprint two *different* files
+  can trivially share) is recorded alongside every `set_if_newer` write.
+  Once a registry key has ever recorded a non-empty physical identity, any
+  later write whose own physical identity *differs* is **rejected outright
+  — independent of generation ordering.** A worker whose own write is
+  vetoed this way resolves its own pass to `UNHEALTHY` too, regardless of
+  what its local scan found: it cannot prove it is looking at the log this
+  key actually represents, so it must not claim `HEALTHY` for itself
+  either. See "Second hardening round" below for the exact vulnerability
+  this closes — a content fingerprint alone (`AuditLog.genesis_fingerprint_safe()`,
+  which hashes only the first record) is **not sufficient**, since two
+  genuinely different files cloned/bootstrapped from the same initial
+  record share it.
+* **The read-side check in `current_state()` is defense in depth** on top
+  of the write-path veto (e.g. for any record written before this fix was
+  deployed): it independently compares the registry's recorded physical
+  identity (primary) and content fingerprint (secondary) against this
+  worker's own most recently observed values, and fails closed on either
+  mismatch.
 
 ## Concurrency with `append()`
 
@@ -289,6 +308,81 @@ once per `MCC_AUDIT_INTEGRITY_INTERVAL_SECONDS`, forever — with no
 corresponding security benefit, since blocking during a scan does not make
 the already-completed prior result any more or less trustworthy.
 
+## Second hardening round — cross-worker identity-COLLISION fail-open
+
+Independent review of the first hardening round's own Finding 3 fix found
+it insufficient: `AuditLog.genesis_fingerprint_safe()` hashes only the
+audit file's **first line**. Two **physically different** files — e.g.
+cloned/bootstrapped from the same initial record, such as two workers
+provisioned from the same deployment template, or a corrupted/replaced
+local file that happened to start with the same bytes — share this
+fingerprint even though their tails have since diverged. Reproduced
+exactly: Worker B detects a corrupted/divergent tail and records
+`UNHEALTHY`; Worker A subsequently verifies its own (genuinely intact, but
+**different**) log and records a **newer** `HEALTHY`. On the first
+hardening round's logic (generation-only write-path CAS; content-
+fingerprint-only read check, which *collides by construction here*), A's
+write silently overwrote B's correctly-detected, unresolved failure, and
+B's own `current_state()` incorrectly inherited it — fail-open, confirmed
+by a deterministic reproduction before any fix (`tests/test_audit_integrity_enforcement.py::test_reproduction_cloned_genesis_collision_was_a_real_fail_open_pre_fix`).
+
+**Fix — identity is now a genuine physical-storage proof, enforced at the
+write path, not a content fingerprint checked only on read:**
+
+* `AuditLog.physical_identity_safe()` (new; device+inode via one
+  `os.stat()` call) is the **primary** cross-worker identity signal — see
+  "Multi-worker / cross-process consistency" above. `genesis_fingerprint_safe()`
+  remains a **secondary**, defense-in-depth signal only.
+* `_SET_IF_NEWER_LUA` (and `InMemoryIntegrityStateRegistry`'s equivalent)
+  now check physical-identity conflict **first, before generation
+  ordering**: once a key has recorded a non-empty physical identity, a
+  write bearing a *different* one is rejected outright — `return -1` in
+  the Lua script, distinct from `return 0` (the pre-existing, still-benign
+  "stale generation" no-op) — and `RedisIntegrityStateRegistry.set_if_newer`
+  coerces this via `int(res) == 1`, not `bool(res)` (since `bool(-1)` is
+  `True` in Python, which would have silently treated a vetoed write as
+  applied).
+* `AuditIntegrityMonitor._verify_once_locked()` distinguishes the two
+  "not applied" cases by reading back the registry's stored physical
+  identity after a rejected write: a genuine conflict forces this
+  worker's own pass to `UNHEALTHY` (reason surfaced via the diagnostic
+  `identity_conflict_detected` property), regardless of this worker's own
+  locally-computed result — the benign "a newer result from the SAME
+  identity already exists" case is unchanged from before.
+* `current_state()`'s read-side check now compares physical identity
+  first (primary), then content fingerprint (secondary) — both remain
+  skipped only during the narrow pre-first-pass startup window already
+  disclosed for Finding 3 below.
+
+**Why device+inode, and why not `st_dev` alone across hosts:** `st_ino` is
+invariant for the life of a physical file and — for THIS repository's
+actual deployment model (a single Docker volume bind-mounted into every
+worker container on one host) — identical across every worker genuinely
+sharing that file. `st_dev` is included for extra same-host confidence but
+is never relied on as a cross-HOST signal (e.g. over NFS, where a
+client-local device number can legitimately differ even for a truly
+shared file); only `st_ino` is required to carry meaning across hosts.
+
+**No silent recovery, exactly like Finding 1's bootstrap latch:** nothing
+in any normal code path clears an established physical identity or
+resolves a conflict automatically. Retrying with the same conflicting
+identity changes nothing
+(`tests/test_audit_integrity_enforcement.py::test_recovery_after_identity_conflict_requires_explicit_out_of_band_reset`).
+**Disaster recovery (explicit, out-of-band, never in-band):** once an
+operator has independently confirmed which physical log is actually
+authoritative, recovery is provisioning a *fresh* integrity-state key (for
+the Redis backend: a new `MCC_AUDIT_INTEGRITY_*` key prefix, or `DEL
+<key>` / `DEL <key>:gen` on the old one) — never a method call anywhere in
+this module.
+
+**Verified against real Redis**, not only the in-memory/faithful-double
+unit tests: `tests/test_audit_integrity_identity_collision_redis.py`
+reproduces the identical scenario (sequential and, separately, genuinely
+concurrent via `asyncio.gather`) against a real `redis-server` subprocess,
+and a healthy-path regression confirms two workers that genuinely DO share
+one physical file converge on `HEALTHY` normally — the veto never fires
+against itself.
+
 ## Known limitations
 
 * **Detection latency is bounded, not instantaneous** — see "The one
@@ -312,10 +406,27 @@ the already-completed prior result any more or less trustworthy.
   `HEALTHY` verbatim until its own first pass completes. Every production
   deployment path runs a mandatory synchronous startup verification before
   a monitor is ever wired into a gate, so this window is not reachable
-  from a real enforcement decision in practice.
+  from a real enforcement decision in practice. This same window applies
+  to the second hardening round's physical-identity read-side check.
+* **The second hardening round's write-path veto is per-registry-key, not
+  per-file-content-change**: once a key's physical identity is
+  established, it is fixed for that key's lifetime (barring the explicit,
+  out-of-band disaster-recovery procedure above) — a legitimate,
+  authorized replacement of the underlying file (same path, genuinely new
+  inode, e.g. after restoring from a trusted backup) is, correctly,
+  treated as a new identity and requires that same explicit recovery
+  step, never an automatic one.
+* **`st_dev`/`st_ino` are not meaningful across every possible storage
+  backend** — they are the right primitive for this repository's actual
+  deployment model (a single Docker volume on one host; see above) and for
+  standard NFS (`st_ino` is preserved across clients), but an operator
+  deploying onto a storage layer with different inode-stability semantics
+  (e.g. certain overlay/union filesystems, or object storage mounted as a
+  filesystem) should verify that assumption before relying on this check.
 * **TLA+/mutation coverage**: see the PR's own assurance report for exactly
   what was and was not modeled/mutated for this change. No dedicated TLA+
   model exists for the 4-state integrity machine, including after the
-  hardening round's bootstrap-latch addition — this is explicitly **NOT
-  PROVEN** by formal methods; only by the unit/adversarial/non-vacuity test
-  suite and mutation testing.
+  hardening rounds' bootstrap-latch and identity-veto additions — this is
+  explicitly **NOT PROVEN** by formal methods; only by the
+  unit/adversarial/non-vacuity test suite (including real-Redis
+  concurrency tests) and mutation testing.

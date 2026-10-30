@@ -511,14 +511,33 @@ DEFECTS: List[Defect] = [
             "        ):"
         ),
         replace="        if False:  # MUTATED: cross-worker audit-log identity check disabled",
-        detector_tests=("tests/test_audit_integrity_enforcement.py::test_worker_with_different_audit_log_does_not_inherit_shared_healthy",),
+        detector_tests=("tests/test_audit_integrity_enforcement.py::test_content_fingerprint_mismatch_alone_still_fails_closed_without_physical_identity",),
+    ),
+    # P2-A3 second hardening round (independent review follow-up): the
+    # write-path physical-identity veto -- a content fingerprint alone
+    # (the prior defect above) cannot distinguish two genuinely different
+    # files cloned from the same initial record; this is the primary fix.
+    # See docs/AUDIT_INTEGRITY_ENFORCEMENT.md's "Second hardening round".
+    Defect(
+        id="audit-integrity-write-path-identity-veto-disabled",
+        description="InMemoryIntegrityStateRegistry.set_if_newer()'s physical-identity veto is disabled -- a newer-generation write from a DIFFERENT physical audit log silently overrides an unresolved result belonging to the log a shared registry key actually represents (the cross-worker identity-collision fail-open: two workers with physically distinct logs cloned from the same initial record share a content fingerprint but must not share trust).",
+        file_path="src/mcc_core/audit_integrity.py",
+        find=(
+            "            if (\n"
+            "                established_phys\n"
+            "                and physical_identity\n"
+            "                and established_phys != physical_identity\n"
+            "            ):"
+        ),
+        replace="            if False:  # MUTATED: write-path physical-identity veto disabled",
+        detector_tests=("tests/test_audit_integrity.py::test_inmemory_registry_vetoes_conflicting_physical_identity_even_with_higher_generation",),
     ),
 ]
 
 DEFECT_IDS = tuple(d.id for d in DEFECTS)
 
-assert len(DEFECT_IDS) == 43, f"expected exactly 43 targeted defects, found {len(DEFECT_IDS)}"
-assert len(set(DEFECT_IDS)) == 43, "defect ids must be unique"
+assert len(DEFECT_IDS) == 44, f"expected exactly 44 targeted defects, found {len(DEFECT_IDS)}"
+assert len(set(DEFECT_IDS)) == 44, "defect ids must be unique"
 
 GATE_FAIL_OPEN_DEFECT_IDS = tuple(d.id for d in DEFECTS if d.id == "gate-fail-open" or d.id.startswith("gate-") and d.id.endswith("-fail-open"))
 assert len(GATE_FAIL_OPEN_DEFECT_IDS) == 14, (

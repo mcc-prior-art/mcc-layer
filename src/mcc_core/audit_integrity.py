@@ -89,12 +89,29 @@ a blind overwrite).
 **Deployment invariant (mechanically checked, not merely assumed):** every
 worker sharing one integrity-state registry key MUST point at the exact
 same physical audit log, on shared, consistent storage. This is no longer
-just documented -- ``current_state()`` compares the registry's recorded
-``log_identity`` (an ``AuditLog.genesis_fingerprint_safe()`` fingerprint)
-against THIS worker's own most recently observed identity and fails closed
-on a mismatch, so a worker that is (via misconfiguration, or a
-corrupted/replaced local file) actually looking at a DIFFERENT audit log
-can never silently inherit another worker's ``HEALTHY`` result for itself.
+just documented -- and, as of the second hardening round, it is no longer
+checked with a CONTENT fingerprint alone, which two genuinely DIFFERENT
+files can trivially share if they were cloned/bootstrapped from the same
+initial record (a first-line-only hash cannot distinguish "the same
+physical file" from "a different file that merely started out identical").
+The PRIMARY proof is now ``AuditLog.physical_identity_safe()`` (device+
+inode -- see that method's docstring for why this is meaningful across
+this repository's actual shared-storage deployment model), enforced as a
+hard veto in the WRITE path itself (``set_if_newer``'s Lua CAS / in-memory
+equivalent): once a registry key has ever recorded a non-empty physical
+identity, any later write whose own physical identity differs is REJECTED
+OUTRIGHT, independent of generation ordering -- a newer, genuinely healthy
+result computed over a DIFFERENT physical log can never silently override
+an older, unresolved result that belongs to the log this key actually
+represents. A worker whose own write is vetoed this way resolves its OWN
+pass to ``UNHEALTHY`` too (see ``_verify_once_locked``), regardless of
+what its local scan found -- it cannot prove it is looking at the log this
+key is supposed to represent, so it must not claim ``HEALTHY`` for itself
+either. ``current_state()``'s read-side check against
+``physical_identity`` is defense in depth on top of this write-side veto
+(e.g. for any record written before this fix was deployed); the original
+``log_identity`` content fingerprint remains a secondary signal only, never
+the sole proof.
 
 Concurrency with ``append()``
 ------------------------------
@@ -159,12 +176,28 @@ class IntegrityStatus:
     reason: str
     last_verified_at: Optional[int] = None
     generation: int = 0
-    # Finding 3 (hardening round): an identity fingerprint for the SPECIFIC
-    # audit log this result was computed over (AuditLog.genesis_fingerprint_safe()).
-    # None only for a result recorded while the file was empty/missing (no
-    # genesis record exists yet to fingerprint). See AuditIntegrityMonitor's
-    # own identity check in current_state().
+    # Finding 3 (hardening round): a CONTENT identity fingerprint for the
+    # SPECIFIC audit log this result was computed over
+    # (AuditLog.genesis_fingerprint_safe() -- hashes only the first
+    # record). None only for a result recorded while the file was
+    # empty/missing (no genesis record exists yet to fingerprint). Kept as
+    # a secondary, defense-in-depth signal -- see ``physical_identity``
+    # below for the PRIMARY cross-worker proof (second hardening round).
     log_identity: Optional[str] = None
+    # Second hardening round: a PHYSICAL-STORAGE identity for the SPECIFIC
+    # audit log this result was computed over
+    # (AuditLog.physical_identity_safe() -- device+inode). This is the
+    # PRIMARY proof that two workers sharing one registry key are really
+    # looking at the same underlying file -- a content fingerprint alone
+    # (``log_identity``) cannot distinguish two genuinely different files
+    # that happen to have been cloned from the same initial record. Once a
+    # key has ever recorded a non-empty ``physical_identity``, every
+    # registry write path (see ``set_if_newer`` below) VETOES any later
+    # write whose own physical identity differs -- independent of
+    # generation ordering -- so a newer, healthy result from a DIFFERENT
+    # physical log can never silently override an older result that
+    # belongs to the log this key actually represents.
+    physical_identity: Optional[str] = None
 
 
 class IntegrityConfigError(Exception):
@@ -209,18 +242,38 @@ class InMemoryIntegrityStateRegistry:
 
     async def set_if_newer(
         self, *, generation: int, state: "IntegrityState", reason: str, verified_at: int,
-        log_identity: Optional[str] = None,
+        log_identity: Optional[str] = None, physical_identity: Optional[str] = None,
     ) -> bool:
         with self._lock:
+            established_phys = (
+                self._status.physical_identity if self._status is not None else None
+            )
+            # Second hardening round: the identity veto is checked FIRST,
+            # independent of generation ordering -- a write whose physical
+            # identity conflicts with the one already established for this
+            # key is rejected outright, even if its generation is newer.
+            # This is what stops a healthy result from a DIFFERENT physical
+            # log from silently overriding an unresolved result that
+            # belongs to the log this key actually represents.
+            if (
+                established_phys
+                and physical_identity
+                and established_phys != physical_identity
+            ):
+                return False
             if self._status is not None and generation <= self._status.generation:
                 return False
-            # A pass that observed an empty/missing file (log_identity is
-            # None) must never blank out a previously-recorded identity --
-            # it simply has nothing new to report about identity.
+            # A pass that observed an empty/missing file (identity is None)
+            # must never blank out a previously-recorded identity -- it
+            # simply has nothing new to report about identity.
             prior_identity = self._status.log_identity if self._status is not None else None
+            prior_phys = established_phys
             self._status = IntegrityStatus(
                 state=state, reason=reason, last_verified_at=verified_at, generation=generation,
                 log_identity=log_identity if log_identity is not None else prior_identity,
+                physical_identity=(
+                    physical_identity if physical_identity is not None else prior_phys
+                ),
             )
             return True
 
@@ -243,16 +296,28 @@ class InMemoryIntegrityStateRegistry:
         return None
 
 
-# Lua CAS: only applies the write if the new generation is strictly greater
-# than whatever generation is currently stored -- the primitive that makes
-# a crashed-and-restarted verifier (or a slow/delayed write racing a newer
-# one) unable to resurrect a stale result over a newer one. Mirrors the
-# atomic-compare-and-set style already used throughout this codebase's
-# other Redis registries (see idempotency.py's ``_RESERVE_LUA`` family).
-# ARGV[5] (log_identity) is only applied when non-empty -- a pass that
-# observed an empty/missing file has no identity to report and must never
-# blank out a previously-recorded one (Finding 3, hardening round).
+# Lua CAS: only applies the write if (a) it does not conflict with an
+# already-established PHYSICAL identity for this key, and (b) the new
+# generation is strictly greater than whatever generation is currently
+# stored. (a) is checked FIRST and is independent of (b) -- a write whose
+# physical identity conflicts with the established one is rejected
+# outright even if its generation is newer (second hardening round: this
+# is what stops a healthy result from a DIFFERENT physical log silently
+# overriding an unresolved result belonging to the log this key actually
+# represents). (b) is the original primitive that makes a crashed-and-
+# restarted verifier (or a slow/delayed write racing a newer one, from the
+# SAME identity) unable to resurrect a stale result over a newer one.
+# Mirrors the atomic-compare-and-set style already used throughout this
+# codebase's other Redis registries (see idempotency.py's ``_RESERVE_LUA``
+# family). ARGV[5] (log_identity, content) and ARGV[6] (physical_identity)
+# are only applied when non-empty -- a pass that observed an empty/missing
+# file has no identity to report and must never blank out a previously-
+# recorded one (Finding 3, hardening round).
 _SET_IF_NEWER_LUA = """
+local established_phys = redis.call('HGET', KEYS[1], 'physical_identity')
+if established_phys and established_phys ~= '' and ARGV[6] ~= '' and established_phys ~= ARGV[6] then
+    return -1
+end
 local cur = redis.call('HGET', KEYS[1], 'generation')
 if cur and tonumber(cur) >= tonumber(ARGV[1]) then
     return 0
@@ -261,6 +326,9 @@ redis.call('HSET', KEYS[1],
     'generation', ARGV[1], 'state', ARGV[2], 'last_verified_at', ARGV[3], 'reason', ARGV[4])
 if ARGV[5] ~= '' then
     redis.call('HSET', KEYS[1], 'log_identity', ARGV[5])
+end
+if ARGV[6] ~= '' then
+    redis.call('HSET', KEYS[1], 'physical_identity', ARGV[6])
 end
 return 1
 """
@@ -323,7 +391,7 @@ class RedisIntegrityStateRegistry:
 
     async def set_if_newer(
         self, *, generation: int, state: "IntegrityState", reason: str, verified_at: int,
-        log_identity: Optional[str] = None,
+        log_identity: Optional[str] = None, physical_identity: Optional[str] = None,
     ) -> bool:
         state_value = state.value if isinstance(state, IntegrityState) else str(state)
         try:
@@ -331,14 +399,20 @@ class RedisIntegrityStateRegistry:
                 self._redis.eval(
                     _SET_IF_NEWER_LUA, 1, self._key,
                     str(int(generation)), state_value, str(int(verified_at)),
-                    (reason or "")[:2000], (log_identity or ""),
+                    (reason or "")[:2000], (log_identity or ""), (physical_identity or ""),
                 )
             )
         except Exception as exc:  # noqa: BLE001
             raise IntegrityBackendUnavailable(
                 f"could not persist integrity state: {exc}"
             ) from exc
-        return bool(res)
+        # The Lua script returns 1 (applied), 0 (stale generation, benign
+        # no-op), or -1 (identity-conflict veto -- rejected regardless of
+        # generation). Both 0 and -1 mean "not applied" to this boolean
+        # contract; ``int(res) == 1`` is required rather than ``bool(res)``
+        # because ``bool(-1)`` is True in Python, which would silently
+        # treat a vetoed write as successfully applied.
+        return int(res) == 1
 
     async def get(self) -> Optional[IntegrityStatus]:
         try:
@@ -356,6 +430,7 @@ class RedisIntegrityStateRegistry:
                 last_verified_at=int(raw["last_verified_at"]),
                 generation=int(raw["generation"]),
                 log_identity=raw.get("log_identity") or None,
+                physical_identity=raw.get("physical_identity") or None,
             )
         except (KeyError, ValueError) as exc:
             raise IntegrityBackendUnavailable(
@@ -492,13 +567,27 @@ class AuditIntegrityMonitor:
         self._periodic_task: Optional["asyncio.Task[None]"] = None
         self._stop_event: Optional[asyncio.Event] = None
         # Finding 3 (hardening round): this worker's OWN most recently
-        # observed identity fingerprint for the audit log it is itself
-        # configured against (AuditLog.genesis_fingerprint_safe(), set by
-        # this instance's own verify_once() passes). Compared against the
-        # shared registry's recorded identity in current_state() -- never
-        # blindly inherited. None until this instance's own first pass
-        # over a genuinely non-empty file completes.
+        # observed CONTENT identity fingerprint for the audit log it is
+        # itself configured against (AuditLog.genesis_fingerprint_safe(),
+        # set by this instance's own verify_once() passes). Secondary
+        # signal only (second hardening round) -- see
+        # ``_last_observed_physical_identity`` below for the PRIMARY one.
+        # Compared against the shared registry's recorded identity in
+        # current_state() -- never blindly inherited. None until this
+        # instance's own first pass over a genuinely non-empty file
+        # completes.
         self._last_observed_identity: Optional[str] = None
+        # Second hardening round: this worker's OWN most recently observed
+        # PHYSICAL-STORAGE identity (AuditLog.physical_identity_safe() --
+        # device+inode) for the audit log it is itself configured against.
+        # This is the PRIMARY cross-worker identity signal -- see the
+        # module docstring's "Deployment invariant" section.
+        self._last_observed_physical_identity: Optional[str] = None
+        # Diagnostic only (e.g. /ready) -- set when this worker's own most
+        # recent pass was vetoed by a cross-worker physical-identity
+        # conflict. Never consulted for a gating decision beyond the
+        # UNHEALTHY state verify_once() itself already returns.
+        self._last_identity_conflict = False
 
     # ---- the one full-chain pass ----
 
@@ -558,6 +647,7 @@ class AuditIntegrityMonitor:
         ok: bool
         reason: str
         observed_identity: Optional[str] = None
+        observed_physical_identity: Optional[str] = None
         path = self._audit.path
         if not os.path.exists(path) or os.path.getsize(path) == 0:
             # This check happens outside AuditLog's own lock -- a tiny,
@@ -613,18 +703,60 @@ class AuditIntegrityMonitor:
                 observed_identity = None
             if observed_identity is not None:
                 self._last_observed_identity = observed_identity
+            # Second hardening round: the PRIMARY cross-worker identity
+            # signal (see the module docstring's "Deployment invariant"
+            # section) -- recorded regardless of whether the registry
+            # write below ends up applied or vetoed, because this is THIS
+            # worker's own true observation of ITS OWN file, valid on its
+            # own terms.
+            try:
+                observed_physical_identity = await asyncio.to_thread(
+                    self._audit.physical_identity_safe
+                )
+            except Exception:  # noqa: BLE001
+                observed_physical_identity = None
+            if observed_physical_identity is not None:
+                self._last_observed_physical_identity = observed_physical_identity
 
         state = IntegrityState.HEALTHY if ok else IntegrityState.UNHEALTHY
         try:
-            await self._registry.set_if_newer(
+            applied = await self._registry.set_if_newer(
                 generation=generation, state=state, reason=reason, verified_at=now,
-                log_identity=observed_identity,
+                log_identity=observed_identity, physical_identity=observed_physical_identity,
             )
         except IntegrityBackendUnavailable:
             # The scan itself may have succeeded, but the result could not
             # be durably recorded -- a result no one else can observe is
             # not a healthy result. Fail closed.
+            self._last_identity_conflict = False
             return IntegrityState.UNHEALTHY
+
+        if not applied and observed_physical_identity is not None:
+            # The write was not applied. Distinguish a BENIGN "a newer
+            # result already exists" no-op (same identity, just an older
+            # generation -- today's pre-existing, unchanged behavior: keep
+            # returning this worker's own locally-computed ``state``) from
+            # a genuine cross-worker IDENTITY CONFLICT -- the shared key
+            # has refused to recognize this worker's audit log as the one
+            # it is supposed to represent (second hardening round). The
+            # latter must NEVER let this worker claim its own
+            # locally-computed ``state`` (HEALTHY above all): a worker that
+            # cannot prove it is looking at the log this key actually
+            # represents must not claim HEALTHY for itself either.
+            try:
+                current = await self._registry.get()
+            except IntegrityBackendUnavailable:
+                self._last_identity_conflict = False
+                return IntegrityState.UNHEALTHY
+            if (
+                current is not None
+                and current.physical_identity is not None
+                and current.physical_identity != observed_physical_identity
+            ):
+                self._last_identity_conflict = True
+                return IntegrityState.UNHEALTHY  # AUDIT_LOG_IDENTITY_CONFLICT
+
+        self._last_identity_conflict = False
         return state
 
     async def run_startup_verification(self) -> IntegrityState:
@@ -668,18 +800,32 @@ class AuditIntegrityMonitor:
             # stored value is surfaced verbatim rather than silently
             # coerced.
             return status.state
-        # Finding 3 (hardening round): a stored HEALTHY result is only
-        # trustworthy for THIS worker if it was computed over the SAME
+        # Finding 3 / second hardening round: a stored HEALTHY result is
+        # only trustworthy for THIS worker if it was computed over the SAME
         # underlying audit log this worker is itself configured against --
         # never blindly inherited across workers that might (via
         # misconfiguration, or a corrupted/replaced local file) be looking
-        # at something different. Skipped only while this worker has not
-        # yet completed its OWN first pass over a non-empty file
-        # (``_last_observed_identity`` is still None) -- every production
+        # at something different. The PRIMARY check is physical identity
+        # (device+inode) -- a content fingerprint alone cannot distinguish
+        # "the same physical file" from "a different file that merely
+        # started out identical" (the vulnerability this second hardening
+        # round closes); this read-side check is defense in depth on top
+        # of the write-path veto in ``set_if_newer`` above, which is what
+        # actually stops a conflicting result from ever being durably
+        # recorded in the first place. Both checks are skipped only while
+        # this worker has not yet completed its OWN first pass over a
+        # non-empty file (``_last_observed_physical_identity``/
+        # ``_last_observed_identity`` are still None) -- every production
         # deployment path runs a mandatory synchronous startup
         # verification before this monitor is ever wired into a gate (see
         # ``run_startup_verification``), so that window is not reachable
         # from a real enforcement decision in practice.
+        if (
+            status.physical_identity is not None
+            and self._last_observed_physical_identity is not None
+            and status.physical_identity != self._last_observed_physical_identity
+        ):
+            return IntegrityState.UNHEALTHY
         if (
             status.log_identity is not None
             and self._last_observed_identity is not None
@@ -701,6 +847,18 @@ class AuditIntegrityMonitor:
         ``current_state()`` for a gating decision (see Finding 4's fix
         above)."""
         return self._verifying
+
+    @property
+    def identity_conflict_detected(self) -> bool:
+        """Diagnostic only (e.g. ``/ready``): True if this worker's own
+        MOST RECENT ``verify_once()`` pass was vetoed because its physical
+        identity conflicted with the one already established for the
+        shared registry key (second hardening round). The pass itself
+        already resolved to ``UNHEALTHY`` in that case -- this flag exists
+        only so an operator can tell "genuinely corrupted" apart from
+        "this worker is pointed at the wrong audit log" without having to
+        correlate reasons by hand."""
+        return self._last_identity_conflict
 
     async def reset_connections_for_new_event_loop(self) -> None:
         """Finding 2 (hardening round): tear down this monitor's registry

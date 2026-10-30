@@ -3,7 +3,7 @@ Round 17).
 
 A thin wrapper, like ``test_formal_model.py``: this does not touch the
 live SUT (no ``sut`` fixture). It runs the real mutation harness
-(``mutation.harness.run_all_mutants``) against all 43 targeted defects and
+(``mutation.harness.run_all_mutants``) against all 44 targeted defects and
 asserts 100% detection, so ``python -m assurance run`` surfaces the
 mutation score in the same evidence bundle as every other workstream.
 
@@ -20,6 +20,14 @@ re-accepted as a fresh trusted bootstrap) and
 never inherit another worker's HEALTHY result for a DIFFERENT underlying
 audit log) -- see ``docs/AUDIT_INTEGRITY_ENFORCEMENT.md``'s "Hardening
 round" section.
+
+The P2-A3 SECOND hardening round (independent review follow-up to the
+follow-up) added 1 more: ``audit-integrity-write-path-identity-veto-disabled``
+-- a content fingerprint alone (the prior defect above) cannot distinguish
+two genuinely DIFFERENT physical audit logs cloned from the same initial
+record; this defect targets the write-path physical-identity veto that is
+the actual primary fix -- see ``docs/AUDIT_INTEGRITY_ENFORCEMENT.md``'s
+"Second hardening round" section.
 
 Round 17 added one more: ``idempotency-unsafe-release-after-dispatch``,
 reintroducing the exact Round 16/17 defect Astra identified (releasing,
@@ -71,4 +79,4 @@ def test_j1_every_targeted_defect_is_detected():
         f"(not caught by their detector tests):\n{survived_detail}"
     )
     assert report.mutation_score == 1.0
-    assert report.total == 43
+    assert report.total == 44

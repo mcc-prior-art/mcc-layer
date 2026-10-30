@@ -733,6 +733,15 @@ def test_non_vacuity_reusable_bootstrap_would_have_resurrected_healthy():
 
 
 def test_worker_with_different_audit_log_does_not_inherit_shared_healthy():
+    """Second hardening round updated this test's own expectations: the
+    write-path identity veto (keyed on PHYSICAL identity, not just the
+    content fingerprint used when this test was first written) now
+    rejects worker A's conflicting write OUTRIGHT, so it never even lands
+    in the shared registry -- worker B is therefore never even transiently
+    exposed to it (a strictly stronger property than the original
+    read-side-only fix this test originally proved). Worker A's own pass
+    correctly resolves to UNHEALTHY too, since it cannot prove it is
+    looking at the log this key actually represents."""
     shared_registry = InMemoryIntegrityStateRegistry()
 
     # Worker B establishes trust in ITS OWN audit log first (exactly what
@@ -746,39 +755,52 @@ def test_worker_with_different_audit_log_does_not_inherit_shared_healthy():
 
     # Worker A is misconfigured (or its local file was corrupted/replaced)
     # to point at a DIFFERENT audit log than worker B's, while sharing the
-    # SAME registry key. A's own periodic pass overwrites the shared
-    # record with A's result and A's identity.
+    # SAME registry key. A's own periodic pass now gets VETOED at the
+    # registry's write path (different physical identity) -- it never
+    # overwrites B's record.
     audit_a = _tmp_audit()
     audit_a.append({"seed": "worker-a-DIFFERENT-history"})
     mon_a = AuditIntegrityMonitor(audit_a, shared_registry)
-    assert run(mon_a.verify_once()) == IntegrityState.HEALTHY
+    assert run(mon_a.verify_once()) == IntegrityState.UNHEALTHY, (
+        "worker A's write must be vetoed -- it cannot prove it is looking "
+        "at the log this shared key already represents"
+    )
+    assert mon_a.identity_conflict_detected is True
 
     coord_b = _bare_coordinator(audit_b, integrity_monitor=mon_b)
+    coord_a = _bare_coordinator(audit_a, integrity_monitor=mon_a)
     calls = {"n": 0}
 
     async def executor():
         calls["n"] += 1
         return {"ok": True}
 
-    # Worker B must NOT inherit A's (different-log) HEALTHY result just
-    # because the shared registry now reports HEALTHY -- B's own
-    # previously-established identity no longer matches what the registry
-    # holds.
-    assert run(mon_b.current_state()) == IntegrityState.UNHEALTHY, (
-        "worker B's own identity does not match the shared registry's "
-        "most-recently-written identity (worker A's, a different log) -- "
-        "must fail closed, never silently inherit a different worker's "
-        "result for a different log"
-    )
+    # Worker B is completely undisturbed: the registry still holds ONLY
+    # B's own result -- A's conflicting write never landed.
+    assert run(mon_b.current_state()) == IntegrityState.HEALTHY
+    result_b = run(coord_b.enforce(token=_token("cross-worker-b"), action=ACTION, payload={}, executor=executor))
+    assert result_b.status == ActuationStatus.EXECUTED
+    assert calls["n"] == 1
 
-    result = run(coord_b.enforce(token=_token("cross-worker-1"), action=ACTION, payload={}, executor=executor))
-    assert result.status == ActuationStatus.BLOCKED
-    assert calls["n"] == 0
+    # Worker A, correctly, can never claim HEALTHY while sharing this key
+    # with a conflicting identity -- zero actuator calls on A's side.
+    assert run(mon_a.current_state()) == IntegrityState.UNHEALTHY
+    result_a = run(coord_a.enforce(token=_token("cross-worker-a"), action=ACTION, payload={}, executor=executor))
+    assert result_a.status == ActuationStatus.BLOCKED
+    assert calls["n"] == 1  # unchanged -- A's attempt added zero calls
 
 
 def test_non_vacuity_shared_healthy_without_identity_check_would_be_inherited():
     """Non-vacuity companion: reproduces the PRE-FIX current_state() logic
-    (no identity comparison at all) to prove Finding 3's bug was real."""
+    (no identity comparison at all) to prove Finding 3's original bug was
+    real. Worker A's deposit is written directly via ``set_if_newer``
+    (rather than through ``mon_a.verify_once()``) deliberately WITHOUT a
+    ``physical_identity`` argument -- reproducing the write path exactly as
+    it existed before the second hardening round's identity veto, which is
+    not what this specific (older, already-fixed-by-Finding-3) scenario is
+    about. See ``test_non_vacuity_write_path_veto_absent_would_let_a_newer_
+    generation_override_an_unresolved_conflict`` below for THIS round's own
+    non-vacuity companion."""
     shared_registry = InMemoryIntegrityStateRegistry()
 
     audit_b = _tmp_audit()
@@ -788,8 +810,12 @@ def test_non_vacuity_shared_healthy_without_identity_check_would_be_inherited():
 
     audit_a = _tmp_audit()
     audit_a.append({"seed": "worker-a-DIFFERENT-history"})
-    mon_a = AuditIntegrityMonitor(audit_a, shared_registry)
-    assert run(mon_a.verify_once()) == IntegrityState.HEALTHY
+    fp_a = audit_a.genesis_fingerprint_safe()
+    applied = run(shared_registry.set_if_newer(
+        generation=2, state=IntegrityState.HEALTHY, reason="worker A: intact",
+        verified_at=_now(), log_identity=fp_a,  # no physical_identity -> no veto possible
+    ))
+    assert applied is True
 
     async def pre_fix_current_state() -> IntegrityState:
         # The exact pre-fix logic: trust the registry's stored HEALTHY
@@ -809,3 +835,248 @@ def test_non_vacuity_shared_healthy_without_identity_check_would_be_inherited():
     )
     # The ACTUAL fixed monitor correctly distinguishes them.
     assert run(mon_b.current_state()) == IntegrityState.UNHEALTHY
+
+
+def test_content_fingerprint_mismatch_alone_still_fails_closed_without_physical_identity():
+    """Defense-in-depth, isolated: current_state()'s SECONDARY
+    (content-fingerprint) check still independently fails closed on a
+    mismatch when NO physical identity is available to compare at all --
+    e.g. a legacy record written before the second hardening round's
+    physical-identity field existed. This is what Finding 3's original
+    check still catches on its own, independent of the second round's
+    write-path veto (which never had anything to check here -- the legacy
+    write carries no physical identity, so the veto condition is never
+    even reachable). This is the dedicated detector test for the
+    ``audit-integrity-cross-worker-identity-check-disabled`` mutation
+    defect, since the integration-level test above now also depends on
+    the (separately, independently tested) write-path veto and would no
+    longer catch THIS specific check being disabled on its own."""
+    shared_registry = InMemoryIntegrityStateRegistry()
+    applied = run(shared_registry.set_if_newer(
+        generation=1, state=IntegrityState.HEALTHY, reason="legacy write (pre-second-round)",
+        verified_at=_now(), log_identity="legacy-fingerprint-X",
+    ))
+    assert applied is True
+    status = run(shared_registry.get())
+    assert status.physical_identity is None  # the write-path veto never had anything to check
+
+    audit_b = _tmp_audit()
+    mon_b = AuditIntegrityMonitor(audit_b, shared_registry)
+    mon_b._last_observed_identity = "a-totally-different-fingerprint"  # this worker's own
+
+    assert run(mon_b.current_state()) == IntegrityState.UNHEALTHY, (
+        "the content-fingerprint-only check must still fail closed on a "
+        "mismatch when no physical identity is available to compare"
+    )
+
+
+# ===========================================================================
+# Second hardening round: cross-worker identity-COLLISION fail-open.
+#
+# genesis_fingerprint_safe() hashes only the audit file's FIRST line. Two
+# PHYSICALLY DIFFERENT files, cloned/bootstrapped from the same initial
+# record, share this fingerprint even though their tails have since
+# diverged. Independent review's exact scenario: Worker B detects a
+# corrupted/divergent tail and records UNHEALTHY; Worker A subsequently
+# verifies its own (genuinely intact, but DIFFERENT) log and records a
+# NEWER HEALTHY -- the old generation-only write path (and the old
+# content-fingerprint-only read check, which collides by construction
+# here) let A's write silently override B's correctly-detected failure.
+# ===========================================================================
+
+
+def _cloned_genesis_logs(tmp_path_factory_dir):
+    """Two physically distinct audit files, seeded with a BYTE-IDENTICAL
+    first record (simulating "cloned from the same initial record"), with
+    B's tail then corrupted/diverged while A's stays intact and
+    append-valid. Returns (audit_a, audit_b)."""
+    import tempfile
+
+    # A valid legacy genesis trust anchor (LEGACY_GENESIS_HASH == "genesis"
+    # -- see AuditLog.verify_chain) so a real append() chains onto it
+    # correctly and verify_chain() accepts it as the trust anchor.
+    seed = '{"hash": "genesis", "seed": "shared-initial-record"}\n'
+    dir_a = Path(tempfile.mkdtemp(prefix="mcc-collision-a-"))
+    dir_b = Path(tempfile.mkdtemp(prefix="mcc-collision-b-"))
+    (dir_a / "audit.jsonl").write_text(seed, encoding="utf-8")
+    (dir_b / "audit.jsonl").write_text(seed, encoding="utf-8")
+    audit_a = AuditLog(str(dir_a / "audit.jsonl"))
+    audit_b = AuditLog(str(dir_b / "audit.jsonl"))
+    # A stays intact: append a real, valid entry through the normal API.
+    audit_a.append({"i": 1})
+    # B diverges: append a corrupted record directly (bypassing append()),
+    # so its chain fails verify_chain_safe() while sharing A's first line.
+    with open(audit_b.path, "a", encoding="utf-8") as fh:
+        fh.write('{"hash": "deadbeef", "prev_hash": "not-a-real-link", "i": 1}\n')
+    return audit_a, audit_b
+
+
+def test_reproduction_cloned_genesis_collision_was_a_real_fail_open_pre_fix():
+    """Step 1: deterministic reproduction against the EXACT pre-this-round
+    write/read logic (generation-only CAS, content-fingerprint-only read
+    check -- i.e. the state of this module immediately after the FIRST
+    hardening round, before this one). Proves the vulnerability was real:
+    on that logic, Worker B's own correctly-detected UNHEALTHY is silently
+    overridden by Worker A's HEALTHY for a DIFFERENT physical log, and
+    Worker B's current_state() incorrectly inherits it."""
+    audit_a, audit_b = _cloned_genesis_logs(None)
+    assert audit_a.genesis_fingerprint_safe() == audit_b.genesis_fingerprint_safe(), (
+        "fixture invariant: both logs must share the cloned genesis fingerprint"
+    )
+    shared_registry = InMemoryIntegrityStateRegistry()
+
+    # Worker B verifies first: genuinely corrupted -> UNHEALTHY, generation 1.
+    ok_b = AuditLog.verify_chain(audit_b.path)
+    assert ok_b is False
+    fp = audit_b.genesis_fingerprint_safe()
+    applied_b = run(shared_registry.set_if_newer(
+        generation=1, state=IntegrityState.UNHEALTHY, reason="worker B: corrupted tail",
+        verified_at=_now(), log_identity=fp,  # pre-this-round: no physical_identity existed
+    ))
+    assert applied_b is True
+
+    # Worker A verifies second: genuinely intact (its OWN, different, file)
+    # -> HEALTHY, HIGHER generation. Pre-this-round write path (generation-
+    # only CAS) applies this unconditionally.
+    ok_a = AuditLog.verify_chain(audit_a.path)
+    assert ok_a is True
+    applied_a = run(shared_registry.set_if_newer(
+        generation=2, state=IntegrityState.HEALTHY, reason="worker A: intact",
+        verified_at=_now(), log_identity=fp,
+    ))
+    assert applied_a is True, "pre-fix write path has no identity veto -- this write applies"
+
+    async def pre_fix_current_state_content_fingerprint_only(worker_own_fp: str) -> IntegrityState:
+        # Finding 3's ORIGINAL (first-hardening-round) read-side check:
+        # content fingerprint only -- which COLLIDES here by construction.
+        status = await shared_registry.get()
+        if status is None:
+            return IntegrityState.UNVERIFIED
+        if status.state != IntegrityState.HEALTHY:
+            return status.state
+        if status.log_identity is not None and status.log_identity != worker_own_fp:
+            return IntegrityState.UNHEALTHY
+        return IntegrityState.HEALTHY
+
+    inherited = run(pre_fix_current_state_content_fingerprint_only(fp))
+    assert inherited == IntegrityState.HEALTHY, (
+        "CONFIRMED: on the pre-this-round logic, worker B incorrectly "
+        "inherits worker A's HEALTHY for a DIFFERENT, genuinely corrupted "
+        "physical log -- the vulnerability is real, not hypothetical"
+    )
+
+
+def test_fix_cloned_genesis_collision_is_vetoed_at_the_write_path():
+    """Step 2/3: the ACTUAL fixed classes. Worker A's write is now vetoed
+    OUTRIGHT by the write-path physical-identity CAS (regardless of A's
+    higher generation) -- Worker B's correctly-detected, UNRESOLVED
+    failure is never silently overridden. Also proves both enforcement
+    boundaries: zero actuator calls on either worker's side while this
+    conflict stands."""
+    audit_a, audit_b = _cloned_genesis_logs(None)
+    shared_registry = InMemoryIntegrityStateRegistry()
+
+    mon_b = AuditIntegrityMonitor(audit_b, shared_registry)
+    assert run(mon_b.verify_once()) == IntegrityState.UNHEALTHY  # genuine corruption, correctly detected
+
+    mon_a = AuditIntegrityMonitor(audit_a, shared_registry)
+    assert run(mon_a.verify_once()) == IntegrityState.UNHEALTHY, (
+        "Worker A's own intact-log result must be vetoed: it cannot prove "
+        "it is looking at the log the shared key already represents"
+    )
+    assert mon_a.identity_conflict_detected is True
+
+    # Worker B's UNRESOLVED failure stands, untouched, exactly as the
+    # independent review's own wording requires: "a successful
+    # verification on worker A must never override an unresolved failure
+    # on worker B."
+    assert run(mon_b.current_state()) == IntegrityState.UNHEALTHY
+    status = run(shared_registry.get())
+    assert status.state == IntegrityState.UNHEALTHY
+    assert status.reason == "hash-chain verification failed"
+
+    # Both enforcement boundaries, both workers: zero actuator calls.
+    coord_b = _bare_coordinator(audit_b, integrity_monitor=mon_b)
+    coord_a = _bare_coordinator(audit_a, integrity_monitor=mon_a)
+    calls = {"n": 0}
+
+    async def executor():
+        calls["n"] += 1
+        return {"ok": True}
+
+    result_b = run(coord_b.enforce(token=_token("collision-dispatch-b"), action=ACTION, payload={}, executor=executor))
+    assert result_b.status == ActuationStatus.BLOCKED
+    result_a = run(coord_a.enforce(token=_token("collision-dispatch-a"), action=ACTION, payload={}, executor=executor))
+    assert result_a.status == ActuationStatus.BLOCKED
+    assert calls["n"] == 0
+
+    mandate_key = SigningKey.generate("collision-issuer")
+    service_b = _governance_service(mandate_key=mandate_key, integrity_monitor=mon_b)
+    service_b._test_audit = audit_b
+    out_b = run(service_b.execute_with_mandate(
+        mandate=_mandate(mandate_key), actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
+        context=_raw_context(), idempotency_key="collision-issuance-b", tenant_id="tenant-1",
+    ))
+    assert out_b.status == "BLOCKED"
+    assert "AUDIT_INTEGRITY_NOT_HEALTHY" in out_b.reason
+    assert service_b._test_upstream.calls == 0
+
+
+def test_non_vacuity_write_path_veto_absent_would_let_a_newer_generation_override_an_unresolved_conflict():
+    """Non-vacuity companion for THIS round's fix: with the write-path
+    identity veto removed (simulated by calling set_if_newer without a
+    physical_identity, i.e. exactly the generation-only CAS this registry
+    had before this round), the IDENTICAL scenario DOES let Worker A's
+    write override Worker B's unresolved failure -- proving the positive
+    test above actually depends on the veto, not on something else."""
+    audit_a, audit_b = _cloned_genesis_logs(None)
+    shared_registry = InMemoryIntegrityStateRegistry()
+    fp = audit_b.genesis_fingerprint_safe()
+
+    applied_b = run(shared_registry.set_if_newer(
+        generation=1, state=IntegrityState.UNHEALTHY, reason="worker B: corrupted",
+        verified_at=_now(), log_identity=fp,  # no physical_identity -> veto cannot fire
+    ))
+    assert applied_b is True
+    applied_a = run(shared_registry.set_if_newer(
+        generation=2, state=IntegrityState.HEALTHY, reason="worker A: intact",
+        verified_at=_now(), log_identity=fp,  # no physical_identity -> veto cannot fire
+    ))
+    assert applied_a is True, (
+        "without the physical-identity veto, A's higher-generation write "
+        "incorrectly overrides B's unresolved failure -- confirming the "
+        "positive test's veto is what actually prevents this"
+    )
+    status = run(shared_registry.get())
+    assert status.state == IntegrityState.HEALTHY  # the bug, reproduced
+
+
+def test_recovery_after_identity_conflict_requires_explicit_out_of_band_reset():
+    """No silent recovery: retrying with the SAME conflicting identity
+    changes nothing. A genuine, authorized recovery (e.g. an operator
+    confirms which physical log is actually authoritative and
+    re-provisions the shared integrity-state key) is always an explicit,
+    out-of-band action -- modeled here, consistently with this module's
+    existing bootstrap-latch recovery test
+    (test_recovery_from_unhealthy_requires_an_explicit_new_pass), by
+    provisioning a FRESH registry/key rather than any in-band clearing
+    method (there is deliberately none)."""
+    audit_a, audit_b = _cloned_genesis_logs(None)
+    shared_registry = InMemoryIntegrityStateRegistry()
+
+    mon_b = AuditIntegrityMonitor(audit_b, shared_registry)
+    assert run(mon_b.verify_once()) == IntegrityState.UNHEALTHY
+    mon_a = AuditIntegrityMonitor(audit_a, shared_registry)
+    assert run(mon_a.verify_once()) == IntegrityState.UNHEALTHY
+
+    # Retrying against the SAME key changes nothing -- no silent recovery.
+    assert run(mon_a.verify_once()) == IntegrityState.UNHEALTHY
+    assert run(mon_a.current_state()) == IntegrityState.UNHEALTHY
+
+    # Explicit, out-of-band operator action: a fresh registry/key, after
+    # the operator has independently confirmed worker A's log is the one
+    # that should be authoritative going forward.
+    fresh_registry = InMemoryIntegrityStateRegistry()
+    mon_a_recovered = AuditIntegrityMonitor(audit_a, fresh_registry)
+    assert run(mon_a_recovered.verify_once()) == IntegrityState.HEALTHY
+    assert run(mon_a_recovered.current_state()) == IntegrityState.HEALTHY

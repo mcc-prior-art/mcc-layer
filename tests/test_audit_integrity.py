@@ -397,6 +397,44 @@ def test_genesis_fingerprint_is_none_for_missing_or_empty_file(tmp_path):
     assert missing.genesis_fingerprint_safe() is None
 
 
+def test_physical_identity_differs_for_different_files_even_with_identical_content(tmp_path):
+    """The exact property genesis_fingerprint_safe() LACKS and
+    physical_identity_safe() exists to provide (second hardening round):
+    two genuinely different files, cloned/bootstrapped from byte-identical
+    initial content, must still be told apart. A content fingerprint alone
+    cannot do this -- it is the root cause of the cross-worker identity-
+    collision vulnerability this round fixes."""
+    seed = '{"seed": "identical-genesis-record"}\n'
+    path_a = tmp_path / "a.jsonl"
+    path_b = tmp_path / "b.jsonl"
+    path_a.write_text(seed, encoding="utf-8")
+    path_b.write_text(seed, encoding="utf-8")
+    log_a = AuditLog(str(path_a))
+    log_b = AuditLog(str(path_b))
+
+    # Byte-identical content -> IDENTICAL content fingerprint (the weak
+    # signal this round stops relying on as sole proof).
+    assert log_a.genesis_fingerprint_safe() == log_b.genesis_fingerprint_safe()
+    # But two genuinely different physical files -> DIFFERENT physical
+    # identity (the new primary signal).
+    assert log_a.physical_identity_safe() != log_b.physical_identity_safe()
+
+
+def test_physical_identity_is_stable_for_the_same_file_across_appends(tmp_path):
+    log = _audit(tmp_path)
+    log.append({"seed": "x"})
+    id1 = log.physical_identity_safe()
+    log.append({"more": "entries"})
+    id2 = log.physical_identity_safe()
+    assert id1 is not None
+    assert id1 == id2  # the inode doesn't change across ordinary appends
+
+
+def test_physical_identity_is_none_for_missing_file(tmp_path):
+    missing = _audit(tmp_path)
+    assert missing.physical_identity_safe() is None
+
+
 # ---------------------------------------------------------------------------
 # Registry: InMemory generation CAS semantics
 # ---------------------------------------------------------------------------
@@ -418,6 +456,35 @@ def test_inmemory_registry_rejects_stale_generation():
     assert run(reg.set_if_newer(generation=6, state=IntegrityState.UNHEALTHY,
                                  reason="genuinely newer", verified_at=400)) is True
     assert run(reg.get()).state == IntegrityState.UNHEALTHY
+
+
+def test_inmemory_registry_vetoes_conflicting_physical_identity_even_with_higher_generation():
+    """Second hardening round: the identity veto is checked BEFORE
+    generation ordering -- a write from a genuinely DIFFERENT physical log
+    is rejected even though its generation is strictly higher than what is
+    currently stored. This is the write-path fix for the cross-worker
+    identity-collision vulnerability (a newer, healthy result from a
+    different log must never silently override an older, unresolved
+    result belonging to the log this key actually represents)."""
+    reg = InMemoryIntegrityStateRegistry()
+    assert run(reg.set_if_newer(generation=1, state=IntegrityState.UNHEALTHY,
+                                 reason="worker B: corrupted", verified_at=100,
+                                 physical_identity="dev1:inode-B")) is True
+    # Worker A's write: HIGHER generation, but a DIFFERENT physical
+    # identity -- must be rejected outright, not applied.
+    assert run(reg.set_if_newer(generation=2, state=IntegrityState.HEALTHY,
+                                 reason="worker A: intact", verified_at=200,
+                                 physical_identity="dev1:inode-A")) is False
+    status = run(reg.get())
+    assert status.state == IntegrityState.UNHEALTHY  # B's result, untouched
+    assert status.physical_identity == "dev1:inode-B"
+
+    # A write from the SAME (established) identity continues to apply
+    # normally, generation-ordered as before.
+    assert run(reg.set_if_newer(generation=3, state=IntegrityState.HEALTHY,
+                                 reason="worker B: fixed", verified_at=300,
+                                 physical_identity="dev1:inode-B")) is True
+    assert run(reg.get()).state == IntegrityState.HEALTHY
 
 
 def test_inmemory_registry_generations_monotonic_across_concurrent_allocation():
@@ -456,15 +523,22 @@ class _FakeRedis:
 
     async def eval(self, script, numkeys, key, *argv):
         assert script is not None and numkeys == 1
-        generation, state, verified_at, reason, log_identity = argv
+        generation, state, verified_at, reason, log_identity, physical_identity = argv
         cur = self.store.get(key)
+        established_phys = cur.get("physical_identity") if isinstance(cur, dict) else None
+        # Mirrors _SET_IF_NEWER_LUA: the identity veto is checked FIRST,
+        # independent of generation ordering.
+        if established_phys and physical_identity and established_phys != physical_identity:
+            return -1
         if isinstance(cur, dict) and int(cur.get("generation", -1)) >= int(generation):
             return 0
         prior = cur.get("log_identity") if isinstance(cur, dict) else None
+        prior_phys = established_phys
         self.store[key] = {
             "generation": generation, "state": state,
             "last_verified_at": verified_at, "reason": reason,
             "log_identity": log_identity if log_identity else (prior or ""),
+            "physical_identity": physical_identity if physical_identity else (prior_phys or ""),
         }
         return 1
 
@@ -509,6 +583,26 @@ def test_redis_registry_cas_rejects_stale_write():
                                  reason="late/stale", verified_at=20)) is False
     status = run(reg.get())
     assert status.state == IntegrityState.HEALTHY and status.generation == 2
+
+
+def test_redis_registry_vetoes_conflicting_physical_identity_even_with_higher_generation():
+    """Second hardening round, against the real Lua CAS script (via the
+    faithful _FakeRedis double): mirrors
+    test_inmemory_registry_vetoes_conflicting_physical_identity_even_with_higher_generation
+    but exercises _SET_IF_NEWER_LUA's actual identity-veto branch, which
+    returns -1 (not 0/1) -- proving set_if_newer correctly coerces that to
+    False rather than Python's ``bool(-1) == True``."""
+    redis = _FakeRedis()
+    reg = RedisIntegrityStateRegistry(redis, key="mcc:test:identity")
+    assert run(reg.set_if_newer(generation=1, state=IntegrityState.UNHEALTHY,
+                                 reason="worker B: corrupted", verified_at=100,
+                                 physical_identity="dev1:inode-B")) is True
+    assert run(reg.set_if_newer(generation=2, state=IntegrityState.HEALTHY,
+                                 reason="worker A: intact", verified_at=200,
+                                 physical_identity="dev1:inode-A")) is False
+    status = run(reg.get())
+    assert status.state == IntegrityState.UNHEALTHY
+    assert status.physical_identity == "dev1:inode-B"
 
 
 def test_redis_registry_backend_down_raises_backend_unavailable():
@@ -626,8 +720,14 @@ def test_append_never_calls_verify_chain_or_verify_chain_safe(tmp_path, monkeypa
 
     monkeypatch.setattr(AuditLog, "verify_chain", staticmethod(_boom))
     monkeypatch.setattr(AuditLog, "verify_chain_safe", _boom)
+    # Second hardening round: the new physical-identity signal must only
+    # ever be computed from the verification path (audit_integrity.py),
+    # never from append()'s own hot path, exactly like the pre-existing
+    # content fingerprint.
+    monkeypatch.setattr(AuditLog, "genesis_fingerprint_safe", _boom)
+    monkeypatch.setattr(AuditLog, "physical_identity_safe", _boom)
     for i in range(20):
-        log.append({"i": i})  # would raise immediately if either were called
+        log.append({"i": i})  # would raise immediately if any were called
 
 
 def test_periodic_verification_runs_off_the_hot_path_and_uses_a_worker_thread(tmp_path, monkeypatch):

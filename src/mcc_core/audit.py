@@ -390,6 +390,39 @@ class AuditLog:
                 return None
             return hashlib.sha256(first_line).hexdigest()
 
+    def physical_identity_safe(self) -> "str | None":
+        """A cheap (O(1), a single ``os.stat()``), fail-safe PHYSICAL-STORAGE
+        identity for THIS log's underlying file -- its device+inode.
+        ``None`` if the file does not exist.
+
+        Unlike ``genesis_fingerprint_safe()`` (a CONTENT fingerprint of the
+        first record, which two genuinely DIFFERENT files can trivially
+        share if they were cloned/bootstrapped from the same initial
+        record), this proves the file really is the same physical object on
+        disk: the inode number is invariant for the life of a given file.
+        For this repository's actual shared-storage deployment model -- a
+        single Docker volume bind-mounted into every worker container on
+        one host (see ``docker-compose.*.yml``'s shared ``/data/*.jsonl``
+        volumes) -- device+inode are identical across every worker that is
+        genuinely sharing that file. ``st_dev`` is included for extra
+        same-host confidence but is NOT relied upon as a cross-HOST signal
+        (e.g. over NFS, where a client-local device number can legitimately
+        differ even for a truly shared file) -- only ``st_ino`` is required
+        to carry meaning across hosts; this module never compares ``st_dev``
+        in isolation.
+
+        Used exclusively by ``mcc_core.audit_integrity``'s cross-worker
+        identity veto -- the PRIMARY proof of "same physical audit log,"
+        never ``append()``'s hot path. No locking is needed: a file's
+        device and inode never change while a concurrent writer appends to
+        it, so this is safe to call without ``self._locked()``.
+        """
+        try:
+            st = os.stat(self.path)
+        except OSError:
+            return None
+        return f"{st.st_dev}:{st.st_ino}"
+
     @staticmethod
     def verify_chain(path: str) -> bool:
         """Recompute every entry hash and check linkage. The legacy genesis
