@@ -93,6 +93,7 @@ class EnforcementCoordinator:
         require_challenge: bool = False,
         time_source: Optional[TrustedTimeSource] = None,
         max_dispatch_staleness_seconds: Optional[float] = None,
+        integrity_monitor: Optional[Any] = None,
     ) -> None:
         self.gate = gate
         self.idempotency = idempotency
@@ -174,6 +175,15 @@ class EnforcementCoordinator:
         # consumed single-use here, bound to the exact operation. Replay,
         # mismatch, or backend failure fails closed before execution.
         self.approvals = approvals
+        # P2-A3: optional fail-closed audit-integrity DISPATCH gate (an
+        # ``mcc_core.audit_integrity.AuditIntegrityMonitor``, typed loosely
+        # here -- ``audit_integrity`` is not imported at module level so
+        # this module's own import surface stays unchanged for every
+        # existing caller that does not configure one). ``None`` (default)
+        # disables the check entirely, matching this class's pre-existing
+        # behavior exactly -- zero behavior change for every existing
+        # caller/test. See ``enforce()``'s first statement.
+        self.integrity_monitor = integrity_monitor
 
     def _record(self, **fields: Any) -> Optional[str]:
         try:
@@ -194,6 +204,31 @@ class EnforcementCoordinator:
         evidence: Optional[Dict[str, Any]] = None,
         now: Optional[int] = None,
     ) -> ActuationResult:
+        # P2-A3: audit-integrity fail-closed DISPATCH boundary -- the VERY
+        # FIRST check in this method, before even the trusted-now
+        # resolution below. This is deliberately a SEPARATE, independent
+        # boundary from GovernanceService's own issuance-time gate
+        # (gateway/governance_service.py's ``_integrity_gate``), not a
+        # substitute for it: a caller that reaches ``enforce()`` directly
+        # -- bypassing GovernanceService entirely (the "direct API bypass"
+        # scenario) -- is still blocked here. No token/binding/nonce
+        # check, no idempotency/velocity reservation, no audit write other
+        # than the rejection record below, and no actuator call ever
+        # happens before this. ``None`` (default) disables the check
+        # entirely, matching this class's pre-existing behavior exactly --
+        # zero behavior change for every existing caller/test that does
+        # not configure one.
+        if self.integrity_monitor is not None:
+            integrity_state = await self.integrity_monitor.current_state()
+            if getattr(integrity_state, "value", integrity_state) != "HEALTHY":
+                reason = (
+                    "AUDIT_INTEGRITY_NOT_HEALTHY: audit-chain integrity state is "
+                    f"{getattr(integrity_state, 'value', integrity_state)!s}; fail-closed "
+                    "before any gate/idempotency/velocity/audit/executor step"
+                )
+                self._record(kind="actuation_rejected", action=action, reason=reason)
+                return ActuationResult(ActuationStatus.BLOCKED, reason)
+
         # Clock-skew hardening (PR #122 round 4): resolve ONE trusted `now`
         # for this call's gate/consensus/challenge/approval checks below --
         # never for VelocityRegistry.reserve()/release(), which keeps using

@@ -1,0 +1,44 @@
+{
+  "label": "P2-A3 (after: verify_chain_safe added, append() hot path untouched)",
+  "seeded_entries": 50000,
+  "file_size_bytes_at_start": 13588833,
+  "samples": 200,
+  "read_last_entry_seconds": {
+    "sample_size": 200,
+    "p50": 3.713199998855998e-05,
+    "p95": 5.2890999995724997e-05,
+    "p99": 7.793300005687342e-05,
+    "p99_caveat": null,
+    "min": 3.5197000215703156e-05,
+    "max": 9.79730000381096e-05,
+    "mean": 3.9586030014788774e-05
+  },
+  "append_seconds": {
+    "sample_size": 200,
+    "p50": 0.00020625499996640428,
+    "p95": 0.00036350000004858884,
+    "p99": 0.000417588999880536,
+    "p99_caveat": null,
+    "min": 0.00018132000013793004,
+    "max": 0.0004642100000182836,
+    "mean": 0.00022794161000092573
+  },
+  "raw_fsync_seconds": {
+    "sample_size": 200,
+    "p50": 0.00014552900006492564,
+    "p95": 0.00020625699994525348,
+    "p99": 0.00032088600005408807,
+    "p99_caveat": null,
+    "min": 0.00010322100001758372,
+    "max": 0.0004739360001622117,
+    "mean": 0.00015276660999461456
+  },
+  "environment": {
+    "python_version": "3.11.17",
+    "platform": "Linux-6.18.44-fc-v185-x86_64-with-glibc2.39",
+    "cpu_count": 4,
+    "git_sha": "e6003496b5a888f8b7380a97ec23c290cabc7633",
+    "audit_py_locally_modified": true,
+    "timestamp_utc": "2026-10-29T23:43:13Z"
+  }
+}

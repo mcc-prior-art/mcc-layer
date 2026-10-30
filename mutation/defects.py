@@ -469,12 +469,90 @@ DEFECTS: List[Defect] = [
         detector_tests=("tests/test_attester_service.py::test_g_missing_auth_header_rejected_before_provider_is_called",
                          "tests/test_attester_service.py::test_g_wrong_auth_header_rejected_before_provider_is_called"),
     ),
+    # P2-A3: Automated Audit Integrity & Fail-Closed Enforcement -- the two
+    # independent enforcement boundaries this task adds. See
+    # docs/AUDIT_INTEGRITY_ENFORCEMENT.md.
+    Defect(
+        id="audit-integrity-dispatch-gate-disabled",
+        description="EnforcementCoordinator.enforce()'s audit-integrity DISPATCH-boundary check is disabled -- actuation proceeds even when audit-chain integrity is UNVERIFIED/VERIFYING/UNHEALTHY.",
+        file_path="src/mcc_core/coordinator.py",
+        find='            if getattr(integrity_state, "value", integrity_state) != "HEALTHY":',
+        replace="            if False:  # MUTATED: audit-integrity dispatch gate disabled",
+        detector_tests=("tests/test_audit_integrity_enforcement.py::test_direct_coordinator_call_blocked_when_integrity_not_healthy",),
+    ),
+    Defect(
+        id="audit-integrity-issuance-gate-disabled",
+        description="GovernanceService._integrity_gate() always permits token issuance regardless of audit-chain integrity state -- the ISSUANCE-boundary half of the P2-A3 control is disabled.",
+        file_path="gateway/governance_service.py",
+        find="        if state == IntegrityState.HEALTHY:\n            return None",
+        replace="        if True:  # MUTATED: audit-integrity issuance gate disabled\n            return None",
+        detector_tests=("tests/test_audit_integrity_enforcement.py::test_mandate_issuance_blocked_when_integrity_not_healthy",),
+    ),
+    # P2-A3 hardening round (independent review follow-up): the two new
+    # defenses added on top of the original P2-A3 control. See
+    # docs/AUDIT_INTEGRITY_ENFORCEMENT.md's "Hardening round" section.
+    Defect(
+        id="audit-integrity-bootstrap-latch-disabled",
+        description="AuditIntegrityMonitor's one-way 'ever initialized' bootstrap latch is disabled -- a journal deleted/truncated AFTER legitimate initialization is silently re-accepted as a fresh trusted bootstrap (allow_empty_bootstrap=True resurrects HEALTHY), defeating the entire point of the integrity control.",
+        file_path="src/mcc_core/audit_integrity.py",
+        find="            if ever_initialized:",
+        replace="            if False:  # MUTATED: bootstrap one-way latch disabled",
+        detector_tests=("tests/test_audit_integrity.py::test_bootstrap_latch_blocks_reuse_even_across_a_fresh_process_restart",),
+    ),
+    Defect(
+        id="audit-integrity-cross-worker-identity-check-disabled",
+        description="AuditIntegrityMonitor.current_state() no longer checks the shared registry's audit-log identity against this worker's own -- a worker whose own file differs from (or is corrupted relative to) another worker's can silently inherit that other worker's HEALTHY result.",
+        file_path="src/mcc_core/audit_integrity.py",
+        find=(
+            "        if (\n"
+            "            status.log_identity is not None\n"
+            "            and self._last_observed_identity is not None\n"
+            "            and status.log_identity != self._last_observed_identity\n"
+            "        ):"
+        ),
+        replace="        if False:  # MUTATED: cross-worker audit-log identity check disabled",
+        detector_tests=("tests/test_audit_integrity_enforcement.py::test_content_fingerprint_mismatch_alone_still_fails_closed_without_physical_identity",),
+    ),
+    # P2-A3 second hardening round (independent review follow-up): the
+    # write-path physical-identity veto -- a content fingerprint alone
+    # (the prior defect above) cannot distinguish two genuinely different
+    # files cloned from the same initial record; this is the primary fix.
+    # See docs/AUDIT_INTEGRITY_ENFORCEMENT.md's "Second hardening round".
+    Defect(
+        id="audit-integrity-write-path-identity-veto-disabled",
+        description="InMemoryIntegrityStateRegistry.set_if_newer()'s physical-identity veto is disabled -- a newer-generation write from a DIFFERENT physical audit log silently overrides an unresolved result belonging to the log a shared registry key actually represents (the cross-worker identity-collision fail-open: two workers with physically distinct logs cloned from the same initial record share a content fingerprint but must not share trust).",
+        file_path="src/mcc_core/audit_integrity.py",
+        find=(
+            "            if (\n"
+            "                established_phys\n"
+            "                and physical_identity\n"
+            "                and established_phys != physical_identity\n"
+            "            ):"
+        ),
+        replace="            if False:  # MUTATED: write-path physical-identity veto disabled",
+        detector_tests=("tests/test_audit_integrity.py::test_inmemory_registry_vetoes_conflicting_physical_identity_even_with_higher_generation",),
+    ),
+    # P2-A3 third hardening round (independent review follow-up): the
+    # GLOBAL conflict latch -- the second round's veto only protects the
+    # worker whose write gets rejected; this closes the residual gap where
+    # the "winning" worker (whose write establishes the identity first)
+    # kept reading HEALTHY, undisturbed by the other worker's detected
+    # conflict. See docs/AUDIT_INTEGRITY_ENFORCEMENT.md's "Third hardening
+    # round".
+    Defect(
+        id="audit-integrity-global-conflict-latch-disabled",
+        description="AuditIntegrityMonitor.current_state()'s GLOBAL identity-conflict latch check is disabled -- once a cross-worker physical-identity conflict is detected (regardless of race ordering), the worker whose write established the identity FIRST keeps reporting HEALTHY and executing, even though the conflict proves this key's deployment invariant is violated for some worker.",
+        file_path="src/mcc_core/audit_integrity.py",
+        find="        if conflicted:",
+        replace="        if False:  # MUTATED: global identity-conflict latch disabled",
+        detector_tests=("tests/test_audit_integrity_enforcement.py::test_fix_global_conflict_latch_blocks_every_worker_regardless_of_race_ordering[a_first]",),
+    ),
 ]
 
 DEFECT_IDS = tuple(d.id for d in DEFECTS)
 
-assert len(DEFECT_IDS) == 39, f"expected exactly 39 targeted defects, found {len(DEFECT_IDS)}"
-assert len(set(DEFECT_IDS)) == 39, "defect ids must be unique"
+assert len(DEFECT_IDS) == 45, f"expected exactly 45 targeted defects, found {len(DEFECT_IDS)}"
+assert len(set(DEFECT_IDS)) == 45, "defect ids must be unique"
 
 GATE_FAIL_OPEN_DEFECT_IDS = tuple(d.id for d in DEFECTS if d.id == "gate-fail-open" or d.id.startswith("gate-") and d.id.endswith("-fail-open"))
 assert len(GATE_FAIL_OPEN_DEFECT_IDS) == 14, (

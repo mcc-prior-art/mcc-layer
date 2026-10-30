@@ -351,6 +351,78 @@ class AuditLog:
             self.prev_hash = entry["hash"]
         return entry
 
+    def verify_chain_safe(self) -> bool:
+        """Full-chain verification (``verify_chain()``), performed while
+        holding this log's inter-process lock -- the SAME lock ``append()``
+        uses -- so a concurrent writer can never be observed mid-write.
+
+        This is an explicit, on-demand, O(file size) operation, never part
+        of ``append()``'s own hot path. Its only intended caller is
+        ``src/mcc_core/audit_integrity.py``'s periodic/startup verification,
+        always off any request-handling path (see that module's docstring).
+        """
+        with self._locked():
+            return self.verify_chain(self.path)
+
+    def genesis_fingerprint_safe(self) -> "str | None":
+        """A cheap (O(1) relative to file size -- reads only the first
+        line), fail-safe identity fingerprint for THIS specific audit log,
+        derived from its first non-blank record. ``None`` if the file does
+        not exist or is empty.
+
+        Used exclusively by ``mcc_core.audit_integrity`` to detect a
+        worker's shared integrity-state registry holding a result computed
+        over a DIFFERENT underlying audit log than this process's own --
+        e.g. two workers misconfigured to point at different files sharing
+        one Redis registry key. Never consulted by ``append()``'s hot path
+        and never a substitute for ``verify_chain()``'s own full-chain
+        check. Performed under the SAME inter-process lock as
+        ``append()``/``verify_chain_safe()`` so it never reads a half-
+        written first line.
+        """
+        with self._locked():
+            try:
+                with open(self.path, "rb") as fh:
+                    first_line = fh.readline()
+            except FileNotFoundError:
+                return None
+            if not first_line.strip():
+                return None
+            return hashlib.sha256(first_line).hexdigest()
+
+    def physical_identity_safe(self) -> "str | None":
+        """A cheap (O(1), a single ``os.stat()``), fail-safe PHYSICAL-STORAGE
+        identity for THIS log's underlying file -- its device+inode.
+        ``None`` if the file does not exist.
+
+        Unlike ``genesis_fingerprint_safe()`` (a CONTENT fingerprint of the
+        first record, which two genuinely DIFFERENT files can trivially
+        share if they were cloned/bootstrapped from the same initial
+        record), this proves the file really is the same physical object on
+        disk: the inode number is invariant for the life of a given file.
+        For this repository's actual shared-storage deployment model -- a
+        single Docker volume bind-mounted into every worker container on
+        one host (see ``docker-compose.*.yml``'s shared ``/data/*.jsonl``
+        volumes) -- device+inode are identical across every worker that is
+        genuinely sharing that file. ``st_dev`` is included for extra
+        same-host confidence but is NOT relied upon as a cross-HOST signal
+        (e.g. over NFS, where a client-local device number can legitimately
+        differ even for a truly shared file) -- only ``st_ino`` is required
+        to carry meaning across hosts; this module never compares ``st_dev``
+        in isolation.
+
+        Used exclusively by ``mcc_core.audit_integrity``'s cross-worker
+        identity veto -- the PRIMARY proof of "same physical audit log,"
+        never ``append()``'s hot path. No locking is needed: a file's
+        device and inode never change while a concurrent writer appends to
+        it, so this is safe to call without ``self._locked()``.
+        """
+        try:
+            st = os.stat(self.path)
+        except OSError:
+            return None
+        return f"{st.st_dev}:{st.st_ino}"
+
     @staticmethod
     def verify_chain(path: str) -> bool:
         """Recompute every entry hash and check linkage. The legacy genesis

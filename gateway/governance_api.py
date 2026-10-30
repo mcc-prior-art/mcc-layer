@@ -490,6 +490,70 @@ def build_governance_service(
     # then identical to before PR-2. Reuses shared_nonce_registry (see above).
     pre_execution_control = _build_pre_execution_control(env, shared_nonce_registry, time_source)
 
+    # P2-A3: optional automatic audit-chain integrity verification +
+    # mandatory fail-closed enforcement. The ENTIRE subsystem -- building
+    # the monitor, running the startup verification pass, and wiring it
+    # into the coordinator/service -- is skipped unless
+    # MCC_REQUIRE_AUDIT_INTEGRITY is explicitly set, so every existing
+    # deployment/test that does not opt in gets integrity_monitor=None on
+    # both the coordinator and the service -> byte-for-byte unchanged
+    # pre-P2-A3 behavior (in particular: a freshly started, empty audit
+    # file must NEVER cause an unrelated caller's first governed action to
+    # be blocked -- that only happens once this is explicitly turned on,
+    # at which point the explicit trusted-bootstrap policy, not a default,
+    # decides it). Mirrors MCC_REQUIRE_CONSENSUS's fail-closed-at-startup
+    # convention when it IS turned on: refuses startup if the monitor
+    # cannot be built, or if the mandatory startup verification pass
+    # itself does not report HEALTHY. When enabled, that synchronous pass
+    # runs BEFORE this function returns a usable service -- no executable
+    # authority is ever issued before it completes -- and the periodic
+    # background pass is armed to start as soon as an event loop exists
+    # (this function itself runs before one does; see gateway/app.py's
+    # startup hook, which calls
+    # ``integrity_monitor.start_periodic_verification()``).
+    require_audit_integrity = _env_flag(env, "MCC_REQUIRE_AUDIT_INTEGRITY")
+    integrity_monitor = None
+    if require_audit_integrity:
+        integrity_monitor = _build_audit_integrity_monitor(env, audit, time_source)
+        if integrity_monitor is None:
+            raise RuntimeError(
+                "MCC_REQUIRE_AUDIT_INTEGRITY is set but the audit-integrity monitor "
+                "could not be built (check MCC_AUDIT_INTEGRITY_BACKEND / MCC_REDIS_URL); "
+                "refusing fail-open startup"
+            )
+        import asyncio
+
+        async def _run_startup_check_and_release_connections():
+            # Hardening-round Finding 2: this whole block runs before any
+            # ASGI event loop exists (build_governance_service() itself is
+            # synchronous), so this is the FIRST use of a Redis-backed
+            # registry's async client, and it happens inside a throwaway
+            # loop that asyncio.run() tears down the instant this
+            # coroutine returns. redis.asyncio connections are bound to
+            # whichever loop is running when first used; reusing them from
+            # a LATER, different loop (gateway/app.py's own startup hook
+            # running start_periodic_verification(), and every live
+            # request's current_state() call -- all on the real uvicorn
+            # loop) raises/hangs. Disconnecting here, still inside THIS
+            # SAME throwaway loop before it is torn down, makes the
+            # registry lazily establish brand-new connections, bound to
+            # whichever loop next uses it, the next time it is touched.
+            # See tests/test_audit_integrity_redis_event_loop.py (real
+            # Redis, not a mock) and
+            # AuditIntegrityMonitor.reset_connections_for_new_event_loop's
+            # own docstring.
+            state = await integrity_monitor.run_startup_verification()
+            await integrity_monitor.reset_connections_for_new_event_loop()
+            return state
+
+        startup_state = asyncio.run(_run_startup_check_and_release_connections())
+        if str(getattr(startup_state, "value", startup_state)) != "HEALTHY":
+            raise RuntimeError(
+                "MCC_REQUIRE_AUDIT_INTEGRITY is set but the startup audit-chain "
+                f"integrity verification did not report HEALTHY (got {startup_state!s}); "
+                "refusing fail-open startup"
+            )
+
     coordinator = EnforcementCoordinator(
         gate=gate, idempotency=idempotency_registry_from_env(env),
         velocity=velocity_registry_from_env(env), audit=audit,
@@ -499,6 +563,7 @@ def build_governance_service(
         challenges=challenge_service, require_challenge=require_challenge,
         time_source=time_source,
         max_dispatch_staleness_seconds=_max_dispatch_staleness_from_env(env),
+        integrity_monitor=integrity_monitor,
     )
 
     if upstream is None:
@@ -519,6 +584,7 @@ def build_governance_service(
         consensus_verifier=consensus_verifier, challenge_service=challenge_service,
         pre_execution_control=pre_execution_control, time_source=time_source,
         delegation_verifier=delegation_verifier,
+        integrity_monitor=integrity_monitor,
     )
 
 
@@ -610,6 +676,53 @@ def _build_pre_execution_control(env, nonce_registry, time_source=None):
 
     return PreExecutionControl(requirements=registry, trust_store=trust_store,
                                nonce_registry=nonce_registry, time_source=time_source)
+
+
+def _build_audit_integrity_monitor(env, audit, time_source=None):
+    """Build the optional P2-A3 ``AuditIntegrityMonitor``. Always attempted
+    (mirrors ``_build_consensus_verifier``'s "always attempt, let the
+    caller decide whether absence refuses startup" convention) -- selecting
+    ``MCC_AUDIT_INTEGRITY_BACKEND=redis`` without a usable ``MCC_REDIS_URL``
+    propagates as ``None`` here (never a silent downgrade to in-memory);
+    ``build_governance_service`` below is what turns that into a fail-closed
+    startup refusal when ``MCC_REQUIRE_AUDIT_INTEGRITY`` is set.
+    """
+    from mcc_core.audit_integrity import (
+        DEFAULT_FRESHNESS_GRACE_SECONDS,
+        DEFAULT_PERIODIC_INTERVAL_SECONDS,
+        AuditIntegrityMonitor,
+        IntegrityConfigError,
+        integrity_state_registry_from_env,
+    )
+
+    try:
+        registry = integrity_state_registry_from_env(env)
+    except IntegrityConfigError:
+        return None
+
+    def _f(key: str, default: float) -> float:
+        raw = env.get(key, "").strip()
+        if not raw:
+            return default
+        try:
+            return float(raw)
+        except ValueError as exc:
+            raise RuntimeError(f"{key}={raw!r} is not a valid number") from exc
+
+    allow_empty_bootstrap = _env_flag(env, "MCC_AUDIT_INTEGRITY_ALLOW_EMPTY_BOOTSTRAP")
+    freshness_grace_seconds = _f(
+        "MCC_AUDIT_INTEGRITY_FRESHNESS_GRACE_SECONDS", DEFAULT_FRESHNESS_GRACE_SECONDS
+    )
+    periodic_interval_seconds = _f(
+        "MCC_AUDIT_INTEGRITY_INTERVAL_SECONDS", DEFAULT_PERIODIC_INTERVAL_SECONDS
+    )
+    return AuditIntegrityMonitor(
+        audit, registry,
+        allow_empty_bootstrap=allow_empty_bootstrap,
+        freshness_grace_seconds=freshness_grace_seconds,
+        periodic_interval_seconds=periodic_interval_seconds,
+        time_source=time_source,
+    )
 
 
 def _build_consensus_verifier(env):
