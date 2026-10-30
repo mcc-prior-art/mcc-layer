@@ -36,10 +36,14 @@ UNVERIFIED --(verify_once)--> VERIFYING --(pass completes)--> HEALTHY or UNHEALT
   only (see "Why VERIFYING is not shared" below) — never written to the
   shared registry.
 * **HEALTHY** — the most recently completed pass found the chain intact,
-  **and** that result is still fresh (see Freshness below).
+  **and** that result is still fresh (see Freshness below), **and** no
+  cross-worker identity conflict has ever been latched for this key (see
+  "Third hardening round" below).
 * **UNHEALTHY** — the most recent pass failed, OR the last known-HEALTHY
   result has gone stale, OR the shared state backend cannot currently be
-  read.
+  read, OR a cross-worker identity conflict has ever been latched for
+  this key — for EVERY worker sharing it, not only the one whose write
+  triggered the latch.
 
 Only `HEALTHY` ever satisfies a gate check (`is_healthy()` in
 `src/mcc_core/audit_integrity.py`). Every other state blocks — deliberately
@@ -383,6 +387,85 @@ and a healthy-path regression confirms two workers that genuinely DO share
 one physical file converge on `HEALTHY` normally — the veto never fires
 against itself.
 
+## Third hardening round — the conflict is GLOBAL, not per-loser
+
+Independent review correctly identified a residual gap in the second
+round's own fix: the write-path veto only protects the worker whose write
+gets *rejected*. If worker A's genuinely intact result is written FIRST
+(establishing the identity for this key) and worker B's later, genuinely
+different, corrupted write is the one that gets vetoed, worker A's own
+`current_state()` — unaffected by B's rejected write, since nothing about
+A's own read touches B's write at all — keeps reporting `HEALTHY`.
+Reproduced exactly, against the pre-this-round logic, by
+`tests/test_audit_integrity_enforcement.py::test_non_vacuity_a_first_ordering_pre_this_round_a_would_stay_healthy`.
+
+The mere *existence* of a cross-worker physical-identity conflict is
+itself the signal that this key's own deployment invariant ("every worker
+sharing it points at the same physical log") is violated for *some*
+worker — and nothing in this module can tell which one is actually
+correct. Letting the worker that merely won the race to write first keep
+operating as if nothing happened, while only the "loser" is blocked, was
+not a safe response to that signal.
+
+**Fix — a durable, GLOBAL, one-way conflict latch, atomic with the veto
+itself:**
+
+* When `set_if_newer`'s identity-veto branch fires (either backend), it
+  now ALSO atomically latches a durable, global conflict marker — a
+  sibling key (`<key>:conflict` for Redis; a one-way boolean for the
+  in-memory registry) — in the exact SAME atomic operation as the veto
+  decision (the Redis Lua script's own atomicity; the in-memory
+  registry's own lock). There is therefore no window between "a conflict
+  was detected" and "every reader can observe it," and the result is
+  order-independent: whichever of the two possible race orderings trips
+  the branch first latches the identical marker (`SET ... NX` —
+  idempotent; the first conflicting write to ever trip it wins).
+* `AuditIntegrityMonitor.current_state()` checks this latch FIRST,
+  unconditionally, before reading anything else — so EVERY worker sharing
+  the key, including the one whose write was never vetoed, reports
+  `UNHEALTHY` while it stands.
+* `_verify_once_locked()` also short-circuits on an already-latched
+  conflict (a pure efficiency optimization on top of `current_state()`'s
+  own unconditional check, which is what actually enforces the
+  invariant) — skipping a pointless full-chain scan once the outcome is
+  already fixed.
+* **Nothing clears it automatically** — not a later `HEALTHY`
+  verification, not a higher generation, not a process restart, not any
+  concurrent write (`tests/test_audit_integrity_enforcement.py::test_global_conflict_latch_never_cleared_by_later_healthy_higher_generation_or_restart`).
+  Recovery is the SAME explicit, out-of-band operator action as the
+  second round's own identity conflict (see below), extended to also
+  clear this marker — never an in-band method call anywhere in this
+  module.
+
+**Disaster recovery (explicit, out-of-band, never in-band) — updated for
+this round:** once an operator has independently confirmed which
+physical log is actually authoritative, recovery is provisioning a
+*fresh* integrity-state key (for the Redis backend: a new
+`MCC_AUDIT_INTEGRITY_*` key prefix, or `DEL <key>` / `DEL <key>:gen` /
+`DEL <key>:conflict` on the old one, all three — the conflict marker is a
+separate key from the main status hash and must be cleared too, or the
+latch stays set even against a freshly re-established identity) — never
+a method call anywhere in this module.
+
+**Verified against real Redis, both race orderings and genuine
+concurrency**: `tests/test_audit_integrity_identity_collision_redis.py`
+adds `test_real_redis_a_first_then_b_global_latch_blocks_a_too` (the
+exact residual-gap ordering), `test_real_redis_b_first_then_a_global_latch_blocks_both`
+(the other ordering), and `test_real_redis_concurrent_race_always_latches_global_conflict_regardless_of_winner`
+(5 repeated genuinely-concurrent runs via `asyncio.gather`) — in every
+case, BOTH workers end up `UNHEALTHY` and zero actuator calls occur on
+either side through both enforcement boundaries
+(`tests/test_audit_integrity_enforcement.py::test_fix_global_conflict_latch_blocks_every_worker_regardless_of_race_ordering`,
+parametrized over both orderings). The healthy-shared-file regression is
+re-confirmed to never spuriously trip the new latch.
+
+**An existing test's own assumption was deliberately updated, not
+weakened**: `test_worker_with_different_audit_log_does_not_inherit_shared_healthy`
+previously asserted the second round's own ("undisturbed winner")
+behavior as correct — that assertion is now wrong under this round's
+stricter, correct semantics, and was updated (with its reasoning stated
+explicitly in the test's own docstring) to expect both workers blocked.
+
 ## Known limitations
 
 * **Detection latency is bounded, not instantaneous** — see "The one
@@ -423,10 +506,20 @@ against itself.
   deploying onto a storage layer with different inode-stability semantics
   (e.g. certain overlay/union filesystems, or object storage mounted as a
   filesystem) should verify that assumption before relying on this check.
+* **The GLOBAL conflict latch (third hardening round) is per-registry-key,
+  irreversible by design, and does not identify which side was actually
+  correct** — it is a deliberately conservative "stop everything sharing
+  this key" response to a detected conflict, not a diagnosis. An operator
+  must independently determine which physical log is authoritative before
+  recovering (see the updated disaster-recovery procedure above); this
+  module makes no attempt to decide that automatically, by design — doing
+  so would require trusting ONE of the two conflicting results, which is
+  exactly what a conflict means neither side can be trusted to do for
+  itself.
 * **TLA+/mutation coverage**: see the PR's own assurance report for exactly
   what was and was not modeled/mutated for this change. No dedicated TLA+
   model exists for the 4-state integrity machine, including after the
-  hardening rounds' bootstrap-latch and identity-veto additions — this is
-  explicitly **NOT PROVEN** by formal methods; only by the
-  unit/adversarial/non-vacuity test suite (including real-Redis
-  concurrency tests) and mutation testing.
+  hardening rounds' bootstrap-latch, identity-veto, and global-conflict-latch
+  additions — this is explicitly **NOT PROVEN** by formal methods; only by
+  the unit/adversarial/non-vacuity test suite (including real-Redis
+  concurrency tests covering both race orderings) and mutation testing.

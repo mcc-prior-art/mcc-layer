@@ -134,6 +134,110 @@ def test_real_redis_concurrent_a_and_b_never_lets_a_win_regardless_of_race_order
         server.stop()
 
 
+def test_real_redis_a_first_then_b_global_latch_blocks_a_too():
+    """Third hardening round, over REAL Redis: when worker A's genuinely
+    intact write establishes the identity FIRST and worker B's later,
+    genuinely different, corrupted write is the one vetoed, worker A's
+    own current_state() must ALSO report UNHEALTHY -- not stay HEALTHY as
+    it incorrectly would have under the second hardening round's
+    per-write-only veto. This is the exact residual gap independent
+    review identified, proven here against the real Lua CAS script."""
+    server = RealRedisServer().start()
+    try:
+        audit_a, audit_b = _cloned_genesis_logs()
+
+        async def workload():
+            registry = RedisIntegrityStateRegistry.from_url(
+                server.url, key="mcc:test:collision:a-first",
+            )
+            mon_a = AuditIntegrityMonitor(audit_a, registry)
+            mon_b = AuditIntegrityMonitor(audit_b, registry)
+            state_a = await mon_a.verify_once()   # A first: intact -> HEALTHY, establishes identity
+            state_b = await mon_b.verify_once()   # B second: corrupted, different identity -> vetoed
+            final_a = await mon_a.current_state()
+            final_b = await mon_b.current_state()
+            conflicted = await registry.is_conflicted()
+            return state_a, state_b, final_a, final_b, conflicted, mon_b.identity_conflict_detected
+
+        state_a, state_b, final_a, final_b, conflicted, b_conflict = asyncio.run(workload())
+        assert state_a == IntegrityState.HEALTHY   # A's own pass was never vetoed
+        assert state_b == IntegrityState.UNHEALTHY
+        assert b_conflict is True
+        assert conflicted is True
+        assert final_b == IntegrityState.UNHEALTHY
+        assert final_a == IntegrityState.UNHEALTHY, (
+            "worker A's own write was never vetoed, but its current_state() "
+            "must still report UNHEALTHY once the GLOBAL conflict latch is "
+            "set -- not only the worker whose write happened to be rejected"
+        )
+    finally:
+        server.stop()
+
+
+def test_real_redis_b_first_then_a_global_latch_blocks_both():
+    """Third hardening round, the OTHER race ordering, over real Redis:
+    worker B's genuinely corrupted write establishes the identity first
+    (already proven blocked by the second round's veto); this round's
+    addition is that the GLOBAL latch is also set, which this test
+    confirms explicitly via ``is_conflicted()``."""
+    server = RealRedisServer().start()
+    try:
+        audit_a, audit_b = _cloned_genesis_logs()
+
+        async def workload():
+            registry = RedisIntegrityStateRegistry.from_url(
+                server.url, key="mcc:test:collision:b-first-latch",
+            )
+            mon_b = AuditIntegrityMonitor(audit_b, registry)
+            mon_a = AuditIntegrityMonitor(audit_a, registry)
+            state_b = await mon_b.verify_once()
+            state_a = await mon_a.verify_once()
+            final_b = await mon_b.current_state()
+            final_a = await mon_a.current_state()
+            conflicted = await registry.is_conflicted()
+            return state_b, state_a, final_b, final_a, conflicted
+
+        state_b, state_a, final_b, final_a, conflicted = asyncio.run(workload())
+        assert state_b == IntegrityState.UNHEALTHY
+        assert state_a == IntegrityState.UNHEALTHY
+        assert conflicted is True
+        assert final_b == IntegrityState.UNHEALTHY
+        assert final_a == IntegrityState.UNHEALTHY
+    finally:
+        server.stop()
+
+
+def test_real_redis_concurrent_race_always_latches_global_conflict_regardless_of_winner():
+    """Genuine concurrency over real Redis, re-run multiple times: whichever
+    side wins the race to establish the identity, the GLOBAL conflict latch
+    ends up set, and BOTH workers' current_state() end up UNHEALTHY --
+    never a HEALTHY result left standing for the "winning" side while the
+    other's unresolved failure is ignored."""
+    server = RealRedisServer().start()
+    try:
+        for i in range(5):
+            audit_a, audit_b = _cloned_genesis_logs()
+
+            async def workload():
+                registry = RedisIntegrityStateRegistry.from_url(
+                    server.url, key=f"mcc:test:collision:concurrent-latch-{i}",
+                )
+                mon_b = AuditIntegrityMonitor(audit_b, registry)
+                mon_a = AuditIntegrityMonitor(audit_a, registry)
+                await asyncio.gather(mon_b.verify_once(), mon_a.verify_once())
+                final_b = await mon_b.current_state()
+                final_a = await mon_a.current_state()
+                conflicted = await registry.is_conflicted()
+                return final_b, final_a, conflicted
+
+            final_b, final_a, conflicted = asyncio.run(workload())
+            assert conflicted is True, f"iteration {i}: global latch must be set"
+            assert final_b == IntegrityState.UNHEALTHY, f"iteration {i}"
+            assert final_a == IntegrityState.UNHEALTHY, f"iteration {i}"
+    finally:
+        server.stop()
+
+
 def test_real_redis_shared_file_two_workers_same_physical_log_both_healthy():
     """Healthy-path regression over real Redis: when two workers genuinely
     share the SAME physical file (the correct, intended deployment), the
@@ -155,12 +259,20 @@ def test_real_redis_shared_file_two_workers_same_physical_log_both_healthy():
             mon_y = AuditIntegrityMonitor(audit_y, registry)
             state_x = await mon_x.verify_once()
             state_y = await mon_y.verify_once()
-            return state_x, state_y, await mon_x.current_state(), await mon_y.current_state()
+            return (
+                state_x, state_y, await mon_x.current_state(), await mon_y.current_state(),
+                await registry.is_conflicted(),
+            )
 
-        state_x, state_y, final_x, final_y = asyncio.run(workload())
+        state_x, state_y, final_x, final_y, conflicted = asyncio.run(workload())
         assert state_x == IntegrityState.HEALTHY
         assert state_y == IntegrityState.HEALTHY
         assert final_x == IntegrityState.HEALTHY
         assert final_y == IntegrityState.HEALTHY
+        assert conflicted is False, (
+            "two workers genuinely sharing one physical file must never "
+            "spuriously trip the third hardening round's global conflict "
+            "latch (requirement #6: preserve the healthy shared-file path)"
+        )
     finally:
         server.stop()

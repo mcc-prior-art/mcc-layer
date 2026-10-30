@@ -532,12 +532,27 @@ DEFECTS: List[Defect] = [
         replace="            if False:  # MUTATED: write-path physical-identity veto disabled",
         detector_tests=("tests/test_audit_integrity.py::test_inmemory_registry_vetoes_conflicting_physical_identity_even_with_higher_generation",),
     ),
+    # P2-A3 third hardening round (independent review follow-up): the
+    # GLOBAL conflict latch -- the second round's veto only protects the
+    # worker whose write gets rejected; this closes the residual gap where
+    # the "winning" worker (whose write establishes the identity first)
+    # kept reading HEALTHY, undisturbed by the other worker's detected
+    # conflict. See docs/AUDIT_INTEGRITY_ENFORCEMENT.md's "Third hardening
+    # round".
+    Defect(
+        id="audit-integrity-global-conflict-latch-disabled",
+        description="AuditIntegrityMonitor.current_state()'s GLOBAL identity-conflict latch check is disabled -- once a cross-worker physical-identity conflict is detected (regardless of race ordering), the worker whose write established the identity FIRST keeps reporting HEALTHY and executing, even though the conflict proves this key's deployment invariant is violated for some worker.",
+        file_path="src/mcc_core/audit_integrity.py",
+        find="        if conflicted:",
+        replace="        if False:  # MUTATED: global identity-conflict latch disabled",
+        detector_tests=("tests/test_audit_integrity_enforcement.py::test_fix_global_conflict_latch_blocks_every_worker_regardless_of_race_ordering[a_first]",),
+    ),
 ]
 
 DEFECT_IDS = tuple(d.id for d in DEFECTS)
 
-assert len(DEFECT_IDS) == 44, f"expected exactly 44 targeted defects, found {len(DEFECT_IDS)}"
-assert len(set(DEFECT_IDS)) == 44, "defect ids must be unique"
+assert len(DEFECT_IDS) == 45, f"expected exactly 45 targeted defects, found {len(DEFECT_IDS)}"
+assert len(set(DEFECT_IDS)) == 45, "defect ids must be unique"
 
 GATE_FAIL_OPEN_DEFECT_IDS = tuple(d.id for d in DEFECTS if d.id == "gate-fail-open" or d.id.startswith("gate-") and d.id.endswith("-fail-open"))
 assert len(GATE_FAIL_OPEN_DEFECT_IDS) == 14, (

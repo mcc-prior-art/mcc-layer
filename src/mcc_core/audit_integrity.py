@@ -20,14 +20,20 @@ State machine
                   does not make the last DURABLY RECORDED result any less
                   trustworthy, so gating never blocks on this alone.
     HEALTHY    -- the most recently completed pass found the chain intact,
-                  that result is still "fresh" (see below), AND (when
-                  known) it was computed over THIS worker's own audit log,
-                  not a different one sharing the same registry key
-                  (hardening-round Finding 3).
+                  that result is still "fresh" (see below), it was
+                  computed over THIS worker's own audit log, not a
+                  different one sharing the same registry key
+                  (hardening-round Finding 3), AND no cross-worker
+                  identity conflict has EVER been latched for this key
+                  (third hardening round -- see below).
     UNHEALTHY  -- the most recent pass failed, OR the last known-HEALTHY
                   result is stale, OR it belongs to a different audit log
                   than this worker's own, OR the shared state backend
-                  cannot currently be reached/read.
+                  cannot currently be reached/read, OR a cross-worker
+                  physical-identity conflict has EVER been latched for
+                  this key -- for EVERY worker sharing it, not only the
+                  one whose write triggered the latch (third hardening
+                  round).
 
 Only ``HEALTHY`` ever satisfies a gate check. Every other state blocks --
 deliberately simple and boolean-shaped for callers (fail-closed by
@@ -112,6 +118,30 @@ either. ``current_state()``'s read-side check against
 (e.g. for any record written before this fix was deployed); the original
 ``log_identity`` content fingerprint remains a secondary signal only, never
 the sole proof.
+
+**Third hardening round -- the conflict is GLOBAL, not per-loser.** The
+second round's veto only protects the worker whose write gets rejected;
+the worker that happened to establish the identity first keeps reading
+``HEALTHY`` from the registry, unaffected, because nothing about its own
+read matches the OTHER worker's rejected write. But the mere existence of
+a cross-worker physical-identity conflict is itself the signal that this
+key's deployment invariant has been violated for *some* worker -- and
+nothing here can tell which one is actually correct. So the identity-veto
+branch in ``set_if_newer`` (both backends) now ALSO atomically latches a
+durable, GLOBAL conflict marker the first time it fires -- in the exact
+same atomic operation as the veto decision itself (the Redis Lua script's
+own atomicity; the in-memory registry's own lock), so there is no window
+between "a conflict was detected" and "every reader can see it," and it
+is order-independent: whichever of the two possible race orderings trips
+the branch latches the SAME marker. ``current_state()`` checks this latch
+FIRST, unconditionally, before reading anything else -- so EVERY worker
+sharing the key, including the one whose write was never vetoed, reports
+``UNHEALTHY`` while it stands. Nothing clears it automatically: not a
+later ``HEALTHY`` verification, not a higher generation, not a process
+restart, not any concurrent write. Recovery is the same explicit,
+out-of-band operator action as the second round's own identity conflict
+(see ``docs/AUDIT_INTEGRITY_ENFORCEMENT.md``), extended to also clear this
+marker -- never an in-band method call.
 
 Concurrency with ``append()``
 ------------------------------
@@ -234,6 +264,20 @@ class InMemoryIntegrityStateRegistry:
         # Nothing in this class ever clears it; there is deliberately no
         # method that does.
         self._initialized = False
+        # Third hardening round: a durable (for this process's lifetime),
+        # ONE-WAY, GLOBAL conflict latch -- set atomically (under the SAME
+        # lock as the veto decision below) the moment ANY write's physical
+        # identity conflicts with the one already established for this
+        # key, regardless of which worker's write triggers it. Once set,
+        # EVERY caller's ``current_state()`` returns UNHEALTHY -- not only
+        # the worker whose write happened to be vetoed -- because the mere
+        # existence of a cross-worker identity conflict means the
+        # deployment's own invariant ("every worker sharing this key points
+        # at the same physical log") is violated, and nothing here can
+        # tell which side is the one actually wrong. Nothing in this class
+        # ever clears it; there is deliberately no method that does.
+        self._conflict = False
+        self._conflict_reason: Optional[str] = None
 
     async def allocate_generation(self) -> int:
         with self._lock:
@@ -260,6 +304,19 @@ class InMemoryIntegrityStateRegistry:
                 and physical_identity
                 and established_phys != physical_identity
             ):
+                # Third hardening round: atomically latch the GLOBAL
+                # conflict too, under this SAME lock -- so there is no
+                # window between "a conflict was detected" and "the
+                # conflict is durably visible to every reader" that a
+                # concurrent call could race through. Idempotent: the
+                # first conflicting write to ever trip this branch wins;
+                # every later one is a no-op against the already-set flag.
+                if not self._conflict:
+                    self._conflict = True
+                    self._conflict_reason = (
+                        f"AUDIT_LOG_IDENTITY_CONFLICT_LATCHED: established={established_phys} "
+                        f"conflicting={physical_identity}"
+                    )
                 return False
             if self._status is not None and generation <= self._status.generation:
                 return False
@@ -289,6 +346,15 @@ class InMemoryIntegrityStateRegistry:
         with self._lock:
             return self._initialized
 
+    async def is_conflicted(self) -> bool:
+        """Third hardening round: True once ANY write for this key has
+        ever been rejected for a physical-identity conflict -- regardless
+        of which worker's write triggered it, and regardless of which
+        worker is asking. There is deliberately no method on this class
+        that clears it."""
+        with self._lock:
+            return self._conflict
+
     async def aclose(self) -> None:
         """No real connection to tear down -- present only so callers can
         treat every registry backend uniformly (see
@@ -313,9 +379,26 @@ class InMemoryIntegrityStateRegistry:
 # are only applied when non-empty -- a pass that observed an empty/missing
 # file has no identity to report and must never blank out a previously-
 # recorded one (Finding 3, hardening round).
+#
+# Third hardening round: when the identity-veto branch fires, this script
+# ALSO atomically latches a durable, GLOBAL conflict marker at KEYS[2] --
+# in the SAME script execution as the veto decision (Redis executes a Lua
+# script atomically relative to every other command/script), so there is
+# no window between "a conflict was detected" and "every reader can see
+# it" that a concurrent call could race through, regardless of which
+# worker's write trips the branch first (requirement: "atomically
+# establish a global UNHEALTHY conflict condition... regardless of which
+# worker wins the initial race"). ``SET ... NX`` makes this idempotent --
+# the first conflicting write to ever trip this branch wins; every later
+# one (from either worker, in either order) is a no-op against the
+# already-set key. There is deliberately no script/method anywhere that
+# clears KEYS[2].
 _SET_IF_NEWER_LUA = """
 local established_phys = redis.call('HGET', KEYS[1], 'physical_identity')
 if established_phys and established_phys ~= '' and ARGV[6] ~= '' and established_phys ~= ARGV[6] then
+    redis.call('SET', KEYS[2],
+        'AUDIT_LOG_IDENTITY_CONFLICT_LATCHED: established=' .. established_phys ..
+        ' conflicting=' .. ARGV[6] .. ' at=' .. ARGV[3], 'NX')
     return -1
 end
 local cur = redis.call('HGET', KEYS[1], 'generation')
@@ -364,6 +447,7 @@ class RedisIntegrityStateRegistry:
         self._key = key
         self._gen_key = key + ":gen"
         self._bootstrap_key = key + ":bootstrap"
+        self._conflict_key = key + ":conflict"
         self._op_timeout = op_timeout_seconds
 
     @classmethod
@@ -397,7 +481,7 @@ class RedisIntegrityStateRegistry:
         try:
             res = await self._c(
                 self._redis.eval(
-                    _SET_IF_NEWER_LUA, 1, self._key,
+                    _SET_IF_NEWER_LUA, 2, self._key, self._conflict_key,
                     str(int(generation)), state_value, str(int(verified_at)),
                     (reason or "")[:2000], (log_identity or ""), (physical_identity or ""),
                 )
@@ -456,6 +540,22 @@ class RedisIntegrityStateRegistry:
         except Exception as exc:  # noqa: BLE001
             raise IntegrityBackendUnavailable(
                 f"could not read audit-log initialization latch: {exc}"
+            ) from exc
+        return val is not None
+
+    async def is_conflicted(self) -> bool:
+        """Third hardening round: True once ANY write for this key has
+        ever been rejected for a physical-identity conflict, atomically
+        latched by ``_SET_IF_NEWER_LUA`` itself -- regardless of which
+        worker's write triggered it, and regardless of which worker is
+        asking. There is deliberately no method on this class that clears
+        this key; see ``docs/AUDIT_INTEGRITY_ENFORCEMENT.md`` for the
+        explicit, out-of-band disaster-recovery procedure."""
+        try:
+            val = await self._c(self._redis.get(self._conflict_key))
+        except Exception as exc:  # noqa: BLE001
+            raise IntegrityBackendUnavailable(
+                f"could not read audit-log identity-conflict latch: {exc}"
             ) from exc
         return val is not None
 
@@ -614,6 +714,22 @@ class AuditIntegrityMonitor:
             # an unverified clock. Never falls back to an unchecked local
             # clock, matching every other trusted-time call site in this
             # codebase.
+            return IntegrityState.UNHEALTHY
+
+        # Third hardening round: once the GLOBAL conflict latch is set,
+        # nothing this pass could find changes the outcome -- skip the
+        # (possibly expensive) full-chain scan entirely and resolve
+        # directly to UNHEALTHY. This is a pure efficiency optimization on
+        # top of current_state()'s own unconditional check (which is what
+        # actually enforces the invariant for gating); it also means this
+        # worker's own diagnostic ``identity_conflict_detected`` reflects
+        # the latch even when THIS worker's own write never tripped it.
+        try:
+            already_conflicted = await self._registry.is_conflicted()
+        except IntegrityBackendUnavailable:
+            return IntegrityState.UNHEALTHY
+        if already_conflicted:
+            self._last_identity_conflict = True
             return IntegrityState.UNHEALTHY
 
         try:
@@ -786,7 +902,25 @@ class AuditIntegrityMonitor:
         corresponding security benefit). ``self._verifying`` remains
         available as diagnostic-only information via
         ``verification_in_progress`` (e.g. for ``/ready`` reporting).
+
+        Third hardening round: the GLOBAL identity-conflict latch is
+        checked FIRST, unconditionally, before anything else -- including
+        before reading the main status. A latched conflict means EVERY
+        worker sharing this key returns UNHEALTHY, not only the worker
+        whose write happened to be vetoed: the mere existence of a
+        cross-worker physical-identity conflict is itself proof that this
+        key's own deployment invariant ("every worker sharing it points at
+        the same physical log") has been violated, and nothing here can
+        tell which side is actually correct. A later HEALTHY verification,
+        a higher generation, a process restart, or any concurrent write
+        can never clear this -- see ``is_conflicted()`` on each registry.
         """
+        try:
+            conflicted = await self._registry.is_conflicted()
+        except IntegrityBackendUnavailable:
+            return IntegrityState.UNHEALTHY
+        if conflicted:
+            return IntegrityState.UNHEALTHY
         try:
             status = await self._registry.get()
         except IntegrityBackendUnavailable:

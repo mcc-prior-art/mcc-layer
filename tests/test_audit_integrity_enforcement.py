@@ -737,11 +737,22 @@ def test_worker_with_different_audit_log_does_not_inherit_shared_healthy():
     write-path identity veto (keyed on PHYSICAL identity, not just the
     content fingerprint used when this test was first written) now
     rejects worker A's conflicting write OUTRIGHT, so it never even lands
-    in the shared registry -- worker B is therefore never even transiently
-    exposed to it (a strictly stronger property than the original
-    read-side-only fix this test originally proved). Worker A's own pass
-    correctly resolves to UNHEALTHY too, since it cannot prove it is
-    looking at the log this key actually represents."""
+    in the shared registry. Worker A's own pass correctly resolves to
+    UNHEALTHY too, since it cannot prove it is looking at the log this key
+    actually represents.
+
+    THIRD hardening round updates this test's expectations AGAIN,
+    deliberately, not as a weakening: the second round left worker B
+    (whose write was never vetoed) reading HEALTHY undisturbed -- only
+    the "losing" worker A was blocked. Independent review correctly
+    identified that as its own residual gap: the mere EXISTENCE of a
+    detected cross-worker identity conflict means the deployment's own
+    invariant is violated for *some* worker, and nothing here can tell
+    which one -- so letting B keep operating as if nothing happened was
+    not safe. The global conflict latch this round adds means B is now
+    ALSO correctly blocked once A's conflicting write is detected -- see
+    test_fix_global_conflict_latch_blocks_every_worker_regardless_of_race_ordering
+    above for the two-ordering, both-enforcement-boundary proof of this."""
     shared_registry = InMemoryIntegrityStateRegistry()
 
     # Worker B establishes trust in ITS OWN audit log first (exactly what
@@ -775,19 +786,23 @@ def test_worker_with_different_audit_log_does_not_inherit_shared_healthy():
         calls["n"] += 1
         return {"ok": True}
 
-    # Worker B is completely undisturbed: the registry still holds ONLY
-    # B's own result -- A's conflicting write never landed.
-    assert run(mon_b.current_state()) == IntegrityState.HEALTHY
+    # Third hardening round: A's rejected write latched a GLOBAL conflict
+    # for this key -- B is NOW ALSO blocked, not "completely undisturbed"
+    # as the second round left it. B's own record in the registry is
+    # untouched (A's write never landed), but current_state() no longer
+    # reads that record in isolation -- it checks the global latch first.
+    assert run(shared_registry.is_conflicted()) is True
+    assert run(mon_b.current_state()) == IntegrityState.UNHEALTHY
     result_b = run(coord_b.enforce(token=_token("cross-worker-b"), action=ACTION, payload={}, executor=executor))
-    assert result_b.status == ActuationStatus.EXECUTED
-    assert calls["n"] == 1
+    assert result_b.status == ActuationStatus.BLOCKED
+    assert calls["n"] == 0
 
     # Worker A, correctly, can never claim HEALTHY while sharing this key
     # with a conflicting identity -- zero actuator calls on A's side.
     assert run(mon_a.current_state()) == IntegrityState.UNHEALTHY
     result_a = run(coord_a.enforce(token=_token("cross-worker-a"), action=ACTION, payload={}, executor=executor))
     assert result_a.status == ActuationStatus.BLOCKED
-    assert calls["n"] == 1  # unchanged -- A's attempt added zero calls
+    assert calls["n"] == 0  # unchanged -- neither worker ever actuates
 
 
 def test_non_vacuity_shared_healthy_without_identity_check_would_be_inherited():
@@ -1080,3 +1095,199 @@ def test_recovery_after_identity_conflict_requires_explicit_out_of_band_reset():
     mon_a_recovered = AuditIntegrityMonitor(audit_a, fresh_registry)
     assert run(mon_a_recovered.verify_once()) == IntegrityState.HEALTHY
     assert run(mon_a_recovered.current_state()) == IntegrityState.HEALTHY
+
+
+# ===========================================================================
+# Third hardening round -- the GLOBAL identity-conflict latch.
+#
+# The second round's write-path veto only protects the worker whose write
+# gets rejected. If worker A writes HEALTHY FIRST (establishing the
+# identity) and worker B's later, genuinely different, corrupted write is
+# the one vetoed, worker A's own current_state() -- unaffected by B's
+# rejected write -- keeps reading HEALTHY. This is the residual gap this
+# round closes: a GLOBAL latch that, once ANY conflict is detected
+# (regardless of which worker's write trips it), makes EVERY worker
+# sharing the key report UNHEALTHY -- not only the one that lost the race.
+# ===========================================================================
+
+
+def test_non_vacuity_a_first_ordering_pre_this_round_a_would_stay_healthy():
+    """Non-vacuity, Step 1: reproduce the EXACT residual gap against the
+    pre-this-round logic (second-round write-path veto present, but no
+    GLOBAL conflict latch). Worker A writes its genuinely intact result
+    FIRST -- establishing the identity, so the veto never fires against
+    A's own write. Worker B's later, genuinely corrupted, DIFFERENT
+    identity is the one vetoed. On the pre-this-round logic, nothing about
+    A's own subsequent current_state() is affected by B's rejected write
+    -- it incorrectly stays HEALTHY, proving the gap was real."""
+    audit_a, audit_b = _cloned_genesis_logs(None)
+    shared_registry = InMemoryIntegrityStateRegistry()
+
+    # Worker A verifies first: genuinely intact -> HEALTHY, establishes
+    # the identity for this key (no conflict possible yet -- nothing else
+    # has been recorded).
+    ok_a = AuditLog.verify_chain(audit_a.path)
+    assert ok_a is True
+    fp_a = audit_a.physical_identity_safe()
+    applied_a = run(shared_registry.set_if_newer(
+        generation=1, state=IntegrityState.HEALTHY, reason="worker A: intact",
+        verified_at=_now(), physical_identity=fp_a,
+    ))
+    assert applied_a is True
+
+    # Worker B verifies second: genuinely corrupted, DIFFERENT physical
+    # identity -> the write-path veto (second round's own fix) correctly
+    # rejects it, regardless of B's higher generation.
+    ok_b = AuditLog.verify_chain(audit_b.path)
+    assert ok_b is False
+    fp_b = audit_b.physical_identity_safe()
+    assert fp_b != fp_a
+    applied_b = run(shared_registry.set_if_newer(
+        generation=2, state=IntegrityState.UNHEALTHY, reason="worker B: corrupted tail",
+        verified_at=_now(), physical_identity=fp_b,
+    ))
+    assert applied_b is False, "B's conflicting write must still be vetoed (second round's fix)"
+
+    async def pre_third_round_current_state(worker_own_physical_identity: str) -> IntegrityState:
+        # The second-round read-side check ONLY: physical identity must
+        # match THIS worker's own -- no awareness of a GLOBAL latch at
+        # all, because none existed before this round.
+        status = await shared_registry.get()
+        if status is None:
+            return IntegrityState.UNVERIFIED
+        if status.state != IntegrityState.HEALTHY:
+            return status.state
+        if (
+            status.physical_identity is not None
+            and status.physical_identity != worker_own_physical_identity
+        ):
+            return IntegrityState.UNHEALTHY
+        return IntegrityState.HEALTHY
+
+    inherited_a = run(pre_third_round_current_state(fp_a))
+    assert inherited_a == IntegrityState.HEALTHY, (
+        "CONFIRMED: on the pre-this-round logic, worker A -- whose write "
+        "was never vetoed -- incorrectly keeps reporting HEALTHY even "
+        "though a genuine cross-worker identity conflict with worker B's "
+        "DIFFERENT, corrupted log has been detected for this same key. "
+        "The gap is real, not hypothetical."
+    )
+
+
+@pytest.mark.parametrize("ordering", ["a_first", "b_first"])
+def test_fix_global_conflict_latch_blocks_every_worker_regardless_of_race_ordering(ordering):
+    """The ACTUAL fix: regardless of which worker's write establishes the
+    identity first, a detected conflict latches GLOBALLY -- BOTH workers'
+    current_state() report UNHEALTHY, not only the one whose write was
+    vetoed. Also proves both enforcement boundaries, for BOTH workers:
+    zero actuator/issue_token calls while the conflict stands."""
+    audit_a, audit_b = _cloned_genesis_logs(None)
+    shared_registry = InMemoryIntegrityStateRegistry()
+    mon_a = AuditIntegrityMonitor(audit_a, shared_registry)
+    mon_b = AuditIntegrityMonitor(audit_b, shared_registry)
+
+    if ordering == "a_first":
+        state_first = run(mon_a.verify_once())   # A: genuinely intact -> HEALTHY, establishes identity
+        state_second = run(mon_b.verify_once())  # B: genuinely corrupted, different identity -> vetoed
+        assert state_first == IntegrityState.HEALTHY
+        assert state_second == IntegrityState.UNHEALTHY
+        assert mon_b.identity_conflict_detected is True
+    else:
+        state_first = run(mon_b.verify_once())   # B: genuinely corrupted -> UNHEALTHY, establishes identity
+        state_second = run(mon_a.verify_once())  # A: genuinely intact, different identity -> vetoed
+        assert state_first == IntegrityState.UNHEALTHY
+        assert state_second == IntegrityState.UNHEALTHY
+        assert mon_a.identity_conflict_detected is True
+
+    assert run(shared_registry.is_conflicted()) is True
+
+    # Both workers' current_state() -- including the one whose write was
+    # NEVER vetoed -- report UNHEALTHY. This is the global latch's own
+    # requirement: the conflict's mere existence poisons the key for
+    # EVERY reader, not only the loser of the race.
+    assert run(mon_a.current_state()) == IntegrityState.UNHEALTHY
+    assert run(mon_b.current_state()) == IntegrityState.UNHEALTHY
+
+    # Both enforcement boundaries, both workers: zero actuator calls.
+    coord_a = _bare_coordinator(audit_a, integrity_monitor=mon_a)
+    coord_b = _bare_coordinator(audit_b, integrity_monitor=mon_b)
+    calls = {"n": 0}
+
+    async def executor():
+        calls["n"] += 1
+        return {"ok": True}
+
+    result_a = run(coord_a.enforce(
+        token=_token(f"global-latch-dispatch-a-{ordering}"), action=ACTION, payload={}, executor=executor,
+    ))
+    assert result_a.status == ActuationStatus.BLOCKED
+    result_b = run(coord_b.enforce(
+        token=_token(f"global-latch-dispatch-b-{ordering}"), action=ACTION, payload={}, executor=executor,
+    ))
+    assert result_b.status == ActuationStatus.BLOCKED
+    assert calls["n"] == 0
+
+    mandate_key = SigningKey.generate(f"global-latch-issuer-{ordering}")
+    service_a = _governance_service(mandate_key=mandate_key, integrity_monitor=mon_a)
+    service_a._test_audit = audit_a
+    out_a = run(service_a.execute_with_mandate(
+        mandate=_mandate(mandate_key), actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
+        context=_raw_context(), idempotency_key=f"global-latch-issuance-a-{ordering}", tenant_id="tenant-1",
+    ))
+    assert out_a.status == "BLOCKED"
+    assert "AUDIT_INTEGRITY_NOT_HEALTHY" in out_a.reason
+    assert service_a._test_upstream.calls == 0
+
+    service_b = _governance_service(mandate_key=mandate_key, integrity_monitor=mon_b)
+    service_b._test_audit = audit_b
+    out_b = run(service_b.execute_with_mandate(
+        mandate=_mandate(mandate_key), actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
+        context=_raw_context(), idempotency_key=f"global-latch-issuance-b-{ordering}", tenant_id="tenant-1",
+    ))
+    assert out_b.status == "BLOCKED"
+    assert "AUDIT_INTEGRITY_NOT_HEALTHY" in out_b.reason
+    assert service_b._test_upstream.calls == 0
+
+
+def test_global_conflict_latch_never_cleared_by_later_healthy_higher_generation_or_restart():
+    """Requirement #3, verbatim: a LATER HEALTHY verification, a HIGHER
+    generation, a process restart, or a concurrent write must never clear
+    the conflict automatically."""
+    audit_a, audit_b = _cloned_genesis_logs(None)
+    shared_registry = InMemoryIntegrityStateRegistry()
+    mon_a = AuditIntegrityMonitor(audit_a, shared_registry)
+    mon_b = AuditIntegrityMonitor(audit_b, shared_registry)
+    run(mon_a.verify_once())  # A first -> HEALTHY, establishes identity
+    run(mon_b.verify_once())  # B second -> vetoed, latches the global conflict
+    assert run(shared_registry.is_conflicted()) is True
+
+    # A LATER verification pass, even a perfectly HEALTHY one, over the
+    # SAME (still genuinely intact) log A, at a strictly HIGHER
+    # generation than anything seen so far -- must not clear the latch.
+    for _ in range(3):
+        state = run(mon_a.verify_once())
+        assert state == IntegrityState.UNHEALTHY, (
+            "a later HEALTHY-worthy pass from the SAME, already-established "
+            "identity must still resolve to UNHEALTHY once the global "
+            "conflict is latched -- the latch, not this pass's own merit, "
+            "is what current_state() (and now verify_once()'s own "
+            "short-circuit) must honor"
+        )
+    assert run(shared_registry.is_conflicted()) is True
+    assert run(mon_a.current_state()) == IntegrityState.UNHEALTHY
+
+    # A "process restart" -- a brand-new AuditIntegrityMonitor instance
+    # (no local state carried over), still pointed at the SAME registry --
+    # sees the SAME latched conflict; it is not a per-process flag.
+    mon_a_restarted = AuditIntegrityMonitor(audit_a, shared_registry)
+    assert run(mon_a_restarted.current_state()) == IntegrityState.UNHEALTHY
+    assert run(mon_a_restarted.verify_once()) == IntegrityState.UNHEALTHY
+
+    # Only the documented, explicit, out-of-band recovery -- a fresh
+    # registry/key -- clears it (see
+    # test_recovery_after_identity_conflict_requires_explicit_out_of_band_reset
+    # above for the full recovery flow).
+    fresh_registry = InMemoryIntegrityStateRegistry()
+    assert run(fresh_registry.is_conflicted()) is False
+    mon_a_recovered = AuditIntegrityMonitor(audit_a, fresh_registry)
+    assert run(mon_a_recovered.verify_once()) == IntegrityState.HEALTHY

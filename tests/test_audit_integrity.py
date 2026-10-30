@@ -521,14 +521,26 @@ class _FakeRedis:
         val = self.store.get(key)
         return dict(val) if isinstance(val, dict) else {}
 
-    async def eval(self, script, numkeys, key, *argv):
-        assert script is not None and numkeys == 1
+    async def eval(self, script, numkeys, key, conflict_key, *argv):
+        # Third hardening round: _SET_IF_NEWER_LUA now takes 2 keys (the
+        # main status hash, plus a sibling GLOBAL conflict-latch key) --
+        # mirrored here faithfully, including the atomic SET-if-not-exists
+        # on the identity-veto branch.
+        assert script is not None and numkeys == 2
         generation, state, verified_at, reason, log_identity, physical_identity = argv
         cur = self.store.get(key)
         established_phys = cur.get("physical_identity") if isinstance(cur, dict) else None
         # Mirrors _SET_IF_NEWER_LUA: the identity veto is checked FIRST,
-        # independent of generation ordering.
+        # independent of generation ordering, and atomically latches the
+        # GLOBAL conflict key the first time it fires (idempotent -- a
+        # later conflicting write, from either side, is a no-op against
+        # an already-set key).
         if established_phys and physical_identity and established_phys != physical_identity:
+            if conflict_key not in self.store:
+                self.store[conflict_key] = (
+                    f"AUDIT_LOG_IDENTITY_CONFLICT_LATCHED: established={established_phys} "
+                    f"conflicting={physical_identity}"
+                )
             return -1
         if isinstance(cur, dict) and int(cur.get("generation", -1)) >= int(generation):
             return 0
