@@ -491,30 +491,40 @@ def build_governance_service(
     pre_execution_control = _build_pre_execution_control(env, shared_nonce_registry, time_source)
 
     # P2-A3: optional automatic audit-chain integrity verification +
-    # mandatory fail-closed enforcement. Disabled (no startup refusal,
-    # coordinator/service both get integrity_monitor=None -> unchanged
-    # pre-P2-A3 behavior) unless MCC_REQUIRE_AUDIT_INTEGRITY is set.
-    # Refuses fail-open startup (mirrors MCC_REQUIRE_CONSENSUS) if required
-    # but the monitor could not be built. When enabled, a synchronous
-    # startup verification pass runs BEFORE this function returns a usable
-    # service -- no executable authority is ever issued before the FIRST
-    # verification pass has completed -- and the periodic background pass
-    # is armed to start as soon as an event loop exists (this function
-    # itself runs before one does; see gateway/app.py's startup hook,
-    # which calls ``integrity_monitor.start_periodic_verification()``).
+    # mandatory fail-closed enforcement. The ENTIRE subsystem -- building
+    # the monitor, running the startup verification pass, and wiring it
+    # into the coordinator/service -- is skipped unless
+    # MCC_REQUIRE_AUDIT_INTEGRITY is explicitly set, so every existing
+    # deployment/test that does not opt in gets integrity_monitor=None on
+    # both the coordinator and the service -> byte-for-byte unchanged
+    # pre-P2-A3 behavior (in particular: a freshly started, empty audit
+    # file must NEVER cause an unrelated caller's first governed action to
+    # be blocked -- that only happens once this is explicitly turned on,
+    # at which point the explicit trusted-bootstrap policy, not a default,
+    # decides it). Mirrors MCC_REQUIRE_CONSENSUS's fail-closed-at-startup
+    # convention when it IS turned on: refuses startup if the monitor
+    # cannot be built, or if the mandatory startup verification pass
+    # itself does not report HEALTHY. When enabled, that synchronous pass
+    # runs BEFORE this function returns a usable service -- no executable
+    # authority is ever issued before it completes -- and the periodic
+    # background pass is armed to start as soon as an event loop exists
+    # (this function itself runs before one does; see gateway/app.py's
+    # startup hook, which calls
+    # ``integrity_monitor.start_periodic_verification()``).
     require_audit_integrity = _env_flag(env, "MCC_REQUIRE_AUDIT_INTEGRITY")
-    integrity_monitor = _build_audit_integrity_monitor(env, audit, time_source)
-    if require_audit_integrity and integrity_monitor is None:
-        raise RuntimeError(
-            "MCC_REQUIRE_AUDIT_INTEGRITY is set but the audit-integrity monitor "
-            "could not be built (check MCC_AUDIT_INTEGRITY_BACKEND / MCC_REDIS_URL); "
-            "refusing fail-open startup"
-        )
-    if integrity_monitor is not None:
+    integrity_monitor = None
+    if require_audit_integrity:
+        integrity_monitor = _build_audit_integrity_monitor(env, audit, time_source)
+        if integrity_monitor is None:
+            raise RuntimeError(
+                "MCC_REQUIRE_AUDIT_INTEGRITY is set but the audit-integrity monitor "
+                "could not be built (check MCC_AUDIT_INTEGRITY_BACKEND / MCC_REDIS_URL); "
+                "refusing fail-open startup"
+            )
         import asyncio
 
         startup_state = asyncio.run(integrity_monitor.run_startup_verification())
-        if require_audit_integrity and str(getattr(startup_state, "value", startup_state)) != "HEALTHY":
+        if str(getattr(startup_state, "value", startup_state)) != "HEALTHY":
             raise RuntimeError(
                 "MCC_REQUIRE_AUDIT_INTEGRITY is set but the startup audit-chain "
                 f"integrity verification did not report HEALTHY (got {startup_state!s}); "
