@@ -305,14 +305,17 @@ def test_execute_with_approval_clamps_token_exp_to_the_approval_mandate():
     gate = ExecutionGate(trusted_keys={signing_key.kid: signing_key.public_key()}, audience="pilot",
                          nonce_registry=InMemoryNonceRegistry(), policy_hash=POLICY_HASH)
     audit = _tmp_audit()
-    coordinator = EnforcementCoordinator(
-        gate=gate, idempotency=InMemoryIdempotencyRegistry(), velocity=InMemoryVelocityRegistry(),
-        audit=audit, profiles=ProfileRegistry.default_pilot(), revocation_registry=_Revocation(),
-    )
     trust_set = TrustSet()
     approver_key = SigningKey.generate("approver-1")
     trust_set.add_runtime_issuer("mcc/approvals", approver_key.kid, approver_key.public_key())
     approvals = ApprovalService(InMemoryApprovalRegistry(), approver_key)
+    # R1: the coordinator must be able to consume the approval single-use
+    # (a coordinator without an ApprovalService now fails closed).
+    coordinator = EnforcementCoordinator(
+        gate=gate, idempotency=InMemoryIdempotencyRegistry(), velocity=InMemoryVelocityRegistry(),
+        audit=audit, profiles=ProfileRegistry.default_pilot(), revocation_registry=_Revocation(),
+        approvals=approvals,
+    )
 
     async def upstream(action, payload):
         return {"ok": True}
