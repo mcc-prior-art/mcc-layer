@@ -182,8 +182,24 @@ subsequent `execute` call with its own credential).
 | `MCC_REDIS_URL` | *(unset)* | required when backend is `redis` |
 
 `RedisApprovalRegistry` makes the request store and single-use consume durable
-and cross-instance (consume is an atomic `SET NX`, so exactly one instance can
-consume an approval). Selecting `redis` without `MCC_REDIS_URL` raises at
+and cross-instance. Consumption is a single atomic Redis Lua script
+(`_CONSUME_LUA` in `src/mcc_core/approvals.py`). In one round trip, with no
+other command able to interleave, it:
+
+* reads the record;
+* returns `already consumed (replay)` if the record is already `CONSUMED`;
+* returns `approval expired` if the record is `APPROVED` but
+  `now >= expires_at`;
+* rejects any other non-`APPROVED` state, such as `DENIED` or `INVALIDATED`;
+* otherwise writes `state = CONSUMED`, re-applying only the *remaining* TTL.
+
+There is no separate `:consumed` side key: the record's own `state` field is
+the single source of truth. So exactly one instance can consume an approval,
+and a concurrent `deny`/`invalidate` cannot be overwritten. Those transitions
+are atomic Lua compare-and-swaps too (`_SET_STATE_LUA`). Any Redis error,
+timeout, or unexpected reply fails closed. The action, transaction, and
+payload binding is checked in `ApprovalService.consume()` before this atomic
+state transition. Selecting `redis` without `MCC_REDIS_URL` raises at
 startup — no silent fallback. Approver public keys go into the verifier trust
 set (see `docs/SIGNED_MANDATES.md`).
 

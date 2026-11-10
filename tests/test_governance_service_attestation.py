@@ -128,7 +128,7 @@ def _valid_attestation(attester_key: SigningKey, *, forward_context: dict, nonce
 
 
 def _governance_service(*, pre_execution_control=None, mandate_key: SigningKey,
-                        mandate_constraints=None) -> GovernanceService:
+                        mandate_constraints=None, wire_approvals: bool = False) -> GovernanceService:
     signing_key = SigningKey.generate("gw-signing-1")
     engine = DecisionEngine(
         signing_key=signing_key, issuer="mcc/core", audience="pilot", policy_id="pilot/v1",
@@ -139,11 +139,6 @@ def _governance_service(*, pre_execution_control=None, mandate_key: SigningKey,
         nonce_registry=InMemoryNonceRegistry(), policy_hash=POLICY_HASH,
     )
     audit = _tmp_audit()
-    coordinator = EnforcementCoordinator(
-        gate=gate, idempotency=InMemoryIdempotencyRegistry(),
-        velocity=InMemoryVelocityRegistry(), audit=audit,
-        profiles=ProfileRegistry.default_pilot(), revocation_registry=InMemoryRevocationRegistry(),
-    )
     trust_set = TrustSet()
     trust_set.add_runtime_issuer("axlogiq/pilot", mandate_key.kid, mandate_key.public_key())
     approver_key = SigningKey.generate("approver-1")
@@ -152,6 +147,15 @@ def _governance_service(*, pre_execution_control=None, mandate_key: SigningKey,
     # resolves through the SAME _authority_for() trust path as any other mandate.
     trust_set.add_runtime_issuer("mcc/approvals", approver_key.kid, approver_key.public_key())
     approvals = ApprovalService(InMemoryApprovalRegistry(), approver_key)
+    # R1: an approval-minted mandate is only executable when the coordinator can
+    # consume the approval single-use (opt-in here so every other test's setup
+    # is unchanged; only the approval-path test needs it).
+    coordinator = EnforcementCoordinator(
+        gate=gate, idempotency=InMemoryIdempotencyRegistry(),
+        velocity=InMemoryVelocityRegistry(), audit=audit,
+        profiles=ProfileRegistry.default_pilot(), revocation_registry=InMemoryRevocationRegistry(),
+        approvals=approvals if wire_approvals else None,
+    )
 
     async def upstream(action, payload):
         return {"ok": True, "action": action, "payload": payload}
@@ -519,13 +523,15 @@ def test_15_approval_path_delegation_retains_evidence_binding():
     attester_key = _attester_key()                 # come from the approver key
     service = _governance_service(
         pre_execution_control=_pre_execution_control(attester_key), mandate_key=mandate_key,
+        wire_approvals=True,
     )
     context = _raw_context()
     canonical = _canonical(context)
 
+    # R1: the human approves the EXACT payload this test then executes.
     request_id = run(service.create_approval(
         actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
-        payload_hash=hash_payload(canonical),
+        payload_hash=hash_payload(canonical), payload=canonical,
     ))["request_id"]
     approved_mandate = run(service.approve(request_id))
     assert approved_mandate is not None
