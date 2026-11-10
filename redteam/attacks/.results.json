@@ -1,0 +1,1577 @@
+[
+ {
+  "vector": 1,
+  "severity": "medium",
+  "kind": "design-gap",
+  "title": "Per-transaction max_amount has no cumulative bound when no velocity limit is configured",
+  "test": "test_v01_action_splitting.py::test_split_over_limit_without_velocity_limit",
+  "bypassed": true,
+  "evidence": "split executed 4 transfers totalling 18000.0 under a 5000 mandate"
+ },
+ {
+  "vector": 1,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Split payments beyond the pilot cumulative limit (10000/60s)",
+  "test": "test_v01_action_splitting.py::test_split_blocked_by_pilot_velocity",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 1,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Velocity bucket evasion by varying source/currency/beneficiary",
+  "test": "test_v01_action_splitting.py::test_split_cannot_evade_bucket_by_varying_payload",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 1,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Count-limit evasion via many small transfers",
+  "test": "test_v01_action_splitting.py::test_many_small_transfers_hit_count_limit",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 2,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Non-finite / negative amount passes mandate max_amount (no velocity limit on action)",
+  "test": "test_v02_parameter_smuggling.py::test_bad_amount_vs_max_amount[nan]",
+  "bypassed": true,
+  "evidence": "actuator received amount=[nan] under max_amount=5000 (status=EXECUTED, decision=ALLOW)"
+ },
+ {
+  "vector": 2,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Non-finite / negative amount passes mandate max_amount (no velocity limit on action)",
+  "test": "test_v02_parameter_smuggling.py::test_bad_amount_vs_max_amount[nan-string]",
+  "bypassed": true,
+  "evidence": "actuator received amount=[nan] under max_amount=5000 (status=EXECUTED, decision=ALLOW)"
+ },
+ {
+  "vector": 2,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Non-finite / negative amount passes mandate max_amount (no velocity limit on action)",
+  "test": "test_v02_parameter_smuggling.py::test_bad_amount_vs_max_amount[neg-inf]",
+  "bypassed": true,
+  "evidence": "actuator received amount=[-inf] under max_amount=5000 (status=EXECUTED, decision=ALLOW)"
+ },
+ {
+  "vector": 2,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Non-finite / negative amount passes mandate max_amount (no velocity limit on action)",
+  "test": "test_v02_parameter_smuggling.py::test_bad_amount_vs_max_amount[negative]",
+  "bypassed": true,
+  "evidence": "actuator received amount=[-1000000.0] under max_amount=5000 (status=EXECUTED, decision=ALLOW)"
+ },
+ {
+  "vector": 2,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Non-finite / negative amount passes mandate max_amount (no velocity limit on action)",
+  "test": "test_v02_parameter_smuggling.py::test_bad_amount_vs_max_amount[negative-string]",
+  "bypassed": true,
+  "evidence": "actuator received amount=[-1000000000.0] under max_amount=5000 (status=EXECUTED, decision=ALLOW)"
+ },
+ {
+  "vector": 2,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Non-finite / negative amount with pilot velocity limits configured",
+  "test": "test_v02_parameter_smuggling.py::test_bad_amount_with_pilot_velocity[nan]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 2,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Non-finite / negative amount with pilot velocity limits configured",
+  "test": "test_v02_parameter_smuggling.py::test_bad_amount_with_pilot_velocity[nan-string]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 2,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Non-finite / negative amount with pilot velocity limits configured",
+  "test": "test_v02_parameter_smuggling.py::test_bad_amount_with_pilot_velocity[neg-inf]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 2,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Non-finite / negative amount with pilot velocity limits configured",
+  "test": "test_v02_parameter_smuggling.py::test_bad_amount_with_pilot_velocity[negative]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 2,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Non-finite / negative amount with pilot velocity limits configured",
+  "test": "test_v02_parameter_smuggling.py::test_bad_amount_with_pilot_velocity[negative-string]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 2,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "NaN / negative value passes max_ constraint on a non-payment action (pilot notify/clinic style)",
+  "test": "test_v02_parameter_smuggling.py::test_bad_value_vs_generic_max_constraint[nan]",
+  "bypassed": true,
+  "evidence": "actuator received requested_discount_percent=[nan] under max 20 (EXECUTED)"
+ },
+ {
+  "vector": 2,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "NaN / negative value passes max_ constraint on a non-payment action (pilot notify/clinic style)",
+  "test": "test_v02_parameter_smuggling.py::test_bad_value_vs_generic_max_constraint[negative]",
+  "bypassed": true,
+  "evidence": "actuator received requested_discount_percent=[-50] under max 20 (EXECUTED)"
+ },
+ {
+  "vector": 2,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "NaN / negative value passes max_ constraint on a non-payment action (pilot notify/clinic style)",
+  "test": "test_v02_parameter_smuggling.py::test_bad_value_vs_generic_max_constraint[neg-inf]",
+  "bypassed": true,
+  "evidence": "actuator received requested_discount_percent=[-inf] under max 20 (EXECUTED)"
+ },
+ {
+  "vector": 2,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Over-limit amount is clamped, original never executes",
+  "test": "test_v02_parameter_smuggling.py::test_over_limit_amount_is_clamped",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 2,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Numeric-string amount on a generic action",
+  "test": "test_v02_parameter_smuggling.py::test_string_amount_on_generic_action_fails_closed",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 2,
+  "severity": "medium",
+  "kind": "bypass",
+  "title": "Path/query injection through the action name under a wildcard action scope",
+  "test": "test_v02_parameter_smuggling.py::test_action_name_is_not_a_url_injection_vector[dotdot]",
+  "bypassed": true,
+  "evidence": "actuator dispatched action 'pay_x/../../admin/wipe'; upstream URL is built as base + '/' + action (EXECUTED)"
+ },
+ {
+  "vector": 2,
+  "severity": "medium",
+  "kind": "bypass",
+  "title": "Path/query injection through the action name under a wildcard action scope",
+  "test": "test_v02_parameter_smuggling.py::test_action_name_is_not_a_url_injection_vector[query]",
+  "bypassed": true,
+  "evidence": "actuator dispatched action 'pay_x?admin=1'; upstream URL is built as base + '/' + action (EXECUTED)"
+ },
+ {
+  "vector": 2,
+  "severity": "medium",
+  "kind": "bypass",
+  "title": "Path/query injection through the action name under a wildcard action scope",
+  "test": "test_v02_parameter_smuggling.py::test_action_name_is_not_a_url_injection_vector[fragment]",
+  "bypassed": true,
+  "evidence": "actuator dispatched action 'pay_x#frag'; upstream URL is built as base + '/' + action (EXECUTED)"
+ },
+ {
+  "vector": 2,
+  "severity": "medium",
+  "kind": "bypass",
+  "title": "Path/query injection through the action name under a wildcard action scope",
+  "test": "test_v02_parameter_smuggling.py::test_action_name_is_not_a_url_injection_vector[newline]",
+  "bypassed": true,
+  "evidence": "actuator dispatched action 'pay_\\nX'; upstream URL is built as base + '/' + action (EXECUTED)"
+ },
+ {
+  "vector": 2,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Extra payload keys cannot override verdict or constraints",
+  "test": "test_v02_parameter_smuggling.py::test_payload_cannot_carry_its_own_authority",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 3,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Mandate issued to another subject",
+  "test": "test_v03_context_forgery.py::test_other_subjects_mandate_rejected",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 3,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Mandate signed by an attacker key with a trusted kid label",
+  "test": "test_v03_context_forgery.py::test_forged_mandate_with_trusted_kid",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 3,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Tampered mandate (constraints / scope / expiry widened)",
+  "test": "test_v03_context_forgery.py::test_tampered_mandate_rejected",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 3,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Forged prior approval (self-minted approval mandate)",
+  "test": "test_v03_context_forgery.py::test_forged_approval_mandate_rejected",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 3,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Resource outside mandate scope / omitted resource",
+  "test": "test_v03_context_forgery.py::test_resource_scope_enforced",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 3,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Token minted for one actor/resource replayed with a different binding",
+  "test": "test_v03_context_forgery.py::test_token_binding_mismatch_rejected",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Injected text in payload fields cannot lift a constraint",
+  "test": "test_v04_prompt_injection.py::test_injection_in_payload_fields[0]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Injected text in payload fields cannot lift a constraint",
+  "test": "test_v04_prompt_injection.py::test_injection_in_payload_fields[1]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Injected text in payload fields cannot lift a constraint",
+  "test": "test_v04_prompt_injection.py::test_injection_in_payload_fields[2]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Injected text in payload fields cannot lift a constraint",
+  "test": "test_v04_prompt_injection.py::test_injection_in_payload_fields[3]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Injected text in payload fields cannot lift a constraint",
+  "test": "test_v04_prompt_injection.py::test_injection_in_payload_fields[4]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Injected text in payload fields cannot lift a constraint",
+  "test": "test_v04_prompt_injection.py::test_injection_in_payload_fields[5]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Injected text in payload fields cannot lift a constraint",
+  "test": "test_v04_prompt_injection.py::test_injection_in_payload_fields[6]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Injected text in payload fields cannot lift a constraint",
+  "test": "test_v04_prompt_injection.py::test_injection_in_payload_fields[7]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Injected text in payload fields cannot lift a constraint",
+  "test": "test_v04_prompt_injection.py::test_injection_in_payload_fields[8]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Injected text as action / resource / actor cannot widen scope",
+  "test": "test_v04_prompt_injection.py::test_injection_in_identity_fields[0]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Injected text as action / resource / actor cannot widen scope",
+  "test": "test_v04_prompt_injection.py::test_injection_in_identity_fields[1]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Injected text as action / resource / actor cannot widen scope",
+  "test": "test_v04_prompt_injection.py::test_injection_in_identity_fields[2]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Injected text as action / resource / actor cannot widen scope",
+  "test": "test_v04_prompt_injection.py::test_injection_in_identity_fields[3]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Injected text as action / resource / actor cannot widen scope",
+  "test": "test_v04_prompt_injection.py::test_injection_in_identity_fields[4]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Injected text as action / resource / actor cannot widen scope",
+  "test": "test_v04_prompt_injection.py::test_injection_in_identity_fields[5]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Injected text as action / resource / actor cannot widen scope",
+  "test": "test_v04_prompt_injection.py::test_injection_in_identity_fields[6]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Injected text as action / resource / actor cannot widen scope",
+  "test": "test_v04_prompt_injection.py::test_injection_in_identity_fields[7]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Injected text as action / resource / actor cannot widen scope",
+  "test": "test_v04_prompt_injection.py::test_injection_in_identity_fields[8]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 4,
+  "severity": "medium",
+  "kind": "bypass",
+  "title": "Injected newline/JSON in fields cannot forge audit records",
+  "test": "test_v04_prompt_injection.py::test_injection_cannot_forge_audit_lines",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 5,
+  "severity": "high",
+  "kind": "design-gap",
+  "title": "Mandate is a bearer credential: any caller can present it by naming its subject as 'actor'",
+  "test": "test_v05_multi_agent_collusion.py::test_mandate_requires_proof_of_possession",
+  "bypassed": true,
+  "evidence": "second agent executed with first agent's mandate: [('send_payment', {'source': 'acct-1', 'beneficiary_id': 'intern-mule', 'amount': 100.0, 'currency': 'EUR'})] (EXECUTED)"
+ },
+ {
+  "vector": 5,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "A obtains human approval, B executes a different operation with it",
+  "test": "test_v05_multi_agent_collusion.py::test_approval_obtained_by_a_executed_by_b_with_other_payload",
+  "bypassed": true,
+  "evidence": "approved 100.0 -> vendor-42, executed [('send_payment', {'source': 'acct-1', 'beneficiary_id': 'attacker-acct', 'amount': 1000000.0, 'currency': 'EUR'})] (EXECUTED/ALLOW)"
+ },
+ {
+  "vector": 5,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Decision token minted for agent A enforced on behalf of agent B",
+  "test": "test_v05_multi_agent_collusion.py::test_token_for_a_cannot_be_enforced_for_b",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 6,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "25 concurrent executes with one idempotency key",
+  "test": "test_v06_toctou.py::test_concurrent_same_idempotency_key_executes_once",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 6,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "25 concurrent replays of one decision token",
+  "test": "test_v06_toctou.py::test_concurrent_token_replay_executes_once",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 6,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Mandate revoked between authorization and actuation",
+  "test": "test_v06_toctou.py::test_revocation_between_check_and_execution",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 6,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Approval invalidated while its execution is in flight",
+  "test": "test_v06_toctou.py::test_invalidate_races_approval_execute",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 6,
+  "severity": "medium",
+  "kind": "bypass",
+  "title": "Concurrent velocity reservations cannot jointly exceed the limit",
+  "test": "test_v06_toctou.py::test_concurrent_velocity_reservations",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 7,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Straight replay of a used decision token",
+  "test": "test_v07_replay.py::test_token_replay_same_instance",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 7,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Replay of a used token with a different payload",
+  "test": "test_v07_replay.py::test_token_replay_other_payload",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 7,
+  "severity": "high",
+  "kind": "known-limitation",
+  "title": "Replay after process restart with in-memory nonce + idempotency registries (dev/pilot default)",
+  "test": "test_v07_replay.py::test_token_replay_after_restart_memory_backend",
+  "bypassed": true,
+  "evidence": "token replayed after restart (executed); window = token TTL"
+ },
+ {
+  "vector": 7,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Enforcement mode refuses volatile replay state",
+  "test": "test_v07_replay.py::test_enforcement_mode_refuses_memory_backends",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 7,
+  "severity": "medium",
+  "kind": "hardening",
+  "title": "Gate accepts a replay when its nonce TTL cap is shorter than the token lifetime",
+  "test": "test_v07_replay.py::test_gate_nonce_ttl_shorter_than_token_lifetime",
+  "bypassed": true,
+  "evidence": "gate re-verified a used token after its nonce record expired"
+ },
+ {
+  "vector": 7,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Same misconfiguration end-to-end: idempotency still blocks the re-execution",
+  "test": "test_v07_replay.py::test_coordinator_blocks_replay_even_if_nonce_slot_freed",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 8,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Action that no policy rule covers",
+  "test": "test_v08_policy_gaps.py::test_unknown_action_is_not_allowed_by_authority_model[wire_swift]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 8,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Action that no policy rule covers",
+  "test": "test_v08_policy_gaps.py::test_unknown_action_is_not_allowed_by_authority_model[SEND_PAYMENT]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 8,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Action that no policy rule covers",
+  "test": "test_v08_policy_gaps.py::test_unknown_action_is_not_allowed_by_authority_model[send_payment ]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 8,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Action that no policy rule covers",
+  "test": "test_v08_policy_gaps.py::test_unknown_action_is_not_allowed_by_authority_model[]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 8,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Action that no policy rule covers",
+  "test": "test_v08_policy_gaps.py::test_unknown_action_is_not_allowed_by_authority_model[delete_database]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 8,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Action that no policy rule covers",
+  "test": "test_v08_policy_gaps.py::test_unknown_action_is_not_allowed_by_authority_model[medical_advice_request]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 8,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Action that no policy rule covers",
+  "test": "test_v08_policy_gaps.py::test_unknown_action_is_not_allowed_by_authority_model[refund_request]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 8,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Action outside the mandate's action scope",
+  "test": "test_v08_policy_gaps.py::test_action_outside_mandate_scope[wire_swift]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 8,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Action outside the mandate's action scope",
+  "test": "test_v08_policy_gaps.py::test_action_outside_mandate_scope[send_payment2]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 8,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Action outside the mandate's action scope",
+  "test": "test_v08_policy_gaps.py::test_action_outside_mandate_scope[SEND_PAYMENT]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 8,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Action outside the mandate's action scope",
+  "test": "test_v08_policy_gaps.py::test_action_outside_mandate_scope[send_paymen]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 8,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Unrecognized / misspelled mandate constraint key is silently ignored (fail-open)",
+  "test": "test_v08_policy_gaps.py::test_unknown_constraint_key_fails_closed[max-amount]",
+  "bypassed": true,
+  "evidence": "constraint {'max-amount': 5000} ignored; executed amount=999999.0 (ALLOW)"
+ },
+ {
+  "vector": 8,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Unrecognized / misspelled mandate constraint key is silently ignored (fail-open)",
+  "test": "test_v08_policy_gaps.py::test_unknown_constraint_key_fails_closed[amount_max]",
+  "bypassed": true,
+  "evidence": "constraint {'amount_max': 5000} ignored; executed amount=999999.0 (ALLOW)"
+ },
+ {
+  "vector": 8,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Unrecognized / misspelled mandate constraint key is silently ignored (fail-open)",
+  "test": "test_v08_policy_gaps.py::test_unknown_constraint_key_fails_closed[MAX_amount]",
+  "bypassed": true,
+  "evidence": "constraint {'MAX_amount': 5000} ignored; executed amount=999999.0 (ALLOW)"
+ },
+ {
+  "vector": 8,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Unrecognized / misspelled mandate constraint key is silently ignored (fail-open)",
+  "test": "test_v08_policy_gaps.py::test_unknown_constraint_key_fails_closed[denied_beneficiary]",
+  "bypassed": true,
+  "evidence": "constraint {'denied_beneficiary': ['vendor-42']} ignored; executed amount=999999.0 (ALLOW)"
+ },
+ {
+  "vector": 8,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Unrecognized / misspelled mandate constraint key is silently ignored (fail-open)",
+  "test": "test_v08_policy_gaps.py::test_unknown_constraint_key_fails_closed[currency]",
+  "bypassed": true,
+  "evidence": "constraint {'currency': 'USD'} ignored; executed amount=999999.0 (ALLOW)"
+ },
+ {
+  "vector": 8,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Unrecognized / misspelled mandate constraint key is silently ignored (fail-open)",
+  "test": "test_v08_policy_gaps.py::test_unknown_constraint_key_fails_closed[maxAmount]",
+  "bypassed": true,
+  "evidence": "constraint {'maxAmount': 5000} ignored; executed amount=999999.0 (ALLOW)"
+ },
+ {
+  "vector": 8,
+  "severity": "low",
+  "kind": "hardening",
+  "title": "allowed_<field> with a string bound degrades to substring matching",
+  "test": "test_v08_policy_gaps.py::test_allowed_constraint_with_string_bound",
+  "bypassed": true,
+  "evidence": "currency 'R,U' accepted by substring match"
+ },
+ {
+  "vector": 8,
+  "severity": "low",
+  "kind": "design-gap",
+  "title": "Mandate with empty resource_scope authorizes every resource",
+  "test": "test_v08_policy_gaps.py::test_empty_resource_scope_means_any_resource",
+  "bypassed": true,
+  "evidence": "empty resource_scope acted as wildcard"
+ },
+ {
+  "vector": 9,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Nonce registry down",
+  "test": "test_v09_fail_open.py::test_nonce_backend_down",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Idempotency registry down",
+  "test": "test_v09_fail_open.py::test_idempotency_backend_down",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Velocity registry down",
+  "test": "test_v09_fail_open.py::test_velocity_backend_down",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Revocation registry down at actuation",
+  "test": "test_v09_fail_open.py::test_revocation_backend_down",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Audit log unwritable (audit-before-actuation)",
+  "test": "test_v09_fail_open.py::test_audit_unwritable",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Trusted time source unavailable",
+  "test": "test_v09_fail_open.py::test_time_source_down",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Malformed mandate objects",
+  "test": "test_v09_fail_open.py::test_malformed_mandate[0]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Malformed mandate objects",
+  "test": "test_v09_fail_open.py::test_malformed_mandate[1]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Malformed mandate objects",
+  "test": "test_v09_fail_open.py::test_malformed_mandate[2]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Malformed mandate objects",
+  "test": "test_v09_fail_open.py::test_malformed_mandate[3]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Malformed mandate objects",
+  "test": "test_v09_fail_open.py::test_malformed_mandate[4]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Malformed mandate objects",
+  "test": "test_v09_fail_open.py::test_malformed_mandate[5]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Malformed mandate objects",
+  "test": "test_v09_fail_open.py::test_malformed_mandate[6]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Malformed mandate objects",
+  "test": "test_v09_fail_open.py::test_malformed_mandate[7]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Malformed mandate objects",
+  "test": "test_v09_fail_open.py::test_malformed_mandate[8]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Malformed mandate objects",
+  "test": "test_v09_fail_open.py::test_malformed_mandate[9]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Malformed mandate objects",
+  "test": "test_v09_fail_open.py::test_malformed_mandate[10]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Malformed payload field types",
+  "test": "test_v09_fail_open.py::test_malformed_payload[0]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Malformed payload field types",
+  "test": "test_v09_fail_open.py::test_malformed_payload[1]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Malformed payload field types",
+  "test": "test_v09_fail_open.py::test_malformed_payload[2]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Malformed payload field types",
+  "test": "test_v09_fail_open.py::test_malformed_payload[3]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Malformed payload field types",
+  "test": "test_v09_fail_open.py::test_malformed_payload[4]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "low",
+  "kind": "hardening",
+  "title": "PaymentProfile coerces a null/non-string currency to text instead of rejecting it",
+  "test": "test_v09_fail_open.py::test_null_currency_rejected",
+  "bypassed": true,
+  "evidence": "currency=None executed as 'NONE'"
+ },
+ {
+  "vector": 9,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Missing idempotency key / tenant",
+  "test": "test_v09_fail_open.py::test_missing_operation_identity[0]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Missing idempotency key / tenant",
+  "test": "test_v09_fail_open.py::test_missing_operation_identity[1]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Missing idempotency key / tenant",
+  "test": "test_v09_fail_open.py::test_missing_operation_identity[2]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Missing idempotency key / tenant",
+  "test": "test_v09_fail_open.py::test_missing_operation_identity[3]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 9,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Executor crash leaves the operation non-retryable",
+  "test": "test_v09_fail_open.py::test_executor_crash_is_not_silently_retried",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 10,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "In-place edit of a recorded entry",
+  "test": "test_v10_log_tampering.py::test_edit_entry_detected",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 10,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Delete / reorder an entry in the middle of the chain",
+  "test": "test_v10_log_tampering.py::test_delete_middle_entry_detected",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 10,
+  "severity": "high",
+  "kind": "known-limitation",
+  "title": "Tail truncation (drop the newest records) passes AuditLog.verify_chain",
+  "test": "test_v10_log_tampering.py::test_tail_truncation_detected_by_verify_chain",
+  "bypassed": true,
+  "evidence": "chain verifies after dropping the last 2 of 6 records (no external anchor in verify_chain)"
+ },
+ {
+  "vector": 10,
+  "severity": "high",
+  "kind": "known-limitation",
+  "title": "Self-consistent full rewrite (Scenario G) passes AuditLog.verify_chain",
+  "test": "test_v10_log_tampering.py::test_full_rewrite_detected_by_verify_chain",
+  "bypassed": true,
+  "evidence": "rewritten chain with one operation erased verifies (entries are hash-linked, not signed/anchored)"
+ },
+ {
+  "vector": 10,
+  "severity": "medium",
+  "kind": "bypass",
+  "title": "Blocked attempts are recorded, not just successes",
+  "test": "test_v10_log_tampering.py::test_denied_attempts_are_audited",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 10,
+  "severity": "medium",
+  "kind": "hardening",
+  "title": "Requests rejected before token issuance leave no audit record",
+  "test": "test_v10_log_tampering.py::test_pre_token_denials_are_audited",
+  "bypassed": true,
+  "evidence": "0 audit records for 2 denied execution attempts (probing is invisible in the chain)"
+ },
+ {
+  "vector": 11,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "GovernanceService reaches the upstream only inside coordinator.enforce",
+  "test": "test_v11_gate_bypass.py::test_upstream_only_called_from_enforced_executor",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 11,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "With the real gate trusting no key, no public execute_* path reaches the actuator",
+  "test": "test_v11_gate_bypass.py::test_gate_rejection_blocks_every_service_path",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 11,
+  "severity": "medium",
+  "kind": "hardening",
+  "title": "HTTPEgressExecutor accepts an unsigned dict as its 'verified decision token'",
+  "test": "test_v11_gate_bypass.py::test_egress_executor_verifies_token_signature",
+  "bypassed": true,
+  "evidence": "executor.execute() authorizes any dict {'decision':'ALLOW','action':<action>} - no signature check"
+ },
+ {
+  "vector": 11,
+  "severity": "low",
+  "kind": "hardening",
+  "title": "ExecutionGate.verify skips action/payload binding when the caller omits them",
+  "test": "test_v11_gate_bypass.py::test_gate_requires_action_and_payload_binding",
+  "bypassed": true,
+  "evidence": "gate verified a token without checking what is about to be executed"
+ },
+ {
+  "vector": 11,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "No runtime module issues tokens or calls an actuator outside the governed path",
+  "test": "test_v11_gate_bypass.py::test_no_unexpected_token_issuers",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 12,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Distinct JSON payloads never share a payload_hash",
+  "test": "test_v12_canonicalization.py::test_no_hash_collisions_between_distinct_json_documents",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 12,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Key order / whitespace / duplicate keys cannot change what is signed vs executed",
+  "test": "test_v12_canonicalization.py::test_parser_differential_is_closed_by_reserialization",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 12,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Action hash distinguishes look-alike action names",
+  "test": "test_v12_canonicalization.py::test_action_hash_lookalikes",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 12,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Executed payload is byte-identical to the signed payload",
+  "test": "test_v12_canonicalization.py::test_executed_payload_matches_signed_hash",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Any change to a signed token invalidates it",
+  "test": "test_v13_signature.py::test_mutated_token_rejected[amount-claim]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Any change to a signed token invalidates it",
+  "test": "test_v13_signature.py::test_mutated_token_rejected[decision]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Any change to a signed token invalidates it",
+  "test": "test_v13_signature.py::test_mutated_token_rejected[exp]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Any change to a signed token invalidates it",
+  "test": "test_v13_signature.py::test_mutated_token_rejected[nonce]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Any change to a signed token invalidates it",
+  "test": "test_v13_signature.py::test_mutated_token_rejected[idempotency_key]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Any change to a signed token invalidates it",
+  "test": "test_v13_signature.py::test_mutated_token_rejected[tenant]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Any change to a signed token invalidates it",
+  "test": "test_v13_signature.py::test_mutated_token_rejected[mandate_id]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Any change to a signed token invalidates it",
+  "test": "test_v13_signature.py::test_mutated_token_rejected[kid-none]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Any change to a signed token invalidates it",
+  "test": "test_v13_signature.py::test_mutated_token_rejected[kid-unknown]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Any change to a signed token invalidates it",
+  "test": "test_v13_signature.py::test_mutated_token_rejected[kid-list]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Any change to a signed token invalidates it",
+  "test": "test_v13_signature.py::test_mutated_token_rejected[sig-empty]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Any change to a signed token invalidates it",
+  "test": "test_v13_signature.py::test_mutated_token_rejected[sig-missing]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Any change to a signed token invalidates it",
+  "test": "test_v13_signature.py::test_mutated_token_rejected[sig-zero]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Any change to a signed token invalidates it",
+  "test": "test_v13_signature.py::test_mutated_token_rejected[sig-list]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Any change to a signed token invalidates it",
+  "test": "test_v13_signature.py::test_mutated_token_rejected[alg-none]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Any change to a signed token invalidates it",
+  "test": "test_v13_signature.py::test_mutated_token_rejected[extra-claim]",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Key confusion: token signed by a key trusted for another role",
+  "test": "test_v13_signature.py::test_token_signed_by_mandate_issuer_or_approver_key",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Artifact confusion: a decision token presented as a mandate",
+  "test": "test_v13_signature.py::test_decision_token_is_not_a_mandate",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Mandate signed by a revoked key / disabled issuer",
+  "test": "test_v13_signature.py::test_revoked_or_disabled_issuer_key",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "medium",
+  "kind": "bypass",
+  "title": "Signature malleability cannot mint a second usable token",
+  "test": "test_v13_signature.py::test_signature_encoding_malleability_is_not_a_replay",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Wrong audience / wrong policy hash",
+  "test": "test_v13_signature.py::test_audience_and_policy_binding",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 13,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "DENY / ESCALATE can never be turned into an executable token",
+  "test": "test_v13_signature.py::test_non_executable_verdicts",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 14,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "No runtime module serializes a private key",
+  "test": "test_v14_key_exposure.py::test_no_private_key_serialization_in_runtime",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 14,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Agent package holds no signing capability",
+  "test": "test_v14_key_exposure.py::test_agent_package_cannot_sign",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 14,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "No key material in outcomes, tokens or the audit chain",
+  "test": "test_v14_key_exposure.py::test_no_key_material_in_outputs",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 14,
+  "severity": "medium",
+  "kind": "hardening",
+  "title": "Decision service starts with an ephemeral signing key when none is configured",
+  "test": "test_v14_key_exposure.py::test_service_refuses_to_start_without_configured_signing_key",
+  "bypassed": true,
+  "evidence": "main.py falls back to SigningKey.generate() (warning only) when MCC_SIGNING_KEY_PATH is unset"
+ },
+ {
+  "vector": 15,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Expired / not-yet-valid mandate, including the exact boundary",
+  "test": "test_v15_time.py::test_mandate_validity_window",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 15,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Token never outlives the mandate that justified it",
+  "test": "test_v15_time.py::test_token_exp_clamped_to_mandate_exp",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 15,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Expired decision token (boundary: now == exp)",
+  "test": "test_v15_time.py::test_expired_token_rejected",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 15,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Token issued in the future (nbf) / with non-integer window",
+  "test": "test_v15_time.py::test_future_or_malformed_window",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 15,
+  "severity": "low",
+  "kind": "hardening",
+  "title": "EnforcementCoordinator.enforce(now=...) lets the caller choose the clock",
+  "test": "test_v15_time.py::test_caller_cannot_supply_enforcement_time",
+  "bypassed": true,
+  "evidence": "hour-old expired token executed because the caller passed now=<past>"
+ },
+ {
+  "vector": 15,
+  "severity": "medium",
+  "kind": "design-gap",
+  "title": "Agent-chosen approval TTL is unbounded",
+  "test": "test_v15_time.py::test_approval_ttl_is_capped",
+  "bypassed": true,
+  "evidence": "approval mandate valid for 3650 days (ttl_seconds is set by the requesting agent)"
+ },
+ {
+  "vector": 16,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "CONSTRAIN: only the clamped payload reaches the actuator",
+  "test": "test_v16_constrain_escalate.py::test_constrain_executes_only_clamped_payload",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 16,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "ESCALATE: pending / denied / expired approval never executes",
+  "test": "test_v16_constrain_escalate.py::test_unapproved_escalation_never_executes",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 16,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Approval route: different payload / second use / after invalidation",
+  "test": "test_v16_constrain_escalate.py::test_approval_route_binds_payload_and_is_single_use",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 16,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Approval-minted mandate presented on the plain mandate route executes a DIFFERENT payload",
+  "test": "test_v16_constrain_escalate.py::test_approval_mandate_on_mandate_route_other_payload",
+  "bypassed": true,
+  "evidence": "approved 100.0->vendor-42; executed {'source': 'acct-1', 'beneficiary_id': 'attacker-acct', 'amount': 1000000.0, 'currency': 'EUR'} (EXECUTED/ALLOW); payload_hash binding skipped"
+ },
+ {
+  "vector": 16,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Approval-minted 'single_use' mandate is reusable on the plain mandate route",
+  "test": "test_v16_constrain_escalate.py::test_approval_mandate_on_mandate_route_is_reusable",
+  "bypassed": true,
+  "evidence": "single_use approval executed 5 times; approval state still APPROVED"
+ },
+ {
+  "vector": 16,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Invalidated approval still executes via the plain mandate route",
+  "test": "test_v16_constrain_escalate.py::test_invalidated_approval_on_mandate_route",
+  "bypassed": true,
+  "evidence": "operator-invalidated approval executed (EXECUTED); state=INVALIDATED"
+ },
+ {
+  "vector": 16,
+  "severity": "high",
+  "kind": "bypass",
+  "title": "Agent-supplied constraints on the approval request cannot widen the approved payload",
+  "test": "test_v16_constrain_escalate.py::test_approval_request_constraints_do_not_widen",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 17,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Indeterminate (crashed) operation is not re-dispatched for the same key",
+  "test": "test_v17_crash_recovery.py::test_unknown_outcome_not_redispatched",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 17,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Crash after dispatch + gate restart: same operation key still blocked",
+  "test": "test_v17_crash_recovery.py::test_unknown_outcome_survives_gate_restart",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 17,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Same idempotency key cannot be rebound to a different payload",
+  "test": "test_v17_crash_recovery.py::test_idempotency_key_rebinding",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 17,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Single-use approval is not re-executable after a crashed dispatch",
+  "test": "test_v17_crash_recovery.py::test_crashed_approval_execution_not_repeatable",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 17,
+  "severity": "medium",
+  "kind": "design-gap",
+  "title": "Exactly-once is per caller-chosen idempotency key: a crashed op is re-sent under a new key",
+  "test": "test_v17_crash_recovery.py::test_crashed_operation_resent_under_new_key",
+  "bypassed": true,
+  "evidence": "same transaction_id dispatched twice (EXECUTED) while the first outcome is still UNKNOWN"
+ },
+ {
+  "vector": 17,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "A denied request leaves nothing executable behind",
+  "test": "test_v17_crash_recovery.py::test_nothing_executable_after_deny",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 18,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Mandate bound to an older policy hash",
+  "test": "test_v18_policy_downgrade.py::test_mandate_bound_to_old_policy_rejected",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 18,
+  "severity": "critical",
+  "kind": "bypass",
+  "title": "Decision token issued under an older policy hash",
+  "test": "test_v18_policy_downgrade.py::test_token_from_old_policy_rejected",
+  "bypassed": false,
+  "evidence": ""
+ },
+ {
+  "vector": 18,
+  "severity": "low",
+  "kind": "design-gap",
+  "title": "Mandate issued without policy_hash stays valid across policy rotations",
+  "test": "test_v18_policy_downgrade.py::test_unbound_mandate_survives_policy_rotation",
+  "bypassed": true,
+  "evidence": "mandate with policy_hash=None accepted under the current policy (binding is optional)"
+ },
+ {
+  "vector": 18,
+  "severity": "medium",
+  "kind": "design-gap",
+  "title": "Approval policy binding is chosen by the requesting agent (omit it -> unbound approval)",
+  "test": "test_v18_policy_downgrade.py::test_approval_policy_binding_is_not_caller_optional",
+  "bypassed": true,
+  "evidence": "approval mandate policy_hash=None (taken from the agent's request)"
+ },
+ {
+  "vector": 18,
+  "severity": "medium",
+  "kind": "hardening",
+  "title": "Policy bundle is loaded without a pinned expected hash",
+  "test": "test_v18_policy_downgrade.py::test_policy_bundle_load_is_pinned",
+  "bypassed": true,
+  "evidence": "main.py: PolicyBundle.from_file(path, policy_id) - a swapped policy file is accepted and its new hash signed into tokens"
+ }
+]
