@@ -22,6 +22,7 @@ are hardcoded for a single client (see ``gateway/pilot_policy.py``).
 from __future__ import annotations
 
 import fnmatch
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -157,6 +158,24 @@ class AuthorityDecision:
     applied_changes: List[str] = field(default_factory=list)
 
 
+def _finite_number(value: Any) -> bool:
+    """R2: a usable bound/value -- a real ``int``/``float`` that is finite.
+    NaN, +inf and -inf are never usable: every ordered comparison with NaN is
+    False (so ``nan > bound`` would read as "within the cap"), and an infinite
+    value can never be the exact authorized quantity."""
+    return isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def _implicit_zero_floor(constraints: Dict[str, Any], field_name: str, bound: Any) -> bool:
+    """R2: a ``max_<field>`` cap with NO explicit ``min_<field>`` bounds a
+    non-negative quantity (an amount, a percentage, a count, a force...), so
+    values below zero are outside the mandate. An explicit ``min_<field>``
+    defines the lower bound itself (and may legitimately be negative), and a
+    negative cap obviously describes a negative-valued field -- neither gets
+    the implicit floor."""
+    return f"min_{field_name}" not in constraints and bound >= 0
+
+
 def _constraint_violations(
     constraints: Dict[str, Any], context: Dict[str, Any]
 ) -> List[str]:
@@ -164,24 +183,36 @@ def _constraint_violations(
 
     A tiny, fixed convention — not a DSL:
 
-    * ``max_<field>``     -> ``context[field] <= value``
+    * ``max_<field>``     -> ``context[field] <= value`` (and ``>= 0`` when no
+      ``min_<field>`` is given -- see ``_implicit_zero_floor``)
     * ``min_<field>``     -> ``context[field] >= value``
     * ``allowed_<field>`` -> ``context[field] in value``
 
     A field referenced by a constraint but missing from the context counts as
     a violation: the mandate's bound cannot be shown to hold, so it does not.
+    So does a non-finite (NaN / +-inf) value or bound (R2): fail-closed.
     """
     violations: List[str] = []
     for key, bound in constraints.items():
         if key.startswith("max_"):
             field_name = key[4:]
             value = context.get(field_name)
-            if not isinstance(value, (int, float)) or value > bound:
+            if not _finite_number(bound):
+                violations.append(f"max_{field_name} bound {bound!r} is not a finite number")
+            elif not _finite_number(value):
+                violations.append(f"{field_name}={value!r} is not a finite number (max {bound!r})")
+            elif value > bound:
                 violations.append(f"{field_name}={value!r} exceeds max {bound!r}")
+            elif value < 0 and _implicit_zero_floor(constraints, field_name, bound):
+                violations.append(f"{field_name}={value!r} is negative (max {bound!r})")
         elif key.startswith("min_"):
             field_name = key[4:]
             value = context.get(field_name)
-            if not isinstance(value, (int, float)) or value < bound:
+            if not _finite_number(bound):
+                violations.append(f"min_{field_name} bound {bound!r} is not a finite number")
+            elif not _finite_number(value):
+                violations.append(f"{field_name}={value!r} is not a finite number (min {bound!r})")
+            elif value < bound:
                 violations.append(f"{field_name}={value!r} below min {bound!r}")
         elif key.startswith("allowed_"):
             field_name = key[8:]
@@ -212,8 +243,12 @@ def apply_constraints(
         if key.startswith(("max_", "min_")):
             field_name = key[4:]
             value = new_context.get(field_name)
-            if not isinstance(value, (int, float)):
-                continue  # nothing safe to clamp; stays a violation
+            if not _finite_number(value) or not _finite_number(bound):
+                # Nothing safe to clamp (missing / non-numeric / NaN / +-inf
+                # value, or an unusable bound): it stays a violation -> DENY.
+                # A negative value under an implicit zero floor is likewise
+                # never "clamped up": it is not raised into compliance below.
+                continue
             if key.startswith("max_") and value > bound:
                 new_context[field_name] = bound
                 changes.append(f"{field_name}: {value} -> {bound} (max)")

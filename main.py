@@ -23,6 +23,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -341,7 +342,11 @@ class LocalFallbackPolicy:
 
         if req.intent == "send_payment":
             amount = float(req.args.get("amount", 0))
-            if amount <= 5000:
+            if not math.isfinite(amount) or amount < 0:
+                # R2: -inf and negatives would otherwise satisfy ``<= 5000``.
+                decision = Decision.DENY
+                reason = "local fallback: amount must be a finite, non-negative number"
+            elif amount <= 5000:
                 decision = Decision.ALLOW
                 reason = "local fallback: within safe limit"
             elif amount <= 10000:

@@ -13,6 +13,7 @@ the canonical payload (covered by ``payload_hash``) and the opaque
 from __future__ import annotations
 
 import fnmatch
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -84,6 +85,14 @@ class PaymentProfile(ActionProfile):
             )
         # Normalise amount so the canonical hash is stable across int/float input.
         payload["amount"] = float(payload["amount"])
+        # R2: a payment amount is a finite, non-negative quantity. float() turns
+        # "nan" / "inf" / "-1e9" strings into exactly the values that slip past
+        # ordered comparisons downstream, so reject them here, on every route
+        # that canonicalizes a payment (mandate, approval, consensus, delegation).
+        if not math.isfinite(payload["amount"]) or payload["amount"] < 0:
+            raise ProfileError(
+                f"payment amount must be a finite, non-negative number; got {context['amount']!r}"
+            )
         payload["currency"] = str(payload["currency"]).upper()
         return payload
 

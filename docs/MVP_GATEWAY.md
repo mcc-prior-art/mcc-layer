@@ -159,6 +159,18 @@ miss, so it doubles as the CI smoke test (`smoke` job in
   invent, so it fails closed to **DENY** rather than forwarding something
   non-conforming. Richer, action-specific rewriting (e.g. currency, recipient
   allowlists) is future work.
+- **Numeric constraints require finite numbers (R2 remediation).** A
+  `max_`/`min_` value or bound that is NaN, `+inf` or `-inf` is a violation.
+  It is never clamped, so it fails closed to **DENY**. Every ordered
+  comparison with NaN is False, so before this fix NaN read as "within the
+  cap". A `max_<field>` with no explicit `min_<field>` also bounds a
+  non-negative quantity: a value below `0` is a violation and is never
+  "clamped up". An explicit `min_<field>` sets the lower bound instead, and
+  may be negative. The payment profile rejects a non-finite or negative
+  `amount`, including the strings `"nan"`, `"inf"` and `"-1e9"` that `float()`
+  would otherwise accept. Delegation and the `main.py` local-fallback policy
+  apply the same finite / non-negative rule. Valid boundaries are unchanged:
+  `0`, the exact cap, and a finite over-cap value still CONSTRAINs to the cap.
 - **Replay protection backend is selectable.** The proxy's `ExecutionGate`
   picks its nonce registry from the environment (`nonce_registry_from_env`):
   `MCC_NONCE_BACKEND=memory` (default) uses the single-process
