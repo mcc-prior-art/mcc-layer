@@ -67,6 +67,41 @@ At actuation `ApprovalService.consume` additionally rejects a mismatched
 a second consume of the same approval is `already consumed (replay)`. Expired,
 reused, altered, or non-`APPROVED` approvals all fail closed.
 
+### Route-independent enforcement (R1 remediation)
+
+The approval binding is a property of the **signed mandate**, not of the route
+it is presented on. The approver key is trusted in the same `TrustSet` as
+ordinary mandate issuers, so an approval-minted mandate also verifies on
+`POST /mandates/execute`. Before the R1 fix, only `execute_with_approval` put
+`approval_id` into the decision token, so the same mandate on the plain
+mandate route ran as a reusable standing grant: no payload binding, no
+single-use consume, and no invalidation check (internal red-team cases V05,
+V16 ×3).
+
+Now:
+
+* `MandateVerifier` derives the approval binding from the signature-covered
+  claims (`approval_id`, `single_use`, `action_hash`, `payload_hash`,
+  `transaction_id`). If any one is present, all must be present and
+  well-formed, with `single_use == true`. Otherwise →
+  `MALFORMED_APPROVAL_MANDATE`. A partial binding is never downgraded to a
+  standing grant.
+* `MandateAuthority` rejects a different action (`APPROVAL_ACTION_MISMATCH`)
+  and any final executable payload, after a CONSTRAIN rewrite, whose hash is
+  not the approved `payload_hash` (`APPROVAL_PAYLOAD_MISMATCH`).
+* `GovernanceService.execute_with_mandate`, which both execute routes go
+  through, rejects a different `transaction_id`, fails closed if no approval
+  service can consume the approval, and always writes the mandate's own
+  `approval_id` into the token's `auth_claims`. That claim is written last,
+  so nothing can override it.
+* `EnforcementCoordinator` atomically consumes that approval before actuation.
+  A token that names an `approval_id` on a coordinator with no
+  `ApprovalService` is `BLOCKED`, not executed.
+* `POST /approvals/{request_id}/execute` additionally requires the mandate's
+  `approval_id` to equal the path `request_id`.
+
+Tests: `tests/test_r1_approval_mandate_binding_http.py`.
+
 ## Service boundary (API)
 
 `ApprovalService` is the clean boundary for requesting, recording, approving,
@@ -154,6 +189,9 @@ set (see `docs/SIGNED_MANDATES.md`).
 
 ## Backward compatibility
 
-Additive. Tokens issued without an approval are unaffected; the coordinator's
-consume step is a no-op unless an `ApprovalService` is configured and a token
-carries `auth_claims.approval_id`.
+Additive. Tokens issued without an approval are unaffected, and so are
+ordinary (non-approval) mandates on `/mandates/execute`. Since the R1 fix, a
+token that carries `auth_claims.approval_id` on a coordinator with no
+`ApprovalService` is `BLOCKED` (fail-closed); previously the consume step was
+silently skipped. An approval-minted mandate presented on `/mandates/execute`
+is now consumed single-use, exactly as on `/approvals/{id}/execute`.

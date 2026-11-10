@@ -310,6 +310,17 @@ def mount_approval_routes(app: FastAPI, service: GovernanceService, *, api_key: 
     @app.post("/approvals/{request_id}/execute", response_model=ExecuteResponse)
     async def execute_with_approval(request_id: str, req: ApprovalExecuteRequest,
                                     tenant: str = Depends(require_agent)):
+        # R1 defense-in-depth: the path names the approval being exercised;
+        # the presented mandate must be the one minted for exactly it. (The
+        # authoritative binding is enforced in GovernanceService /
+        # EnforcementCoordinator; this only rejects an inconsistent request
+        # before any authority is evaluated.)
+        presented = req.mandate.get("approval_id") if isinstance(req.mandate, dict) else None
+        if presented != request_id:
+            return ExecuteResponse(
+                status="BLOCKED", decision="DENY",
+                reason="APPROVAL_ID_MISMATCH: mandate was not minted for this approval request",
+            )
         out = await service.execute_with_approval(
             mandate=req.mandate, actor=req.actor, action=req.action, resource=req.resource,
             context=req.context, transaction_id=req.transaction_id,

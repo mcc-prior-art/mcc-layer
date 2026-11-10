@@ -314,9 +314,43 @@ class GovernanceService:
                 decision=decision.verdict.value,
             )
 
+        # R1 remediation -- approval-derived authority is bound to the exact
+        # approved operation on EVERY route that reaches this method
+        # (``/mandates/execute`` and ``/approvals/{id}/execute`` alike).
+        # ``decision.approval_binding`` comes only from the verified, signed
+        # mandate (MandateVerifier); it is never taken from the caller's
+        # choice of route or from ``extra_auth_claims``. Action and exact
+        # final-payload binding were already enforced by MandateAuthority.
+        binding = decision.approval_binding
+        if binding is not None:
+            if self.approvals is None or getattr(self.coordinator, "approvals", None) is None:
+                return ExecOutcome(
+                    "BLOCKED",
+                    "APPROVAL_CONSUMPTION_UNAVAILABLE: approval-minted mandate cannot be "
+                    "consumed single-use by this gateway; fail-closed",
+                    decision="DENY",
+                )
+            if binding["transaction_id"] != transaction_id:
+                return ExecOutcome(
+                    "BLOCKED", "TRANSACTION_MISMATCH: approval not for this transaction",
+                    decision="DENY",
+                )
+            claimed = (extra_auth_claims or {}).get("approval_id")
+            if claimed is not None and claimed != binding["approval_id"]:
+                return ExecOutcome(
+                    "BLOCKED", "APPROVAL_ID_MISMATCH: approval claim does not match the "
+                    "signed approval mandate; fail-closed",
+                    decision="DENY",
+                )
+
         auth_claims = dict(profile.auth_claims(forward_context))
         if extra_auth_claims:
             auth_claims.update(extra_auth_claims)
+        if binding is not None:
+            # Set LAST so nothing can override or drop it: the coordinator
+            # atomically consumes this approval (single-use, state, and
+            # action/transaction/payload binding) before any actuation.
+            auth_claims["approval_id"] = binding["approval_id"]
         token = self.engine.issue_token(
             verdict=decision.verdict.value, subject=actor, action=action,
             payload=forward_context, constraints=decision.constraints,
@@ -525,7 +559,10 @@ class GovernanceService:
     ) -> ExecOutcome:
         """Re-evaluate against the approval mandate and execute through the one
         coordinator path. The token carries the approval_id, so the coordinator
-        consumes the approval single-use at actuation. Delegates to
+        consumes the approval single-use at actuation. (Since the R1
+        remediation, ``execute_with_mandate`` derives and enforces that same
+        binding from the signed mandate itself, so presenting an approval
+        mandate on the plain mandate route is equally bound.) Delegates to
         ``execute_with_mandate``, so the PR-2 attestation gate applies here too
         -- there is exactly one place that calls ``issue_token`` for either."""
         approval_id = mandate.get("approval_id") if isinstance(mandate, dict) else None

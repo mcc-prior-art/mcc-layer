@@ -332,6 +332,15 @@ class EnforcementCoordinator:
         # Single-use approval consumption (ESCALATE loop): consume the approval
         # bound to this exact operation before doing anything else stateful.
         approval_id = (token.get("auth_claims") or {}).get("approval_id")
+        if approval_id and self.approvals is None:
+            # R1 remediation: a token that names an approval MUST have that
+            # approval consumed single-use here. A coordinator with no
+            # approval service cannot do that, so it fails closed instead of
+            # silently treating the approval-derived token as reusable.
+            reason = (f"approval {approval_id} cannot be consumed: no approval service "
+                      "configured; fail-closed")
+            self._record(kind="actuation_rejected", action=action, reason=reason)
+            return ActuationResult(ActuationStatus.BLOCKED, reason)
         if self.approvals is not None and approval_id:
             consumed = await self.approvals.consume(
                 approval_id,

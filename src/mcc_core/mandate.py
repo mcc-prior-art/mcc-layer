@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from .signing import SigningKey, canonical_bytes, verify_token
+from .signing import SigningKey, canonical_bytes, hash_action, hash_payload, verify_token
 from .trusted_time import LocalTimeSource, TimeTrustError, TrustedTimeSource
 
 REQUIRED_FIELDS = (
@@ -99,6 +99,12 @@ class MandateAuthorityDecision:
     # never issues a token) can clamp the token's exp to it. See
     # ``DecisionEngine.issue_token``'s ``max_exp`` parameter.
     mandate_exp: Optional[int] = None
+    # R1 remediation: the verified approval binding (see
+    # ``approval_binding_from_mandate``) when the authorizing mandate was
+    # approval-minted. A caller that issues a token under this decision MUST
+    # bind ``approval_binding["approval_id"]`` into the token so the
+    # coordinator consumes the approval single-use at actuation.
+    approval_binding: Optional[Dict[str, Any]] = None
 
 
 class MandateAuthority:
@@ -131,24 +137,43 @@ class MandateAuthority:
         if not res.ok:
             return MandateAuthorityDecision(Verdict.DENY, res.reason)
 
+        binding = res.approval_binding
+        if binding is not None and binding["action_hash"] != hash_action(action):
+            # R1: approval-derived authority covers exactly the approved action.
+            return MandateAuthorityDecision(
+                Verdict.DENY, "APPROVAL_ACTION_MISMATCH: approval not for this action",
+                mandate_id=res.mandate_id,
+            )
+
         violations = _constraint_violations(res.constraints, context)
         if not violations:
+            final = dict(context)
+            verdict, reason, changes = Verdict.ALLOW, f"verified mandate {res.mandate_id}", []
+        else:
+            constrained, changes = apply_constraints(res.constraints, context)
+            if _constraint_violations(res.constraints, constrained):
+                return MandateAuthorityDecision(
+                    Verdict.DENY,
+                    f"mandate {res.mandate_id} held but request cannot be constrained into compliance",
+                    constraints=res.constraints, mandate_id=res.mandate_id,
+                )
+            final = constrained
+            verdict = Verdict.CONSTRAIN
+            reason = f"mandate {res.mandate_id} bounds applied: {'; '.join(changes)}"
+
+        if binding is not None and binding["payload_hash"] != hash_payload(final):
+            # R1: the EXACT final executable payload (after any CONSTRAIN
+            # rewrite) must be the one the human approved. Amount, currency,
+            # recipient, or any other field changed after approval -> DENY.
             return MandateAuthorityDecision(
-                Verdict.ALLOW, f"verified mandate {res.mandate_id}",
-                constraints=res.constraints, mandate_id=res.mandate_id,
-                forward_context=dict(context), mandate_exp=res.exp,
-            )
-        constrained, changes = apply_constraints(res.constraints, context)
-        if _constraint_violations(res.constraints, constrained):
-            return MandateAuthorityDecision(
-                Verdict.DENY,
-                f"mandate {res.mandate_id} held but request cannot be constrained into compliance",
+                Verdict.DENY, "APPROVAL_PAYLOAD_MISMATCH: approval not for this payload",
                 constraints=res.constraints, mandate_id=res.mandate_id,
             )
+
         return MandateAuthorityDecision(
-            Verdict.CONSTRAIN, f"mandate {res.mandate_id} bounds applied: {'; '.join(changes)}",
-            constraints=res.constraints, mandate_id=res.mandate_id,
-            forward_context=constrained, applied_changes=changes, mandate_exp=res.exp,
+            verdict, reason, constraints=res.constraints, mandate_id=res.mandate_id,
+            forward_context=final, applied_changes=changes, mandate_exp=res.exp,
+            approval_binding=binding,
         )
 
 
@@ -173,6 +198,72 @@ class MandateResult:
     # ``MandateAuthorityDecision.mandate_exp`` and
     # ``DecisionEngine.issue_token``'s ``max_exp`` parameter.
     exp: Optional[int] = None
+    # R1 remediation: the verified, signature-covered approval binding when
+    # this mandate was minted by ``ApprovalService.approve()`` (see
+    # ``approval_binding_from_mandate``). ``None`` for an ordinary standing
+    # mandate. Never derived from anything but the signed mandate itself.
+    approval_binding: Optional[Dict[str, Any]] = None
+
+
+# --------------------------------------------------------------------------
+# Approval-minted mandate binding (R1 remediation)
+# --------------------------------------------------------------------------
+
+# Signature-covered claims ``ApprovalService.approve()`` adds (via
+# ``issue_mandate(extra=...)``). Their presence on a verified mandate is what
+# makes it APPROVAL-DERIVED authority, independent of which route or API the
+# caller chooses to present it on.
+APPROVAL_BINDING_CLAIMS = ("approval_id", "single_use", "action_hash",
+                           "payload_hash", "transaction_id")
+
+
+class ApprovalBindingError(ValueError):
+    """An approval-shaped mandate whose binding claims are incomplete or
+    malformed. Always a denial (fail-closed), never "treat as ordinary"."""
+
+
+def approval_binding_from_mandate(mandate: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return the exact-operation binding of an approval-minted mandate, or
+    ``None`` if the mandate carries NONE of the approval binding claims.
+
+    R1 root cause: before this, the approval binding (approval_id ->
+    single-use consume, payload/action/transaction binding, invalidation)
+    was only enforced when the caller CHOSE ``execute_with_approval``; the
+    same signed mandate presented on ``/mandates/execute`` was treated as a
+    standing grant and every one of those checks was skipped. The binding is
+    a property of the signed mandate, so it is derived here, from the
+    signature-covered claims, and enforced on every route.
+
+    Fail-closed: if ANY approval binding claim is present, ALL of them must
+    be present and well-formed (and ``single_use`` must be ``True``) --
+    otherwise :class:`ApprovalBindingError`. A partially-bound mandate is
+    never downgraded to a standing one.
+    """
+    present = [k for k in APPROVAL_BINDING_CLAIMS if k in mandate]
+    if not present:
+        return None
+    missing = [k for k in APPROVAL_BINDING_CLAIMS if k not in mandate]
+    if missing:
+        raise ApprovalBindingError(f"approval mandate missing binding claims {missing}")
+    approval_id = mandate["approval_id"]
+    if not isinstance(approval_id, str) or not approval_id.strip():
+        raise ApprovalBindingError("approval_id must be a non-empty string")
+    if mandate["single_use"] is not True:
+        raise ApprovalBindingError("approval mandate must be single_use")
+    for key in ("action_hash", "payload_hash"):
+        value = mandate[key]
+        if not isinstance(value, str) or not value:
+            raise ApprovalBindingError(f"{key} must be a non-empty string")
+    tx = mandate["transaction_id"]
+    if tx is not None and not isinstance(tx, str):
+        raise ApprovalBindingError("transaction_id must be a string or null")
+    return {
+        "approval_id": approval_id,
+        "action_hash": mandate["action_hash"],
+        "payload_hash": mandate["payload_hash"],
+        "transaction_id": tx,
+        "single_use": True,
+    }
 
 
 def _scope_match(value: Optional[str], scope: List[str]) -> bool:
@@ -238,6 +329,13 @@ class MandateVerifier:
             if required not in mandate:
                 return MandateResult(False, f"MALFORMED_MANDATE: missing {required}")
 
+        # R1: an approval-shaped mandate must carry a complete, well-formed
+        # binding; a partial one is a denial, never a standing grant.
+        try:
+            approval_binding = approval_binding_from_mandate(mandate)
+        except ApprovalBindingError as exc:
+            return MandateResult(False, f"MALFORMED_APPROVAL_MANDATE: {exc}")
+
         if now is not None:
             ts = int(now)
         else:
@@ -281,7 +379,7 @@ class MandateVerifier:
             True, "MANDATE_VERIFIED",
             mandate_id=mandate["mandate_id"], subject=subject,
             constraints=dict(mandate.get("constraints", {})),
-            exp=exp,
+            exp=exp, approval_binding=approval_binding,
         )
 
 
