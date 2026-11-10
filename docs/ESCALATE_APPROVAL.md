@@ -85,13 +85,13 @@ Now:
   `transaction_id`). If any one is present, all must be present and
   well-formed, with `single_use == true`. Otherwise →
   `MALFORMED_APPROVAL_MANDATE`. A partial binding is never downgraded to a
-  standing grant.
-* `MandateAuthority` rejects a different action (`APPROVAL_ACTION_MISMATCH`)
-  and any final executable payload, after a CONSTRAIN rewrite, whose hash is
-  not the approved `payload_hash` (`APPROVAL_PAYLOAD_MISMATCH`).
+  standing grant. `MandateAuthority` returns the binding on its decision.
 * `GovernanceService.execute_with_mandate`, which both execute routes go
-  through, rejects a different `transaction_id`, fails closed if no approval
-  service can consume the approval, and always writes the mandate's own
+  through, rejects a different action (`APPROVAL_ACTION_MISMATCH`), any final
+  executable payload whose hash after a CONSTRAIN rewrite is not the approved
+  `payload_hash` (`APPROVAL_PAYLOAD_MISMATCH`), and a different
+  `transaction_id`. It fails closed if no approval service can consume the
+  approval, and always writes the mandate's own
   `approval_id` into the token's `auth_claims`. That claim is written last,
   so nothing can override it.
 * `EnforcementCoordinator` atomically consumes that approval before actuation.

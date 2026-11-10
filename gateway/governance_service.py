@@ -38,6 +38,7 @@ from mcc_core import (
     Verdict,
     delegation_velocity_descriptor,
     delegation_velocity_limit,
+    hash_action,
     hash_payload,
 )
 from mcc_core.trusted_time import LocalTimeSource, TimeTrustError, TrustedTimeSource
@@ -319,10 +320,22 @@ class GovernanceService:
         # (``/mandates/execute`` and ``/approvals/{id}/execute`` alike).
         # ``decision.approval_binding`` comes only from the verified, signed
         # mandate (MandateVerifier); it is never taken from the caller's
-        # choice of route or from ``extra_auth_claims``. Action and exact
-        # final-payload binding were already enforced by MandateAuthority.
+        # choice of route or from ``extra_auth_claims``.
         binding = decision.approval_binding
         if binding is not None:
+            if binding["action_hash"] != hash_action(action):
+                return ExecOutcome(
+                    "BLOCKED", "APPROVAL_ACTION_MISMATCH: approval not for this action",
+                    decision="DENY",
+                )
+            if binding["payload_hash"] is None or binding["payload_hash"] != hash_payload(forward_context):
+                # The EXACT final executable payload (after any CONSTRAIN
+                # rewrite) must be the one the human approved: amount,
+                # currency, recipient, or any other field changed -> DENY.
+                return ExecOutcome(
+                    "BLOCKED", "APPROVAL_PAYLOAD_MISMATCH: approval not for this payload",
+                    decision="DENY",
+                )
             if self.approvals is None or getattr(self.coordinator, "approvals", None) is None:
                 return ExecOutcome(
                     "BLOCKED",

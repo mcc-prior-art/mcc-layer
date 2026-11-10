@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from .signing import SigningKey, canonical_bytes, hash_action, hash_payload, verify_token
+from .signing import SigningKey, canonical_bytes, verify_token
 from .trusted_time import LocalTimeSource, TimeTrustError, TrustedTimeSource
 
 REQUIRED_FIELDS = (
@@ -137,14 +137,6 @@ class MandateAuthority:
         if not res.ok:
             return MandateAuthorityDecision(Verdict.DENY, res.reason)
 
-        binding = res.approval_binding
-        if binding is not None and binding["action_hash"] != hash_action(action):
-            # R1: approval-derived authority covers exactly the approved action.
-            return MandateAuthorityDecision(
-                Verdict.DENY, "APPROVAL_ACTION_MISMATCH: approval not for this action",
-                mandate_id=res.mandate_id,
-            )
-
         violations = _constraint_violations(res.constraints, context)
         if not violations:
             final = dict(context)
@@ -161,19 +153,10 @@ class MandateAuthority:
             verdict = Verdict.CONSTRAIN
             reason = f"mandate {res.mandate_id} bounds applied: {'; '.join(changes)}"
 
-        if binding is not None and binding["payload_hash"] != hash_payload(final):
-            # R1: the EXACT final executable payload (after any CONSTRAIN
-            # rewrite) must be the one the human approved. Amount, currency,
-            # recipient, or any other field changed after approval -> DENY.
-            return MandateAuthorityDecision(
-                Verdict.DENY, "APPROVAL_PAYLOAD_MISMATCH: approval not for this payload",
-                constraints=res.constraints, mandate_id=res.mandate_id,
-            )
-
         return MandateAuthorityDecision(
             verdict, reason, constraints=res.constraints, mandate_id=res.mandate_id,
             forward_context=final, applied_changes=changes, mandate_exp=res.exp,
-            approval_binding=binding,
+            approval_binding=res.approval_binding,
         )
 
 
@@ -252,8 +235,11 @@ def approval_binding_from_mandate(mandate: Mapping[str, Any]) -> Optional[Dict[s
         raise ApprovalBindingError("approval mandate must be single_use")
     for key in ("action_hash", "payload_hash"):
         value = mandate[key]
-        if not isinstance(value, str) or not value:
-            raise ApprovalBindingError(f"{key} must be a non-empty string")
+        # ``None`` is tolerated here ONLY so a legacy (pre-PR #121) record's
+        # mandate is reported as the binding mismatch it is; ``None`` never
+        # equals a computed hash, so it can never authorize anything.
+        if value is not None and (not isinstance(value, str) or not value):
+            raise ApprovalBindingError(f"{key} must be a non-empty string or null")
     tx = mandate["transaction_id"]
     if tx is not None and not isinstance(tx, str):
         raise ApprovalBindingError("transaction_id must be a string or null")
