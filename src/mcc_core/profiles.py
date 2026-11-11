@@ -84,7 +84,20 @@ class PaymentProfile(ActionProfile):
                 f"payment profile requires fields {self.required_fields}; missing {missing}"
             )
         # Normalise amount so the canonical hash is stable across int/float input.
-        payload["amount"] = float(payload["amount"])
+        raw_amount = payload["amount"]
+        # R2: a bool is not an amount (float(True) == 1.0 would silently turn
+        # ``true`` into a 1.0 payment, sidestepping delegation's own bool
+        # rejection), and an unparseable value must be a clean ProfileError
+        # (DENY), never an unhandled exception. Parseable numeric strings stay
+        # accepted, exactly as before.
+        if isinstance(raw_amount, bool) or not isinstance(raw_amount, (int, float, str)):
+            raise ProfileError(
+                f"payment amount must be a number; got {type(raw_amount).__name__}"
+            )
+        try:
+            payload["amount"] = float(raw_amount)
+        except (TypeError, ValueError):
+            raise ProfileError(f"payment amount {raw_amount!r} is not a parseable number")
         # R2: a payment amount is a finite, non-negative quantity. float() turns
         # "nan" / "inf" / "-1e9" strings into exactly the values that slip past
         # ordered comparisons downstream, so reject them here, on every route

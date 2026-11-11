@@ -12,6 +12,10 @@ default decision := {
 # -------------------------
 # Payments
 # -------------------------
+# R2: ALLOW / ESCALATE require a JSON number (is_number rejects strings,
+# booleans and null, which Rego would otherwise order against numbers) and,
+# for ALLOW, a non-negative one. Anything else falls through to the default
+# DENY. main.py also validates the amount before OPA is consulted.
 
 decision := {
   "decision": "ALLOW",
@@ -23,6 +27,8 @@ decision := {
 } if {
   input.intent == "send_payment"
   amount := input.args.amount
+  is_number(amount)
+  amount >= 0
   amount <= 5000
 }
 
@@ -37,6 +43,7 @@ decision := {
 } if {
   input.intent == "send_payment"
   amount := input.args.amount
+  is_number(amount)
   amount > 5000
   amount <= 10000
 }

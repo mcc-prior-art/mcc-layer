@@ -583,3 +583,276 @@ def test_unit_constraint_helpers_reject_non_finite_and_negative():
     for ok in (0, 0.0, -0.0, 1, 5000):
         assert _constraint_violations(c, {"amount": ok}) == [], ok
     assert math.isfinite(apply_constraints(c, {"amount": 9e18})[0]["amount"])
+
+
+# ===========================================================================
+# R2 follow-up: booleans, unparseable / non-scalar values, missing amount
+# ===========================================================================
+#
+# On e8f2b84 (the first R2 commit):
+#   * a bool was accepted as a number everywhere (bool is an int subclass):
+#     the egress upstream and generic actions RECEIVED the raw boolean the
+#     policy had checked as 1/0, PaymentProfile turned ``true`` into a 1.0
+#     payment (sidestepping delegation's own bool rejection), and both
+#     /evaluate services issued ALLOW tokens;
+#   * an unparseable / non-scalar payment amount ("abc", "", null, [1], {})
+#     raised an unhandled exception (HTTP 500 / exception out of
+#     execute_with_delegation) -- zero actuator calls, but no clean audited DENY;
+#   * main.py's fallback substituted 0 for a MISSING amount and issued ALLOW.
+
+BOOLS = [("true", True), ("false", False)]
+UNPARSEABLE = [("abc", "abc"), ("empty", ""), ("null", None), ("list", [1]), ("object", {"a": 1}),
+               ("overflow-string", "1e400")]
+
+
+def _raw_ok(client):
+    """Same app, but surface unhandled exceptions as HTTP 500 (what a real
+    server returns) instead of re-raising them inside the test."""
+    return TestClient(client.app, raise_server_exceptions=False)
+
+
+@pytest.mark.parametrize("value", [v for _, v in BOOLS + UNPARSEABLE],
+                         ids=[i for i, _ in BOOLS + UNPARSEABLE])
+def test_mandates_execute_rejects_bool_and_unparseable_amount_cleanly(gw, value):
+    gw.client = _raw_ok(gw.client)
+    out = gw.mandate_execute(payment(value))   # asserts HTTP 200 (no unhandled 500)
+    assert out["status"] == "BLOCKED" and out["decision"] == "DENY", out
+    assert gw.calls == []
+
+
+@pytest.mark.parametrize("value", [True, False], ids=["true", "false"])
+def test_mandates_execute_rejects_bool_generic_value(gw, value):
+    m = gw.mandate(action="discount_offer", resource_scope=(),
+                   constraints={"max_requested_discount_percent": 20})
+    out = gw.mandate_execute({"requested_discount_percent": value}, action="discount_offer",
+                             resource=None, mandate=m)
+    assert out["status"] == "BLOCKED", out
+    assert gw.calls == []
+
+
+@pytest.mark.parametrize("value", [True, "abc", None], ids=["true", "abc", "null"])
+def test_approval_execute_rejects_bool_and_unparseable_amount(gw, value):
+    gw.client = _raw_ok(gw.client)
+    out = gw.approval_execute(payment(value))
+    assert out["status"] == "BLOCKED", out
+    assert gw.calls == []
+
+
+@pytest.mark.parametrize("value", [True, "abc", None, [1]], ids=["true", "abc", "null", "list"])
+def test_consensus_execute_rejects_bool_and_unparseable_amount_cleanly(gw, value):
+    gw.client = _raw_ok(gw.client)
+    out = gw.consensus_execute(payment(value))
+    assert out["status"] == "BLOCKED", out
+    assert gw.calls == []
+
+
+@pytest.mark.parametrize("value", [True, False, "abc", None], ids=["true", "false", "abc", "null"])
+def test_delegation_rejects_bool_and_unparseable_amount_without_raising(value):
+    s = DelegationStack()
+    out = s.execute(value)          # must return an outcome, never raise
+    assert out.status == "BLOCKED", out
+    assert s.calls == []
+
+
+@pytest.mark.parametrize("value", [True, False], ids=["true", "false"])
+def test_egress_rejects_bool_body_amount(egress, value):
+    out = _egress_run(egress, value, "e-bool")
+    assert out.get("executed") is not True and out.get("outcome") not in ("ALLOW", "CONSTRAIN"), out
+    assert egress.seen == []
+    assert "pre_actuation" not in _audit_kinds(egress.settings.audit_log_path)
+
+
+@pytest.mark.parametrize("value", [True, False], ids=["true", "false"])
+def test_gateway_evaluate_issues_no_token_for_bool_amount(gateway_app, value):
+    out = _gw_evaluate(gateway_app, "send_payment", {"amount": value})
+    assert out["decision"] not in ("ALLOW", "CONSTRAIN"), out
+    assert out["decision_token"] is None
+
+
+@pytest.mark.parametrize("value", [v for _, v in BOOLS + UNPARSEABLE],
+                         ids=[i for i, _ in BOOLS + UNPARSEABLE])
+def test_main_evaluate_fallback_rejects_bool_and_unparseable_cleanly(main_app, value):
+    main, client = main_app
+    r = post_json(_raw_ok(client), "/evaluate", {"x-api-key": main.settings.api_key}, {
+        "session_id": f"u-{value!r}", "intent": "send_payment", "args": {"amount": value}})
+    assert r.status_code == 200, r.text
+    assert r.json()["decision"] == "DENY" and r.json().get("decision_token") is None
+
+
+def test_main_evaluate_fallback_rejects_missing_amount(main_app):
+    main, client = main_app
+    r = post_json(client, "/evaluate", {"x-api-key": main.settings.api_key}, {
+        "session_id": "missing", "intent": "send_payment", "args": {}})
+    assert r.json()["decision"] == "DENY" and r.json().get("decision_token") is None
+
+
+@pytest.mark.parametrize("amount,executed", [("1_000", 1000.0), (" 100 ", 100.0), ("4999.99", 4999.99)],
+                         ids=["underscore", "whitespace", "decimal"])
+def test_parseable_numeric_strings_still_execute_their_exact_value(gw, amount, executed):
+    """Pre-existing behaviour preserved: a numeric string that parses is the
+    exact amount authorized AND executed (canonical payload binds it)."""
+    out = gw.mandate_execute(payment(amount))
+    assert out["status"] == "EXECUTED", out
+    assert [p["amount"] for _, p in gw.calls] == [executed]
+
+
+# ===========================================================================
+# main.py OPA path (MCC_USE_OPA=true) -- against a WORST-CASE allow-all OPA
+# ===========================================================================
+#
+# No OPA binary is executed in this test suite (none is available in CI
+# either). Instead the real OPAAdapter talks over real HTTP to a stub OPA
+# server that ALLOWs everything -- the worst policy possible. The property
+# under test is engine-independent: an invalid amount must never reach the
+# policy engine and must never yield an ALLOW token, whatever the policy says.
+# The canonical Rego itself is checked statically below.
+
+ALL_INVALID = [v for _, v in INVALID_AMOUNTS + BOOLS + UNPARSEABLE]
+ALL_INVALID_IDS = [i for i, _ in INVALID_AMOUNTS + BOOLS + UNPARSEABLE]
+
+
+@pytest.fixture
+def opa_main(monkeypatch, tmp_path):
+    from examples._demo_server import DemoServer, free_port
+    import main
+    seen = []
+    stub = FastAPI()
+
+    @stub.post("/v1/data/{path:path}")
+    async def data(path: str, body: dict):
+        seen.append(body["input"])
+        return {"result": {"decision": "ALLOW", "reason": "stub: allow-all", "constraints": {},
+                           "policy_ref": "stub"}}
+
+    port = free_port()
+    server = DemoServer(stub, port).start()
+    monkeypatch.setattr(main.settings, "use_opa", True)
+    monkeypatch.setattr(main.settings, "opa_url", f"http://127.0.0.1:{port}")
+    monkeypatch.setattr(main.settings, "audit_log_path", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setattr(main, "mcc", main.MCC())
+    assert main.mcc.governance is None
+    try:
+        yield main, TestClient(main.app, raise_server_exceptions=False), seen
+    finally:
+        server.stop()
+
+
+@pytest.mark.parametrize("amount", ALL_INVALID, ids=ALL_INVALID_IDS)
+def test_main_opa_path_invalid_amount_never_reaches_opa_and_gets_no_token(opa_main, amount):
+    main, client, seen = opa_main
+    r = post_json(client, "/evaluate", {"x-api-key": main.settings.api_key}, {
+        "session_id": f"o-{amount!r}", "intent": "send_payment", "args": {"amount": amount}})
+    assert r.status_code == 200, r.text
+    assert r.json()["decision"] == "DENY" and r.json().get("decision_token") is None, r.json()
+    assert seen == []        # rejected before the policy engine was consulted
+
+
+def test_main_opa_path_missing_amount_never_reaches_opa(opa_main):
+    main, client, seen = opa_main
+    r = post_json(client, "/evaluate", {"x-api-key": main.settings.api_key}, {
+        "session_id": "o-missing", "intent": "send_payment", "args": {}})
+    assert r.json()["decision"] == "DENY" and r.json().get("decision_token") is None
+    assert seen == []
+
+
+@pytest.mark.parametrize("amount", [0, 100, 5000], ids=["zero", "typical", "exact-ceiling"])
+def test_main_opa_path_valid_amount_reaches_opa_exactly_once(opa_main, amount):
+    main, client, seen = opa_main
+    r = post_json(client, "/evaluate", {"x-api-key": main.settings.api_key}, {
+        "session_id": f"ok-{amount}", "intent": "send_payment", "args": {"amount": amount}})
+    assert r.json()["decision"] == "ALLOW" and r.json().get("decision_token") is not None
+    assert [i["args"]["amount"] for i in seen] == [amount]
+
+
+def test_main_opa_adapter_unserializable_input_is_a_denial_not_a_500(opa_main):
+    """NaN anywhere in args (not just ``amount``, e.g. on an intent with no
+    payment validation) is not JSON-serializable for OPA. It used to escape
+    the adapter as an unhandled ValueError (HTTP 500); it is now a DENY."""
+    main, client, seen = opa_main
+    r = post_json(client, "/evaluate", {"x-api-key": main.settings.api_key}, {
+        "session_id": "o-unser", "intent": "delete_user", "args": {"user_id": "u1", "score": NAN}})
+    assert r.status_code == 200, r.text
+    assert r.json()["decision"] == "DENY" and r.json().get("decision_token") is None
+    assert seen == []
+
+
+def test_canonical_rego_requires_a_non_negative_json_number_for_payments():
+    """Static guard (no OPA binary in this environment or CI): both executable
+    payment rules in the canonical policy must require ``is_number(amount)``,
+    and ALLOW must require ``amount >= 0``; DENY stays the default."""
+    import re
+    src = (Path(__file__).resolve().parents[1] / "policies" / "mcc.rego").read_text()
+    assert re.search(r'default decision := \{\s*"decision": "DENY"', src)
+    rules = re.findall(r'decision := \{\s*"decision": "(ALLOW|ESCALATE)".*?"policy_ref": '
+                       r'"mcc\.rego/send_payment/\w+"\s*\} if \{(.*?)\n\}', src, re.S)
+    by_verdict = {v: body for v, body in rules}
+    assert set(by_verdict) == {"ALLOW", "ESCALATE"}, by_verdict
+    for verdict, body in by_verdict.items():
+        assert "is_number(amount)" in body, verdict
+    assert "amount >= 0" in by_verdict["ALLOW"]
+
+
+# ===========================================================================
+# main.py governance mode (challenge -> N-of-M quorum -> gate -> coordinator)
+# ===========================================================================
+
+@pytest.fixture
+def gov_main(monkeypatch, tmp_path):
+    import main
+    evals = [SigningKey.generate(f"eval-{i}") for i in range(3)]
+    trust = {"issuers": [{"issuer_id": f"e{i}", "enabled": True,
+                          "keys": [{"kid": e.kid, "public_key_b64": e.public_key_b64(), "not_after": None}]}
+                         for i, e in enumerate(evals)]}
+    tf = tmp_path / "evaluators.json"
+    tf.write_text(json.dumps(trust), encoding="utf-8")
+    monkeypatch.setattr(main.settings, "use_opa", False)
+    monkeypatch.setattr(main.settings, "consensus_trust_config", str(tf))
+    monkeypatch.setattr(main.settings, "consensus_threshold", 3)
+    monkeypatch.setattr(main.settings, "challenge_ttl_seconds", 120)
+    monkeypatch.setattr(main.settings, "audit_log_path", str(tmp_path / "audit.jsonl"))
+    mcc = main.MCC()
+    assert mcc.governance is not None
+    enforced = []
+    real_enforce = mcc.governance.coordinator.enforce
+
+    async def spy_enforce(**kw):
+        enforced.append(kw.get("payload"))     # reaching enforce == reaching actuation
+        return await real_enforce(**kw)
+
+    mcc.governance.coordinator.enforce = spy_enforce
+    monkeypatch.setattr(main, "mcc", mcc)
+    return main, TestClient(main.app, raise_server_exceptions=False), evals, enforced
+
+
+def _gov_decide(gov_main, amount, sid):
+    main, client, evals, _ = gov_main
+    H = {"x-api-key": main.settings.api_key}
+    args = {"amount": amount}
+    ch = post_json(client, "/evaluate/challenge", H, {"session_id": sid, "intent": "send_payment",
+                                                      "args": args, "resource": "res-1"})
+    assert ch.status_code == 200, ch.text
+    ch = ch.json()
+    votes = [issue_vote(e, evaluator_id=e.kid, verdict="ALLOW", action=ch["action"], payload=args,
+                        actor=ch["actor"], resource=ch["resource"], policy_hash=ch["policy_hash"],
+                        nonce=ch["nonce"], not_before=0, not_after=FUTURE) for e in evals]
+    r = post_json(client, "/evaluate", H, {"session_id": sid, "intent": "send_payment", "args": args,
+                                           "resource": "res-1", "challenge_id": ch["challenge_id"],
+                                           "votes": votes, "idempotency_key": f"idem-{sid}"})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+@pytest.mark.parametrize("amount", ALL_INVALID, ids=ALL_INVALID_IDS)
+def test_main_governance_mode_invalid_amount_full_quorum_still_no_token(gov_main, amount):
+    """Even with a valid 3-of-3 quorum signed over the invalid payload, no
+    ALLOW token is issued and the coordinator (actuation) is never reached."""
+    out = _gov_decide(gov_main, amount, f"g-{ALL_INVALID.index(amount)}")
+    assert out["decision"] == "DENY" and out.get("decision_token") is None, out
+    assert gov_main[3] == []
+
+
+@pytest.mark.parametrize("amount", [0, 100, 5000], ids=["zero", "typical", "exact-ceiling"])
+def test_main_governance_mode_valid_amount_actuates_exactly_once(gov_main, amount):
+    out = _gov_decide(gov_main, amount, f"v-{amount}")
+    assert out["decision"] == "ALLOW" and out.get("decision_token") is not None, out
+    assert gov_main[3] == [{"amount": amount}]

@@ -296,6 +296,13 @@ class OPAAdapter:
             OPA_ERRORS.labels(reason="invalid_json").inc()
             logger.warning("OPA invalid JSON; fail closed | trace=%s", trace_id)
             return self._deny("OPA invalid JSON; fail closed")
+        except (TypeError, ValueError):
+            # R2: an input OPA cannot even receive (e.g. NaN/Infinity anywhere
+            # in ``args`` is not JSON-serializable) used to escape as an
+            # unhandled 500. It is a denial, never an error path.
+            OPA_ERRORS.labels(reason="unserializable_input").inc()
+            logger.warning("OPA input not serializable; fail closed | trace=%s", trace_id)
+            return self._deny("OPA input not serializable; fail closed")
 
         result = data.get("result")
         if not isinstance(result, dict):
@@ -326,6 +333,32 @@ class OPAAdapter:
 
 
 # ---------- Local Fallback Policy ----------
+
+def _payment_amount_violation(args: Mapping[str, Any]) -> Optional[str]:
+    """R2: engine-independent validation of a ``send_payment`` amount, run
+    BEFORE any policy engine (OPA or the local fallback) is consulted, so no
+    policy -- however it is written -- can turn a malformed amount into an
+    ALLOW token. Returns a reason when the amount is unusable, else ``None``.
+
+    A usable amount is present, is an ``int``/``float`` or a string that
+    parses to one, is not a bool (``True`` would otherwise read as ``1``),
+    and is finite and non-negative. Parseable numeric strings stay accepted
+    (pre-existing behaviour); what a policy then does with them is its own
+    decision (the canonical Rego requires a JSON number).
+    """
+    if "amount" not in args:
+        return "amount is required"
+    value = args["amount"]
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return f"amount must be a number, got {type(value).__name__}"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "amount is not a parseable number"
+    if not math.isfinite(number) or number < 0:
+        return "amount must be a finite, non-negative number"
+    return None
+
 
 class LocalFallbackPolicy:
     """
@@ -704,7 +737,18 @@ class MCC:
             if cached is not None:
                 return cached
 
-        if settings.use_opa:
+        violation = (_payment_amount_violation(req.args)
+                     if req.intent == "send_payment" else None)
+        if violation is not None:
+            # R2: rejected before ANY policy engine sees it; still audited below.
+            policy_decision = PolicyDecision(
+                decision=Decision.DENY,
+                reason=f"input validation: {violation}; fail-closed",
+                constraints={},
+                policy_ref="input-validation",
+            )
+            policy_engine = "input-validation"
+        elif settings.use_opa:
             policy_decision = await self.opa.evaluate(
                 tenant=tenant,
                 trace_id=trace_id,

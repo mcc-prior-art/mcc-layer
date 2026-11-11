@@ -159,11 +159,14 @@ class AuthorityDecision:
 
 
 def _finite_number(value: Any) -> bool:
-    """R2: a usable bound/value -- a real ``int``/``float`` that is finite.
+    """R2: a usable bound/value -- a real ``int``/``float`` (not a bool) that is finite.
     NaN, +inf and -inf are never usable: every ordered comparison with NaN is
     False (so ``nan > bound`` would read as "within the cap"), and an infinite
     value can never be the exact authorized quantity."""
-    return isinstance(value, (int, float)) and math.isfinite(value)
+    # bool is an int subclass: ``True`` would otherwise be checked as ``1``
+    # while the actuator receives the boolean itself (type confusion).
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value))
 
 
 def _implicit_zero_floor(constraints: Dict[str, Any], field_name: str, bound: Any) -> bool:

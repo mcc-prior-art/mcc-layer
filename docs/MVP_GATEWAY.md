@@ -171,6 +171,19 @@ miss, so it doubles as the CI smoke test (`smoke` job in
   would otherwise accept. Delegation and the `main.py` local-fallback policy
   apply the same finite / non-negative rule. Valid boundaries are unchanged:
   `0`, the exact cap, and a finite over-cap value still CONSTRAINs to the cap.
+  A **boolean is not a number**. Before the fix, `true`/`false` were checked
+  as `1`/`0` while the actuator received the boolean itself. A payment amount
+  that is a bool, `null`, a list or object, or an unparseable string is now a
+  clean `PROFILE_ERROR` DENY instead of an unhandled exception. Parseable
+  numeric strings such as `"4999.99"` and `"1_000"` still work, and the parsed
+  value is what executes. `main.py` validates a `send_payment` amount (present,
+  numeric, finite, non-negative, not a bool) **before** OPA or the local
+  fallback is consulted, so no policy engine can turn a malformed amount into
+  an ALLOW token. NaN or Infinity anywhere in `args` is no longer an HTTP 500
+  from the OPA adapter: it is a DENY. The canonical `policies/mcc.rego`
+  ALLOW/ESCALATE payment rules require `is_number(amount)`, and ALLOW also
+  requires `amount >= 0`. That Rego change is checked statically here: no OPA
+  binary runs in this repo's test suite or CI.
 - **Replay protection backend is selectable.** The proxy's `ExecutionGate`
   picks its nonce registry from the environment (`nonce_registry_from_env`):
   `MCC_NONCE_BACKEND=memory` (default) uses the single-process
