@@ -41,12 +41,17 @@ def receipt_verifying_upstream(base: str, *, timeout: float = 10.0) -> Upstream:
     receipt before allowing EXECUTED."""
     import httpx
 
+    from mcc_core.action_name import action_endpoint_url
+
     base = base.rstrip("/")
 
     async def upstream(action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        # R4: the action is one validated path segment; ActionNameError is
+        # raised BEFORE any connection -- never stripped or encoded.
+        url = action_endpoint_url(base, action)
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(f"{base}/{action}", json=payload)
+                resp = await client.post(url, json=payload)
         except httpx.HTTPError as exc:  # transport failure -> not executed
             raise UpstreamReceiptError(
                 f"notification transport failed: {type(exc).__name__}") from exc

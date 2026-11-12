@@ -465,8 +465,14 @@ class ApprovalService:
         # R3: the (agent-supplied) constraints become the approval mandate's
         # bounds -- reject an unenforceable set up front (ConstraintError, a
         # ValueError), before any record exists.
+        from .action_name import validate_action_name
         from .authority import validate_constraints
         validate_constraints(constraints)
+        # R4: the action of an approval becomes the approval mandate's only
+        # action scope and, at execution, an outbound URL path segment --
+        # reject a name outside the action-name contract (ActionNameError, a
+        # ValueError) before any record exists.
+        validate_action_name(action)
         now = await self._resolve_now(now)
         ttl = ttl_seconds or self.default_ttl
         request_id = f"req-{uuid.uuid4().hex}"

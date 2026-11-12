@@ -50,6 +50,30 @@ audit-before-actuation) → upstream. Any failure → `status: "BLOCKED"` (or
 `"EXECUTION_FAILED"` if the executor raised after authorization) and the
 upstream is never reached.
 
+**Action names (R4 remediation).** The shipped governed upstreams POST to
+`{base}/{action}`, so `action` must follow the action-name contract in
+`mcc_core.action_name`:
+- one or more dot-separated segments of ASCII `[A-Za-z0-9_-]`;
+- the name starts with a letter or digit;
+- at most 128 characters.
+
+For example: `send_payment`, `http.egress`, `github.create_issue`.
+
+Anything else is refused on every execute route (`/mandates/execute`,
+`/approvals/{id}/execute`, `/consensus/execute`, and the delegation service)
+with `status: "BLOCKED"`, `decision: "DENY"`, `reason: "INVALID_ACTION_NAME: …"`.
+That includes:
+- `/`, `\`, `?`, `#`, `%`, `;`, `:`, `@`;
+- whitespace, control characters and non-ASCII;
+- an empty name, `.` / `..`, and a leading, trailing or doubled dot.
+
+The refusal happens before the authority, the token, any idempotency or
+velocity reservation, the audit record, and the upstream. The name is never
+encoded or stripped into a different action. Each URL-building upstream also
+refuses such a name before opening a connection. Before R4, a wildcard scope
+such as `pay_*` authorized `pay_x/../../admin/wipe`, which the HTTP client
+sent as `POST /admin/wipe`.
+
 ### `GET /mandates/{mandate_id}/revocation` (agent)
 → `{ "mandate_id": "mdt-…", "status": "ACTIVE" | "REVOKED" | "UNAVAILABLE" }`
 
@@ -79,6 +103,9 @@ Operator workflow:
    Optional `constraints` must follow the constraint contract
    (`docs/SIGNED_MANDATES.md`); an unsupported or malformed set is rejected
    with **HTTP 422** `INVALID_CONSTRAINTS` and no request is created (R3).
+   An `action` outside the action-name contract (see `POST /mandates/execute`)
+   is rejected with **HTTP 422** `INVALID_ACTION_NAME`, again with no request
+   created (R4).
 2. An operator reviews and `approve`s (returns a scoped, signed, single-use
    approval mandate) or `deny`s (terminal). **Approval does not execute.**
 3. The agent calls `/approvals/{id}/execute` with the mandate; the coordinator
@@ -152,6 +179,7 @@ Backends are env-selected and fail-closed with no silent fallback:
 | forged mandate / approval | Ed25519 signature over all claims; untrusted kid → `UNKNOWN_KID` |
 | mandate / approval substitution | `mandate_id` / `approval_id` bound into the token; consume binds action_hash/transaction/payload |
 | actor / resource / action substitution | mandate subject & scopes; gate binding; payload_hash |
+| action name altering the upstream URL (traversal, query/fragment, CR/LF, encoded or absolute forms) | action-name contract enforced before authority/token/reservation and again at each URL-building upstream → `INVALID_ACTION_NAME`, zero outbound requests (R4) |
 | transaction substitution | `transaction_id` in token + approval record |
 | policy drift | mandate `policy_hash` binding → `POLICY_BINDING_MISMATCH` |
 | replay / double-consume | nonce (token) + idempotency (operation) + single-use approval (atomic `SET NX`) |

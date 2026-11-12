@@ -41,6 +41,7 @@ from mcc_core import (
     hash_action,
     hash_payload,
 )
+from mcc_core.action_name import action_name_error, validate_action_name
 from mcc_core.trusted_time import LocalTimeSource, TimeTrustError, TrustedTimeSource
 
 from .pre_execution_control import PreExecutionControl
@@ -92,6 +93,19 @@ class ExecOutcome:
     decision: Optional[str] = None
     audit_ref: Optional[str] = None
     execution: Any = None
+
+
+def _invalid_action(action: Any) -> Optional[ExecOutcome]:
+    """R4: an action that violates the action-name contract
+    (``mcc_core.action_name``) is refused before anything else: no authority
+    evaluation, no token, no idempotency reservation, no actuator call. The
+    governed upstreams place the action into the outbound URL, so a name that
+    could change the request target never becomes executable authority. The
+    name is refused, never rewritten."""
+    error = action_name_error(action)
+    if error is None:
+        return None
+    return ExecOutcome("BLOCKED", f"INVALID_ACTION_NAME: {error}", decision="DENY")
 
 
 class GovernanceService:
@@ -248,6 +262,9 @@ class GovernanceService:
         extra_auth_claims: Optional[Dict[str, Any]] = None,
         attestation: Optional[Dict[str, Any]] = None,
     ) -> ExecOutcome:
+        rejected = _invalid_action(action)
+        if rejected is not None:
+            return rejected
         try:
             now = await self._now()
         except TimeTrustError as exc:
@@ -418,6 +435,9 @@ class GovernanceService:
         payment action profile has no recipient/amount/currency to check
         and is out of this module's scope.
         """
+        rejected = _invalid_action(action)
+        if rejected is not None:
+            return rejected
         if self.delegation_verifier is None:
             return ExecOutcome(
                 "BLOCKED", "delegation authority not configured; fail-closed", decision="DENY",
@@ -533,6 +553,9 @@ class GovernanceService:
         ttl_seconds: Optional[int] = None, tenant_id: Optional[str] = None,
         payload: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        # R4: an approval for an unusable action name is refused up front
+        # (ActionNameError, a ValueError) -- it could never execute.
+        validate_action_name(action)
         request_id = await self.approvals.request(
             actor=actor, action=action, resource=resource, transaction_id=transaction_id,
             policy_hash=policy_hash, payload_hash=payload_hash, constraints=constraints,
@@ -653,6 +676,9 @@ class GovernanceService:
         authority for the nonce: it is resolved and re-bound here (unknown or
         expired -> fail closed), its nonce is used to verify the votes and issue
         the token, and the coordinator consumes it single-use before actuation."""
+        rejected = _invalid_action(action)
+        if rejected is not None:
+            return rejected
         try:
             now = await self._now()
         except TimeTrustError as exc:
@@ -729,6 +755,13 @@ class GovernanceService:
     async def _run(self, token, action, forward_context, actor, resource,
                    transaction_id, headers, tenant_id=None, consensus_votes=None,
                    evidence: Optional[Dict[str, Any]] = None) -> ExecOutcome:
+        # R4 defense in depth: every execute path converges here, BEFORE the
+        # coordinator (so before any idempotency reservation, velocity
+        # reservation, audit pre_actuation record or actuator call).
+        rejected = _invalid_action(action)
+        if rejected is not None:
+            return rejected
+
         async def executor():
             if self.upstream is None:
                 raise RuntimeError("no upstream configured")

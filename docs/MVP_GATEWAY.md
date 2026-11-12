@@ -212,6 +212,20 @@ miss, so it doubles as the CI smoke test (`smoke` job in
   ALLOW/ESCALATE payment rules require `is_number(amount)`, and ALLOW also
   requires `amount >= 0`. That Rego change is checked statically here: no OPA
   binary runs in this repo's test suite or CI.
+- **Action names are identifiers, not URL fragments (R4 remediation).** The
+  governed upstreams POST to `{base}/{action}`. An action must therefore be
+  dot-separated ASCII `[A-Za-z0-9_-]` segments, at most 128 characters
+  (`mcc_core.action_name`). Anything else is `INVALID_ACTION_NAME` (DENY),
+  refused before authority evaluation and again inside each URL-building
+  upstream, with zero outbound requests.
+
+  This is not encoding: a Starlette receiver decodes `%2F` back into `/`. The
+  egress proxy (`/v1/http/execute`) is unaffected: its action is the fixed
+  `http.egress`, and its URL is the governed, SSRF-checked object itself. The
+  MVP interceptor (§4) maps the request path *to* an action through
+  operator-configured `Route` globs; it never builds a URL from an action.
+  Note that an `fnmatch` `*` in such a glob also matches `/`. That is tracked
+  separately and not changed by R4.
 - **Replay protection backend is selectable.** The proxy's `ExecutionGate`
   picks its nonce registry from the environment (`nonce_registry_from_env`):
   `MCC_NONCE_BACKEND=memory` (default) uses the single-process

@@ -73,7 +73,13 @@ class OutboundHTTPExecutor:
         if not self._is_authorized(authorization, action):
             raise UnauthorizedExecution(
                 "outbound executor invoked without a verified MCC decision token; refused")
-        url = f"{self.base_url}/{action.lstrip('/')}"
+        from mcc_core.action_name import action_endpoint_url
+
+        # R4: the action is one validated path segment. ActionNameError is
+        # raised before any connection. A leading "/" used to be silently
+        # stripped (sanitizing the signed action into a different string);
+        # it is now rejected.
+        url = action_endpoint_url(self.base_url, action)
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.post(
                 url, json=authorized_payload,
