@@ -202,7 +202,11 @@ def test_concurrent_execute_single_winner():
         return await asyncio.gather(*[
             svc.execute_with_approval(mandate=mandate, actor="agent/x", action="generic_op",
                                       resource="res-1", context=CTX, transaction_id="txn-1",
-                                      idempotency_key=f"op-{i}", tenant_id="tenant-1")
+                                      # The approval was created over HTTP under the
+                                      # mount's default tenant "pilot"; V05 binds
+                                      # consumption to that tenant (AX-approved setup
+                                      # change; assertions unchanged).
+                                      idempotency_key=f"op-{i}", tenant_id="pilot")
             for i in range(8)])
 
     outcomes = asyncio.run(race())
