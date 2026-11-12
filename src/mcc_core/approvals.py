@@ -462,6 +462,11 @@ class ApprovalService:
         # undermine every check built on top, so this does not silently
         # fall back; TimeTrustError propagates (mirrors the existing
         # RuntimeError this method already raises on registry failure).
+        # R3: the (agent-supplied) constraints become the approval mandate's
+        # bounds -- reject an unenforceable set up front (ConstraintError, a
+        # ValueError), before any record exists.
+        from .authority import validate_constraints
+        validate_constraints(constraints)
         now = await self._resolve_now(now)
         ttl = ttl_seconds or self.default_ttl
         request_id = f"req-{uuid.uuid4().hex}"
@@ -571,6 +576,12 @@ class ApprovalService:
             )
             if decision.verdict != "ALLOW":
                 return None
+        # R3: a record stored before constraint validation existed must not be
+        # approvable into a signed mandate with unenforceable bounds. Checked
+        # BEFORE the PENDING -> APPROVED transition, so it is left un-approved.
+        from .authority import constraint_errors
+        if constraint_errors(rec.constraints):
+            return None
         if not await self.registry.set_state(
             request_id, expect=[ApprovalState.PENDING], to=ApprovalState.APPROVED, now=now,
         ):

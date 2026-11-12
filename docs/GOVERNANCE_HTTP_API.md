@@ -76,6 +76,9 @@ Operator workflow:
 
 1. The agent's proposal evaluates to `ESCALATE` → `POST /approvals` with the
    operation's `actor/action/resource/transaction_id/policy_hash/payload_hash`.
+   Optional `constraints` must follow the constraint contract
+   (`docs/SIGNED_MANDATES.md`); an unsupported or malformed set is rejected
+   with **HTTP 422** `INVALID_CONSTRAINTS` and no request is created (R3).
 2. An operator reviews and `approve`s (returns a scoped, signed, single-use
    approval mandate) or `deny`s (terminal). **Approval does not execute.**
 3. The agent calls `/approvals/{id}/execute` with the mandate; the coordinator

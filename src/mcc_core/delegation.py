@@ -163,6 +163,12 @@ def issue_delegation(
         "policy_hash": policy_hash,
         "consent_ref": consent_ref,
     }
+    if extra and "constraints" in extra:
+        # R3: delegations bind their limits through fixed, verified fields
+        # (max_amount, scopes, currency, ...); a generic constraint map would
+        # be signed but never enforced. Refuse rather than ignore it.
+        raise ValueError("delegations do not support a generic 'constraints' claim; "
+                         "express limits through the delegation's own fields")
     if extra:
         for key in extra:
             if key in claims or key in ("kid", "sig"):
@@ -245,6 +251,14 @@ class DelegationVerifier:
         for required in REQUIRED_FIELDS:
             if required not in delegation:
                 return DelegationResult(False, f"MALFORMED_DELEGATION: missing {required}")
+
+        if "constraints" in delegation:
+            # R3: a signed restriction this verifier does not enforce must not
+            # be silently ignored (it may have been signed by an issuer that
+            # bypassed issue_delegation's own refusal).
+            return DelegationResult(
+                False, "UNSUPPORTED_DELEGATION_CLAIM: 'constraints' is not enforced for delegations"
+            )
 
         if now is not None:
             ts = int(now)

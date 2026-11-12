@@ -159,6 +159,19 @@ miss, so it doubles as the CI smoke test (`smoke` job in
   invent, so it fails closed to **DENY** rather than forwarding something
   non-conforming. Richer, action-specific rewriting (e.g. currency, recipient
   allowlists) is future work.
+- **Unsupported constraint keys fail closed (R3 remediation).** Only
+  `max_<field>`, `min_<field>` and `allowed_<field>` exist, with exact
+  lowercase operators, a dotted `[A-Za-z0-9_-]` field path and typed bounds
+  (see `docs/SIGNED_MANDATES.md`). Any other key, or a malformed structure,
+  makes the whole constraint set invalid:
+  - signed and approval-minted mandates: `MALFORMED_MANDATE_CONSTRAINTS`
+    (DENY);
+  - config policy (`AuthorityModel`): DENY regardless of the policy's
+    `on_violation`;
+  - loading such a policy (`MandateRegistry`): refused at startup;
+  - `POST /approvals`: HTTP 422.
+
+  Before R3, such a key was silently ignored.
 - **Numeric constraints require finite numbers (R2 remediation).** A
   `max_`/`min_` value or bound that is NaN, `+inf` or `-inf` is a violation.
   It is never clamped, so it fails closed to **DENY**. Every ordered

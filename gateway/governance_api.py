@@ -265,6 +265,11 @@ def mount_approval_routes(app: FastAPI, service: GovernanceService, *, api_key: 
 
     @app.post("/approvals", response_model=ApprovalCreateResponse)
     async def create_approval(req: ApprovalCreateRequest, tenant: str = Depends(require_agent)):
+        from mcc_core.authority import constraint_errors
+        bad = constraint_errors(req.constraints)
+        if bad:
+            # R3: a controlled rejection, never an HTTP 500 or a silent skip.
+            raise HTTPException(status_code=422, detail="INVALID_CONSTRAINTS: " + "; ".join(bad))
         out = await service.create_approval(
             actor=req.actor, action=req.action, resource=req.resource,
             transaction_id=req.transaction_id, policy_hash=req.policy_hash,
