@@ -17,6 +17,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from .authority import _representable_finite
+
 
 @dataclass(frozen=True)
 class VelocityDescriptor:
@@ -96,6 +98,10 @@ class PaymentProfile(ActionProfile):
             )
         try:
             payload["amount"] = float(raw_amount)
+        except OverflowError:
+            # An int beyond the double range (e.g. a 10**400 JSON literal) is
+            # an unsupported amount: a clean ProfileError, never an exception.
+            raise ProfileError("payment amount is outside the supported numeric range")
         except (TypeError, ValueError):
             raise ProfileError(f"payment amount {raw_amount!r} is not a parseable number")
         # R2: a payment amount is a finite, non-negative quantity. float() turns
@@ -168,6 +174,7 @@ class InfraProfile(ActionProfile):
                 f"infrastructure profile requires fields {self.required_fields}; missing {missing}"
             )
         payload["environment"] = str(payload["environment"]).lower()
+        _reject_oversized_int(payload, "replicas", self.name)
         return payload
 
     def auth_claims(self, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -222,6 +229,7 @@ class RoboticsProfile(ActionProfile):
                 f"robotics profile requires fields {self.required_fields}; missing {missing}"
             )
         payload["zone"] = str(payload["zone"]).lower()
+        _reject_oversized_int(payload, "force", self.name)
         if "force" in payload and isinstance(payload["force"], (int, float)):
             payload["force"] = float(payload["force"])
         return payload
@@ -254,6 +262,16 @@ class RoboticsProfile(ActionProfile):
 
 class ProfileError(Exception):
     """Raised when a context does not satisfy its action profile."""
+
+
+def _reject_oversized_int(payload: Dict[str, Any], field_name: str, profile: str) -> None:
+    """An int beyond the double range (e.g. a ``10**400`` JSON literal) in a
+    numeric field this profile converts with ``float()`` is unsupported: a
+    clean :class:`ProfileError` (DENY) here, at canonicalization, instead of an
+    ``OverflowError`` from ``float()`` later (HTTP 500)."""
+    value = payload.get(field_name)
+    if isinstance(value, int) and not isinstance(value, bool) and not _representable_finite(value):
+        raise ProfileError(f"{profile} field {field_name!r} is outside the supported numeric range")
 
 
 class ProfileRegistry:

@@ -172,6 +172,21 @@ miss, so it doubles as the CI smoke test (`smoke` job in
   - `POST /approvals`: HTTP 422.
 
   Before R3, such a key was silently ignored.
+- **Oversized numbers are unsupported, not exceptions (R3 follow-up).** An
+  integer outside the IEEE-754 double range, such as a 401-digit JSON
+  literal, cannot be compared, clamped or hashed in the double domain the
+  pipeline uses. Such an integer is never authorized or clamped. Where it
+  appears:
+  - in a constraint bound, it makes the set invalid, as above;
+  - as a constrained value, it is a violation and is never clamped;
+  - as a payment `amount`, robotics `force` or infrastructure `replicas`, it
+    is a `PROFILE_ERROR` DENY;
+  - in `main.py`, it is an input-validation DENY, before any policy engine
+    runs;
+  - as a delegation ceiling or amount, it is a DENY.
+
+  Before this fix, `math.isfinite()` and `float()` raised `OverflowError`:
+  HTTP 500 on `POST /approvals` and `/mandates/execute`, with no actuation.
 - **Numeric constraints require finite numbers (R2 remediation).** A
   `max_`/`min_` value or bound that is NaN, `+inf` or `-inf` is a violation.
   It is never clamped, so it fails closed to **DENY**. Every ordered

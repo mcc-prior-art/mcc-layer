@@ -217,10 +217,41 @@ def _parse_constraint_key(key: Any):
     return None
 
 
+def _representable_finite(value: Any) -> bool:
+    """Total finiteness check for an ``int``/``float``: never raises.
+
+    ``math.isfinite`` converts an ``int`` to a double and raises
+    ``OverflowError`` for one beyond the double range (e.g. ``10**400``, which
+    JSON parsing yields from a big integer literal). Such a number cannot be
+    compared, clamped or hashed in the double domain the rest of the pipeline
+    uses, so it is UNSUPPORTED: reported as not finite. Every caller already
+    treats "not finite" as a rejection (invalid bound, non-clampable value,
+    violation), so an oversized number is never authorized, clamped into
+    compliance or silently dropped -- and never an unhandled exception."""
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _show(value: Any) -> str:
+    """``repr`` for a validation message, bounded and total. An oversized int
+    is summarized rather than printed: its repr can be thousands of digits,
+    and beyond Python's int-to-str digit limit ``repr`` itself raises
+    ``ValueError``."""
+    if isinstance(value, int) and not isinstance(value, bool) and not _representable_finite(value):
+        return f"<{'negative ' if value < 0 else ''}integer of {value.bit_length()} bits, outside the supported numeric range>"
+    try:
+        text = repr(value)
+    except Exception:  # noqa: BLE001 -- a message must never raise
+        return f"<unprintable {type(value).__name__}>"
+    return text if len(text) <= 200 else text[:200] + "..."
+
+
 def _json_scalar(value: Any) -> bool:
     if value is None or isinstance(value, (str, bool)):
         return True
-    return isinstance(value, (int, float)) and math.isfinite(value)
+    return isinstance(value, (int, float)) and _representable_finite(value)
 
 
 def constraint_errors(constraints: Any) -> List[str]:
@@ -245,7 +276,7 @@ def constraint_errors(constraints: Any) -> List[str]:
         op, field_path = parsed
         if op in ("max_", "min_"):
             if not _finite_number(bound):
-                errors.append(f"{key!r} bound {bound!r} must be a finite number")
+                errors.append(f"{key!r} bound {_show(bound)} must be a finite number")
                 continue
             numeric.setdefault(field_path, {})[op] = bound
         else:  # allowed_
@@ -253,7 +284,8 @@ def constraint_errors(constraints: Any) -> List[str]:
                 # A string bound used to degrade to substring matching.
                 errors.append(f"{key!r} bound must be a list of allowed values, got {type(bound).__name__}")
             elif not all(_json_scalar(v) for v in bound):
-                errors.append(f"{key!r} allowed values must be JSON scalars")
+                errors.append(f"{key!r} allowed values must be JSON scalars (string, boolean, null, "
+                              f"or a finite number within the supported numeric range)")
     for field_path, ops in numeric.items():
         if "min_" in ops and "max_" in ops and ops["min_"] > ops["max_"]:
             errors.append(
@@ -277,8 +309,10 @@ def _finite_number(value: Any) -> bool:
     value can never be the exact authorized quantity."""
     # bool is an int subclass: ``True`` would otherwise be checked as ``1``
     # while the actuator receives the boolean itself (type confusion).
+    # An int beyond the double range is unsupported, not an exception (see
+    # _representable_finite).
     return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and math.isfinite(value))
+            and _representable_finite(value))
 
 
 def _implicit_zero_floor(constraints: Dict[str, Any], field_name: str, bound: Any) -> bool:
@@ -318,9 +352,9 @@ def _constraint_violations(
             field_name = key[4:]
             value = context.get(field_name)
             if not _finite_number(bound):
-                violations.append(f"max_{field_name} bound {bound!r} is not a finite number")
+                violations.append(f"max_{field_name} bound {_show(bound)} is not a finite number")
             elif not _finite_number(value):
-                violations.append(f"{field_name}={value!r} is not a finite number (max {bound!r})")
+                violations.append(f"{field_name}={_show(value)} is not a finite number (max {bound!r})")
             elif value > bound:
                 violations.append(f"{field_name}={value!r} exceeds max {bound!r}")
             elif value < 0 and _implicit_zero_floor(constraints, field_name, bound):
@@ -329,16 +363,16 @@ def _constraint_violations(
             field_name = key[4:]
             value = context.get(field_name)
             if not _finite_number(bound):
-                violations.append(f"min_{field_name} bound {bound!r} is not a finite number")
+                violations.append(f"min_{field_name} bound {_show(bound)} is not a finite number")
             elif not _finite_number(value):
-                violations.append(f"{field_name}={value!r} is not a finite number (min {bound!r})")
+                violations.append(f"{field_name}={_show(value)} is not a finite number (min {bound!r})")
             elif value < bound:
                 violations.append(f"{field_name}={value!r} below min {bound!r}")
         elif key.startswith("allowed_"):
             field_name = key[8:]
             value = context.get(field_name)
             if value not in bound:
-                violations.append(f"{field_name}={value!r} not in allowed set")
+                violations.append(f"{field_name}={_show(value)} not in allowed set")
     return violations
 
 

@@ -54,6 +54,11 @@ skipped, corrected or partially evaluated. That includes:
 - unsupported operators (`denied_<field>`) and bare fields (`currency`);
 - malformed paths;
 - wrong-typed bounds, including a string `allowed_` bound;
+- a number outside the IEEE-754 double range, such as the JSON integer
+  literal `10**400`, as a `max_`/`min_` bound or an `allowed_` value. It is
+  unsupported rather than finite: `math.isfinite()` raises `OverflowError` on
+  such an int, which used to escape as an HTTP 500 on `POST /approvals`.
+  Huge but representable values, such as `10**300`, stay valid bounds;
 - an unsatisfiable `min_` > `max_`;
 - a non-object `constraints` claim.
 

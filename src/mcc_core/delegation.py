@@ -62,7 +62,6 @@ other authority path already uses.
 
 from __future__ import annotations
 
-import math
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -70,6 +69,11 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+# _finite_number / _show: the one total "usable finite number" predicate (int/float,
+# not bool, finite; an int beyond the double range is unsupported, not an
+# OverflowError) and its bounded message form -- shared with constraint
+# evaluation.
+from .authority import _finite_number, _show
 from .mandate import RevocationRegistry, RevocationStatus
 from .profiles import VelocityDescriptor
 from .signing import SigningKey, verify_token
@@ -139,9 +143,8 @@ def issue_delegation(
         raise ValueError("issue_delegation requires a non-empty recipient_scope")
     if not isinstance(currency, str) or not currency.strip():
         raise ValueError("issue_delegation requires a non-empty currency")
-    if (not isinstance(max_amount, (int, float)) or isinstance(max_amount, bool)
-            or not math.isfinite(max_amount) or max_amount <= 0):
-        raise ValueError(f"issue_delegation requires a positive max_amount, got {max_amount!r}")
+    if not _finite_number(max_amount) or max_amount <= 0:
+        raise ValueError(f"issue_delegation requires a positive max_amount, got {_show(max_amount)}")
     if not isinstance(not_before, int) or not isinstance(not_after, int) or not_after <= not_before:
         raise ValueError("issue_delegation requires not_after > not_before (both integer seconds)")
     iat = int(issued_at if issued_at is not None else time.time())
@@ -390,19 +393,17 @@ class DelegationAuthority:
             )
 
         max_amount = res.max_amount
-        if (not isinstance(amount, (int, float)) or isinstance(amount, bool)
-                or not math.isfinite(amount)):
+        if not _finite_number(amount):
             # R2: NaN would otherwise pass the ceiling check below, because
             # ``nan <= 0`` and ``nan > max`` are both False.
             return DelegationAuthorityDecision(
-                Verdict.DENY, f"INVALID_AMOUNT: {amount!r} is not a usable numeric amount",
+                Verdict.DENY, f"INVALID_AMOUNT: {_show(amount)} is not a usable numeric amount",
                 delegation_id=res.delegation_id,
             )
-        if (not isinstance(max_amount, (int, float)) or isinstance(max_amount, bool)
-                or not math.isfinite(max_amount) or max_amount <= 0):
+        if not _finite_number(max_amount) or max_amount <= 0:
             # A signed delegation whose own ceiling is unusable grants nothing.
             return DelegationAuthorityDecision(
-                Verdict.DENY, f"INVALID_DELEGATION_CEILING: max_amount {max_amount!r}; fail-closed",
+                Verdict.DENY, f"INVALID_DELEGATION_CEILING: max_amount {_show(max_amount)}; fail-closed",
                 delegation_id=res.delegation_id,
             )
         if amount <= 0 or amount > max_amount:
