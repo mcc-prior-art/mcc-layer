@@ -62,6 +62,7 @@ other authority path already uses.
 
 from __future__ import annotations
 
+import math
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -138,7 +139,8 @@ def issue_delegation(
         raise ValueError("issue_delegation requires a non-empty recipient_scope")
     if not isinstance(currency, str) or not currency.strip():
         raise ValueError("issue_delegation requires a non-empty currency")
-    if not isinstance(max_amount, (int, float)) or isinstance(max_amount, bool) or max_amount <= 0:
+    if (not isinstance(max_amount, (int, float)) or isinstance(max_amount, bool)
+            or not math.isfinite(max_amount) or max_amount <= 0):
         raise ValueError(f"issue_delegation requires a positive max_amount, got {max_amount!r}")
     if not isinstance(not_before, int) or not isinstance(not_after, int) or not_after <= not_before:
         raise ValueError("issue_delegation requires not_after > not_before (both integer seconds)")
@@ -374,9 +376,19 @@ class DelegationAuthority:
             )
 
         max_amount = res.max_amount
-        if not isinstance(amount, (int, float)) or isinstance(amount, bool):
+        if (not isinstance(amount, (int, float)) or isinstance(amount, bool)
+                or not math.isfinite(amount)):
+            # R2: NaN would otherwise pass the ceiling check below, because
+            # ``nan <= 0`` and ``nan > max`` are both False.
             return DelegationAuthorityDecision(
                 Verdict.DENY, f"INVALID_AMOUNT: {amount!r} is not a usable numeric amount",
+                delegation_id=res.delegation_id,
+            )
+        if (not isinstance(max_amount, (int, float)) or isinstance(max_amount, bool)
+                or not math.isfinite(max_amount) or max_amount <= 0):
+            # A signed delegation whose own ceiling is unusable grants nothing.
+            return DelegationAuthorityDecision(
+                Verdict.DENY, f"INVALID_DELEGATION_CEILING: max_amount {max_amount!r}; fail-closed",
                 delegation_id=res.delegation_id,
             )
         if amount <= 0 or amount > max_amount:

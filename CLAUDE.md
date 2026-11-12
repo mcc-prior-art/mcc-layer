@@ -246,7 +246,7 @@ mcc-layer/
 ├── MCC-Core_Doctrine_Lines_v1_0_2026-06-02.md          ← doctrine (protected)
 ├── MCC-Core_Non-Post-Execution_Principle_2026-06-02.md ← doctrine (protected)
 ├── RUNTIME_DEPLOYMENT.md    ← production notes: signing key, env vars, fail-closed ops
-├── main.py                  ← runtime: OPA adapter + Ed25519 decision tokens
+├── main.py                  ← runtime: OPA adapter + Ed25519 decision tokens; R2: _payment_amount_violation validates send_payment amounts BEFORE any policy engine (OPA or local fallback); OPA adapter treats unserializable input as DENY
 ├── mcc.yaml                 ← declarative policy reference (thresholds = rego canon)
 ├── policies.yaml            ← declarative policy reference (thresholds = rego canon)
 ├── requirements.txt         ← runtime deps (incl. cryptography for Ed25519)
@@ -273,7 +273,7 @@ mcc-layer/
 │       ├── consensus.py       ← Multi-Context Consensus: N-of-M independent Ed25519-signed evaluator votes (pre-token authority step + mandatory enforcement; binds action/actor/payload/resource/policy_hash/nonce)
 │       ├── challenge.py        ← consensus challenge: gateway-issued one-time nonce; single-use TTL-bound ChallengeService + registries (Redis+InMemory); consumed once before actuation (clients never generate the nonce)
 │       ├── policy.py          ← PolicyBundle with hash verification
-│       ├── authority.py       ← config mandate registry + action→authority→verdict (the formula in code)
+│       ├── authority.py       ← config mandate registry + action→authority→verdict (the formula in code); R2: _constraint_violations/apply_constraints (shared by MandateAuthority AND AuthorityModel) reject NaN/±inf values and bounds, and negative values under a max_<f> with no explicit min_<f> (implicit 0 floor); non-finite/negative values are never clamped into compliance → DENY
 │       └── signing.py         ← Ed25519 token signing/verification
 │   └── mcc_evidence/          ← Governance Evidence Bundle Core (PR #42): observational, downstream of decision/gate/audit; NO executor/gate/nonce/actuator/transport imports. Reuses mcc_core.signing (canonical/sha/verify_token) + audit-linkage recompute
 │       ├── schema.py          ← versioned bundle schema (mcc-evidence/1) + structured VerificationResult (integrity_valid/signer_verified/signer_trusted/authority_evidence_verified/overall_status) + EvidenceStatus (VERIFIED/DENIAL_VERIFIED/INTACT_UNTRUSTED_SIGNER/INVALID/UNSUPPORTED_SCHEMA)
@@ -363,7 +363,7 @@ mcc-layer/
 ├── interceptors/              ← MVP: where an action physically passes through the gate
 │   └── egress_proxy.py        ← the ONE interceptor (owns the path → DENY means DENY); optional EnforcementCoordinator path
 ├── policies/
-│   └── mcc.rego               ← canonical policy source (OPA)
+│   └── mcc.rego               ← canonical policy source (OPA); R2: send_payment ALLOW/ESCALATE require is_number(amount), ALLOW also amount >= 0 (thresholds unchanged)
 ├── server/
 │   └── app.py                 ← DEPRECATED legacy runtime (no decision tokens)
 ├── examples/                  ← demo scripts and execution profiles
@@ -482,6 +482,7 @@ mcc-layer/
     ├── test_mandate_http.py   ← mandate HTTP: verify/execute/revoke, strict schemas, operator boundary, no-bypass (upstream unreached when blocked)
     ├── test_approval_http.py  ← approval HTTP: ESCALATE scenarios (approve/deny/single-use/substitution/policy-drift/expiry/concurrency/backend-down)
     ├── test_r1_approval_mandate_binding_http.py ← R1 remediation (79 tests, real HTTP routes + one real-socket + real-Redis cross-instance): approval-minted mandate bound to the exact approved operation on EVERY route (/mandates/execute AND /approvals/{id}/execute) -- the four original red-team R1 cases (V05 + V16 x3), post-approval amount/recipient/currency/source/extra-field/action/transaction/actor/resource changes, tampered/untrusted/partially-bound approval evidence, expired/revoked/invalidated, cross-route single-use, concurrent single winner (in-memory + 3 Redis-backed gateways), coordinator fail-closed without an ApprovalService, legitimate execution + standing-mandate back-compat
+    ├── test_r2_numeric_constraint_http.py ← R2 remediation (196 tests): NaN/±inf/negative values (incl. "nan"/"inf"/"-1e9" strings, raw NaN/Infinity JSON literals), booleans, unparseable/non-scalar amounts and (main.py) a missing amount rejected cleanly (no HTTP 500) on /mandates/execute, /approvals/{id}/execute, /consensus/execute, egress /v1/http/execute (audit proves no pre_actuation), gateway/app.py + main.py /evaluate (no token), and delegation (service-level: no HTTP route); zero actuator calls for invalid input, exactly one for valid; valid boundaries (0, exact cap, finite over-cap CONSTRAIN, explicit negative min_, parseable numeric strings) preserved; main.py OPA path vs a worst-case allow-all stub OPA (invalid input never reaches OPA, no token; unserializable args → DENY not 500) + main.py governance mode (full 3-of-3 quorum over invalid payload → no token, coordinator never reached) + static guard that policies/mcc.rego payment rules require is_number(amount) (ALLOW also amount >= 0)
     ├── test_consensus.py      ← N-of-M consensus: unanimity/threshold/veto, forged/duplicate/mismatched/expired votes + resource/policy_hash/nonce binding fail-closed
     ├── test_consensus_http.py ← consensus HTTP: verify + execute, below-threshold/veto/forged → BLOCKED (upstream unreached)
     ├── test_consensus_enforcement.py ← mandatory consensus at the coordinator: valid 3-of-3 actuates; every invalid/incomplete case BLOCKED before executor runs
