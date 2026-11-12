@@ -348,6 +348,9 @@ class EnforcementCoordinator:
                 transaction_id=token.get("transaction_id"),
                 payload_hash=token.get("payload_hash"),
                 now=trusted_now,
+                # V05: the signed, gate-verified tenant (validated non-empty
+                # above), so an approval is consumed only within its own tenant.
+                tenant_id=tenant_id,
             )
             if not consumed.ok:
                 reason = f"approval {approval_id} not consumable: {consumed.reason}"

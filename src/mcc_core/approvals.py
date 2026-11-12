@@ -610,6 +610,7 @@ class ApprovalService:
     async def consume(
         self, request_id: str, *, action_hash: str, transaction_id: Optional[str],
         payload_hash: Optional[str], now: Optional[int] = None,
+        tenant_id: Optional[str] = None,
     ) -> ConsumeResult:
         """Atomically consume an APPROVED request, binding to the exact
         operation. Mismatched action/transaction/payload, replay, or a non-
@@ -623,6 +624,21 @@ class ApprovalService:
         rec = await self.registry.get(request_id, now=now)
         if rec is None:
             return ConsumeResult(False, "approval not found")
+        # V05 remediation: tenant binding. A record carries the trusted,
+        # server-resolved tenant it was requested under (every HTTP-created
+        # record does: the route's tenant, never a body field). Only an
+        # execution in that SAME tenant may consume it. The caller passes the
+        # tenant from the signed, gate-verified decision token. Without this
+        # check, two tenants sharing an approval store and approver key (the
+        # HA wiring) could execute -- and so burn -- each other's human
+        # approvals. Checked before any state change: a cross-tenant attempt
+        # leaves the approval APPROVED for its own tenant. The coordinator --
+        # the only execution-path caller -- ALWAYS presents a validated,
+        # non-empty tenant, so every execution is bound. A direct library
+        # call that presents no tenant, and a record created without one
+        # (never the HTTP route), keep their pre-existing behavior.
+        if rec.tenant_id is not None and tenant_id is not None and rec.tenant_id != tenant_id:
+            return ConsumeResult(False, "TENANT_MISMATCH: approval not for this tenant")
         # Bind to the exact operation before consuming (approval substitution).
         if rec.action_hash != action_hash:
             return ConsumeResult(False, "ACTION_HASH_MISMATCH: approval not for this action")
