@@ -62,6 +62,13 @@ def issue_mandate(
     trust-set / policy version. ``extra`` adds further signature-covered claims
     (e.g. an approval's action_hash / transaction_id) without changing the
     universal verification path, which ignores unknown fields."""
+    # R3 note: this low-level signing primitive deliberately does NOT refuse
+    # unsupported constraints -- any external issuer can sign anything, and a
+    # mandate signed before R3 already exists. The authoritative check is
+    # MandateVerifier (every mandate route), which rejects an invalid set as
+    # MALFORMED_MANDATE_CONSTRAINTS. Issuers can pre-check with
+    # mcc_core.authority.validate_constraints(). Authority MCC-Core mints
+    # itself (approvals, config policy) is validated at creation.
     iat = int(issued_at if issued_at is not None else time.time())
     claims = {
         "mandate_id": mandate_id or f"mdt-{uuid.uuid4().hex}",
@@ -314,6 +321,18 @@ class MandateVerifier:
         for required in REQUIRED_FIELDS:
             if required not in mandate:
                 return MandateResult(False, f"MALFORMED_MANDATE: missing {required}")
+
+        # R3: a mandate signed before constraint validation existed (or by an
+        # issuer that skipped it) must not authorize anything under bounds the
+        # authority cannot enforce as written.
+        from .authority import constraint_errors
+        raw_constraints = mandate.get("constraints")
+        bad_constraints = (constraint_errors(raw_constraints) if isinstance(raw_constraints, dict)
+                           else [f"constraints must be an object, got {type(raw_constraints).__name__}"])
+        if bad_constraints:
+            return MandateResult(
+                False, "MALFORMED_MANDATE_CONSTRAINTS: " + "; ".join(bad_constraints)
+            )
 
         # R1: an approval-shaped mandate must carry a complete, well-formed
         # binding; a partial one is a denial, never a standing grant.

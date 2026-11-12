@@ -23,9 +23,10 @@ from __future__ import annotations
 
 import fnmatch
 import math
+import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from .core import Verdict
 
@@ -62,6 +63,14 @@ class MandateRegistry:
     def __init__(self, mandates: List[Mandate]) -> None:
         self._by_holder: Dict[str, List[Mandate]] = {}
         for mandate in mandates:
+            # R3: refuse to load a policy whose constraints cannot be
+            # enforced as written (fail-closed startup, never a silent skip).
+            try:
+                validate_constraints(mandate.constraints)
+            except ConstraintError as exc:
+                raise ConstraintError(
+                    f"mandate {mandate.authority!r} for {mandate.holder!r}: {exc}"
+                ) from None
             self._by_holder.setdefault(mandate.holder, []).append(mandate)
 
     def find(self, identity: str, authority: str, *, now: int) -> Optional[Mandate]:
@@ -158,6 +167,141 @@ class AuthorityDecision:
     applied_changes: List[str] = field(default_factory=list)
 
 
+# --------------------------------------------------------------------------
+# Constraint contract (R3 remediation)
+# --------------------------------------------------------------------------
+#
+# The ONE supported constraint convention, shared by every execution route
+# (MandateAuthority for signed / approval-minted mandates, AuthorityModel for
+# config policy: gateway /evaluate, egress proxy, governed agent):
+#
+#   max_<field>      context[field] <= bound      bound: finite number
+#   min_<field>      context[field] >= bound      bound: finite number
+#   allowed_<field>  context[field] in bound      bound: list of JSON scalars
+#
+# Operators are exact and case-sensitive. ``<field>`` is a non-empty path of
+# segments ``[A-Za-z0-9_-]+`` joined by ``.`` (e.g. ``amount``,
+# ``body.amount`` -- the egress proxy's flat canonical keys), matched
+# literally against the context key. The convention is domain-neutral: any
+# profile may constrain any of its own fields this way (the documented
+# extension mechanism -- new fields, never new operators).
+#
+# Anything else -- an unknown key, a misspelled / wrongly-cased / suffix-form
+# operator (``max-amount``, ``amount_max``, ``MAX_amount``, ``maxAmount``), an
+# unsupported operator (``denied_<field>``), a bare field (``currency``), a
+# malformed path, a wrong-typed bound, or an unsatisfiable min > max -- is an
+# INVALID constraint set. Before R3 such keys were silently skipped, so the
+# restriction they were meant to express simply did not exist (fail-open).
+# Now an invalid constraint set is never evaluated, never clamped, never
+# corrected and never discarded: it is a denial everywhere.
+
+CONSTRAINT_OPERATORS = ("max_", "min_", "allowed_")
+_FIELD_PATH = re.compile(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*")
+
+
+class ConstraintError(ValueError):
+    """A constraint set that is not expressible in the supported contract.
+    Raised at issuance / load time; at evaluation time it is a DENY."""
+
+
+def _parse_constraint_key(key: Any):
+    """Return ``(operator, field)`` for a supported key, else ``None``."""
+    if not isinstance(key, str):
+        return None
+    for op in CONSTRAINT_OPERATORS:
+        if key.startswith(op):
+            field_path = key[len(op):]
+            if _FIELD_PATH.fullmatch(field_path):
+                return op, field_path
+            return None
+    return None
+
+
+def _representable_finite(value: Any) -> bool:
+    """Total finiteness check for an ``int``/``float``: never raises.
+
+    ``math.isfinite`` converts an ``int`` to a double and raises
+    ``OverflowError`` for one beyond the double range (e.g. ``10**400``, which
+    JSON parsing yields from a big integer literal). Such a number cannot be
+    compared, clamped or hashed in the double domain the rest of the pipeline
+    uses, so it is UNSUPPORTED: reported as not finite. Every caller already
+    treats "not finite" as a rejection (invalid bound, non-clampable value,
+    violation), so an oversized number is never authorized, clamped into
+    compliance or silently dropped -- and never an unhandled exception."""
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _show(value: Any) -> str:
+    """``repr`` for a validation message, bounded and total. An oversized int
+    is summarized rather than printed: its repr can be thousands of digits,
+    and beyond Python's int-to-str digit limit ``repr`` itself raises
+    ``ValueError``."""
+    if isinstance(value, int) and not isinstance(value, bool) and not _representable_finite(value):
+        return f"<{'negative ' if value < 0 else ''}integer of {value.bit_length()} bits, outside the supported numeric range>"
+    try:
+        text = repr(value)
+    except Exception:  # noqa: BLE001 -- a message must never raise
+        return f"<unprintable {type(value).__name__}>"
+    return text if len(text) <= 200 else text[:200] + "..."
+
+
+def _json_scalar(value: Any) -> bool:
+    if value is None or isinstance(value, (str, bool)):
+        return True
+    return isinstance(value, (int, float)) and _representable_finite(value)
+
+
+def constraint_errors(constraints: Any) -> List[str]:
+    """Validate a constraint set against the supported contract. Returns a
+    list of human-readable problems; empty means the set is valid. Pure and
+    total: never raises, whatever it is given."""
+    if constraints is None:
+        return []
+    if not isinstance(constraints, Mapping):
+        return [f"constraints must be an object, got {type(constraints).__name__}"]
+    errors: List[str] = []
+    numeric: Dict[str, Dict[str, Any]] = {}
+    for key, bound in constraints.items():
+        parsed = _parse_constraint_key(key)
+        if parsed is None:
+            errors.append(
+                f"unsupported constraint key {key!r} (supported: "
+                f"max_<field>, min_<field>, allowed_<field>; operators are exact "
+                f"and lowercase, <field> is a dotted path of [A-Za-z0-9_-] segments)"
+            )
+            continue
+        op, field_path = parsed
+        if op in ("max_", "min_"):
+            if not _finite_number(bound):
+                errors.append(f"{key!r} bound {_show(bound)} must be a finite number")
+                continue
+            numeric.setdefault(field_path, {})[op] = bound
+        else:  # allowed_
+            if isinstance(bound, (str, bytes)) or not isinstance(bound, (list, tuple, set, frozenset)):
+                # A string bound used to degrade to substring matching.
+                errors.append(f"{key!r} bound must be a list of allowed values, got {type(bound).__name__}")
+            elif not all(_json_scalar(v) for v in bound):
+                errors.append(f"{key!r} allowed values must be JSON scalars (string, boolean, null, "
+                              f"or a finite number within the supported numeric range)")
+    for field_path, ops in numeric.items():
+        if "min_" in ops and "max_" in ops and ops["min_"] > ops["max_"]:
+            errors.append(
+                f"min_{field_path}={ops['min_']!r} exceeds max_{field_path}={ops['max_']!r} (unsatisfiable)"
+            )
+    return errors
+
+
+def validate_constraints(constraints: Any) -> None:
+    """Raise :class:`ConstraintError` if ``constraints`` is invalid (issuance /
+    load-time check). Evaluation-time callers use :func:`constraint_errors`."""
+    errors = constraint_errors(constraints)
+    if errors:
+        raise ConstraintError("invalid constraints: " + "; ".join(errors))
+
+
 def _finite_number(value: Any) -> bool:
     """R2: a usable bound/value -- a real ``int``/``float`` (not a bool) that is finite.
     NaN, +inf and -inf are never usable: every ordered comparison with NaN is
@@ -165,8 +309,10 @@ def _finite_number(value: Any) -> bool:
     value can never be the exact authorized quantity."""
     # bool is an int subclass: ``True`` would otherwise be checked as ``1``
     # while the actuator receives the boolean itself (type confusion).
+    # An int beyond the double range is unsupported, not an exception (see
+    # _representable_finite).
     return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and math.isfinite(value))
+            and _representable_finite(value))
 
 
 def _implicit_zero_floor(constraints: Dict[str, Any], field_name: str, bound: Any) -> bool:
@@ -195,15 +341,20 @@ def _constraint_violations(
     a violation: the mandate's bound cannot be shown to hold, so it does not.
     So does a non-finite (NaN / +-inf) value or bound (R2): fail-closed.
     """
+    errors = constraint_errors(constraints)
+    if errors:
+        # R3: an invalid set is never partially evaluated (that is exactly how
+        # an unknown key used to be skipped): every problem is a violation.
+        return [f"INVALID_CONSTRAINT: {e}" for e in errors]
     violations: List[str] = []
     for key, bound in constraints.items():
         if key.startswith("max_"):
             field_name = key[4:]
             value = context.get(field_name)
             if not _finite_number(bound):
-                violations.append(f"max_{field_name} bound {bound!r} is not a finite number")
+                violations.append(f"max_{field_name} bound {_show(bound)} is not a finite number")
             elif not _finite_number(value):
-                violations.append(f"{field_name}={value!r} is not a finite number (max {bound!r})")
+                violations.append(f"{field_name}={_show(value)} is not a finite number (max {bound!r})")
             elif value > bound:
                 violations.append(f"{field_name}={value!r} exceeds max {bound!r}")
             elif value < 0 and _implicit_zero_floor(constraints, field_name, bound):
@@ -212,16 +363,16 @@ def _constraint_violations(
             field_name = key[4:]
             value = context.get(field_name)
             if not _finite_number(bound):
-                violations.append(f"min_{field_name} bound {bound!r} is not a finite number")
+                violations.append(f"min_{field_name} bound {_show(bound)} is not a finite number")
             elif not _finite_number(value):
-                violations.append(f"{field_name}={value!r} is not a finite number (min {bound!r})")
+                violations.append(f"{field_name}={_show(value)} is not a finite number (min {bound!r})")
             elif value < bound:
                 violations.append(f"{field_name}={value!r} below min {bound!r}")
         elif key.startswith("allowed_"):
             field_name = key[8:]
             value = context.get(field_name)
             if value not in bound:
-                violations.append(f"{field_name}={value!r} not in allowed set")
+                violations.append(f"{field_name}={_show(value)} not in allowed set")
     return violations
 
 
@@ -242,6 +393,10 @@ def apply_constraints(
     """
     new_context = dict(context)
     changes: List[str] = []
+    if constraint_errors(constraints):
+        # R3: never clamp under an invalid constraint set -- nothing is
+        # "brought into compliance" with bounds that are not well-defined.
+        return new_context, changes
     for key, bound in constraints.items():
         if key.startswith(("max_", "min_")):
             field_name = key[4:]
@@ -342,6 +497,19 @@ class AuthorityModel:
             )
 
         constraints = dict(mandate.constraints)
+        invalid = constraint_errors(constraints)
+        if invalid:
+            # R3: always DENY -- never the policy's on_violation verdict (an
+            # ESCALATE would route an unenforceable bound to a human approval
+            # that could then mint authority under it).
+            return AuthorityDecision(
+                verdict=Verdict.DENY,
+                reason=f"INVALID_CONSTRAINTS on mandate '{policy.requires}': {'; '.join(invalid)}",
+                constraints={},
+                matched_action=policy.action,
+                authority_required=policy.requires,
+                mandate_holder=mandate.holder,
+            )
         violations = _constraint_violations(constraints, context)
         if not violations:
             # Within the mandate's bounds: ALLOW, context unchanged.

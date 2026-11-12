@@ -353,6 +353,8 @@ def _payment_amount_violation(args: Mapping[str, Any]) -> Optional[str]:
         return f"amount must be a number, got {type(value).__name__}"
     try:
         number = float(value)
+    except OverflowError:
+        return "amount is outside the supported numeric range"
     except (TypeError, ValueError):
         return "amount is not a parseable number"
     if not math.isfinite(number) or number < 0:

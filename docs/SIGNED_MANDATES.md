@@ -19,7 +19,7 @@ A mandate is an Ed25519-signed claims object (`mcc_core.issue_mandate`):
 | `subject` | the delegate the mandate is issued to |
 | `action_scope` | glob patterns of permitted actions |
 | `resource_scope` | glob patterns of permitted resources |
-| `constraints` | opaque bounds (e.g. `{"max_amount": 5000}`) |
+| `constraints` | bounds in the supported constraint contract (e.g. `{"max_amount": 5000}`; see below) |
 | `nbf` / `exp` | validity window |
 | `iat` | issuance timestamp |
 | `revocation_required` | whether a live revocation check is mandatory |
@@ -28,6 +28,46 @@ A mandate is an Ed25519-signed claims object (`mcc_core.issue_mandate`):
 
 The object is **domain-neutral**: only generic scopes and an opaque constraints
 map. It carries no payment/robotics/infra vocabulary.
+
+### Constraint contract (R3)
+
+The constraints map is domain-neutral, but it is **not** free-form. Exactly
+three operators exist. They are exact and lowercase, and the same
+`mcc_core.authority` code evaluates them on every route:
+
+| Key | Bound | Meaning |
+|---|---|---|
+| `max_<field>` | finite number | `context[field] <= bound` (CONSTRAIN clamps to it) |
+| `min_<field>` | finite number | `context[field] >= bound` (CONSTRAIN raises to it) |
+| `allowed_<field>` | list of JSON scalars | `context[field] in bound` (no rewrite; outside → DENY) |
+
+`<field>` is a dotted path of `[A-Za-z0-9_-]` segments, matched literally
+against the (flat, canonical) context key, for example `amount` or the egress
+proxy's `body.amount`. Profiles extend the contract with **new fields**, never
+with new operators.
+
+Every other key is an **invalid constraint set** and is rejected, never
+skipped, corrected or partially evaluated. That includes:
+
+- misspelled, suffix-form or wrong-case operators (`max-amount`, `amount_max`,
+  `MAX_amount`, `maxAmount`);
+- unsupported operators (`denied_<field>`) and bare fields (`currency`);
+- malformed paths;
+- wrong-typed bounds, including a string `allowed_` bound;
+- a number outside the IEEE-754 double range, such as the JSON integer
+  literal `10**400`, as a `max_`/`min_` bound or an `allowed_` value. It is
+  unsupported rather than finite: `math.isfinite()` raises `OverflowError` on
+  such an int, which used to escape as an HTTP 500 on `POST /approvals`.
+  Huge but representable values, such as `10**300`, stay valid bounds;
+- an unsatisfiable `min_` > `max_`;
+- a non-object `constraints` claim.
+
+Before R3, such keys were silently skipped, so the intended restriction did not
+exist. `MandateVerifier` now rejects them as `MALFORMED_MANDATE_CONSTRAINTS`,
+which also covers mandates signed before the fix or by an issuer that never
+validated. `issue_mandate()` still signs whatever it is given: it is the
+low-level primitive any issuer uses. Issuers can pre-check with
+`mcc_core.authority.validate_constraints()`.
 
 ## Trust model
 
