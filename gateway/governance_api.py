@@ -546,7 +546,30 @@ def build_governance_service(
         consensus_verifier=consensus_verifier, challenge_service=challenge_service,
         pre_execution_control=pre_execution_control, time_source=time_source,
         delegation_verifier=delegation_verifier,
+        mandate_tenant_mode=_mandate_tenant_mode_from_env(env),
     )
+
+
+def _mandate_tenant_mode_from_env(env) -> str:
+    """V05: MCC_MANDATE_TENANT_MODE, a server-side setting only.
+
+    * unset / ``strict`` (default): every signed mandate must carry a tenant_id
+      equal to this gateway's tenant (tenant isolation).
+    * ``legacy-unscoped``: explicit compatibility for mandates issued without a
+      tenant_id. Such mandates are accepted in ANY tenant, so this mode does
+      NOT provide tenant isolation for them. A mandate that carries the claim
+      is still enforced.
+
+    Any other value refuses startup (fail-closed); it is never silently
+    defaulted."""
+    from mcc_core.mandate import MANDATE_TENANT_MODES, MANDATE_TENANT_STRICT
+
+    raw = env.get("MCC_MANDATE_TENANT_MODE", "").strip()
+    mode = raw or MANDATE_TENANT_STRICT
+    if mode not in MANDATE_TENANT_MODES:
+        raise ValueError(
+            f"MCC_MANDATE_TENANT_MODE={raw!r} is invalid; expected one of {MANDATE_TENANT_MODES}")
+    return mode
 
 
 def _env_flag(env, name: str) -> bool:

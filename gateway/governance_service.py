@@ -42,6 +42,7 @@ from mcc_core import (
     hash_payload,
 )
 from mcc_core.action_name import action_name_error, validate_action_name
+from mcc_core.mandate import MANDATE_TENANT_MODES, MANDATE_TENANT_STRICT, mandate_tenant_error
 from mcc_core.trusted_time import LocalTimeSource, TimeTrustError, TrustedTimeSource
 
 from .pre_execution_control import PreExecutionControl
@@ -125,7 +126,16 @@ class GovernanceService:
         pre_execution_control: Optional[PreExecutionControl] = None,
         time_source: Optional[TrustedTimeSource] = None,
         delegation_verifier: Optional[DelegationVerifier] = None,
+        mandate_tenant_mode: str = MANDATE_TENANT_STRICT,
     ) -> None:
+        # V05: tenant isolation for signed mandates is the default. Legacy
+        # (unscoped) acceptance of mandates without a tenant_id claim is an
+        # explicit server-side choice only; an unknown mode refuses to start.
+        if mandate_tenant_mode not in MANDATE_TENANT_MODES:
+            raise ValueError(
+                f"mandate_tenant_mode must be one of {MANDATE_TENANT_MODES}, "
+                f"got {mandate_tenant_mode!r}")
+        self.mandate_tenant_mode = mandate_tenant_mode
         self.engine = engine
         self.coordinator = coordinator
         # Clock-skew hardening (PR #122 round 3): the SINGLE source of
@@ -288,6 +298,19 @@ class GovernanceService:
         )
         if decision.verdict not in (Verdict.ALLOW, Verdict.CONSTRAIN):
             return ExecOutcome("BLOCKED", decision.reason, decision=decision.verdict.value)
+
+        # V05: tenant binding. Only now, after authorize() has verified the
+        # signature, is the tenant_id claim issuer-asserted. It must equal
+        # THIS call's trusted tenant: the authenticated HTTP mount's
+        # server-side tenant, never a request field. Covers standing and
+        # approval-minted mandates on every route that consumes a mandate
+        # (/mandates/execute and, via execute_with_approval,
+        # /approvals/{id}/execute). Refused before any token, reservation,
+        # audit record or actuator call.
+        tenant_error = mandate_tenant_error(mandate, tenant_id=tenant_id,
+                                            mode=self.mandate_tenant_mode)
+        if tenant_error is not None:
+            return ExecOutcome("BLOCKED", tenant_error, decision="DENY")
 
         # The EXACT final payload that would be executable -- after any
         # mandate CONSTRAIN rewrite. This, not the pre-constraint proposal, is

@@ -56,6 +56,7 @@ def issue_mandate(
     policy_hash: Optional[str] = None,
     mandate_id: Optional[str] = None,
     extra: Optional[Dict[str, Any]] = None,
+    tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Issue a signed mandate. The issuer's ``signing_key`` carries the kid that
     a verifier must trust. ``policy_hash`` optionally binds the mandate to a
@@ -83,6 +84,12 @@ def issue_mandate(
         "revocation_required": bool(revocation_required),
         "policy_hash": policy_hash,
     }
+    if tenant_id is not None:
+        # V05: the tenant/security domain this authority is valid in. Signed
+        # like every other claim. In MANDATE_TENANT_STRICT mode (the default)
+        # an execution route only accepts a mandate whose tenant_id equals its
+        # own trusted, server-side tenant -- see mandate_tenant_error().
+        claims[TENANT_CLAIM] = tenant_id
     if extra:
         # Reserved fields cannot be overridden by extra claims.
         for key in extra:
@@ -90,6 +97,48 @@ def issue_mandate(
                 raise ValueError(f"extra mandate claim '{key}' is reserved")
         claims.update(extra)
     return signing_key.sign_token(claims)
+
+
+# ---------------------------------------------------------------------------
+# V05: mandate tenant binding
+# ---------------------------------------------------------------------------
+
+TENANT_CLAIM = "tenant_id"
+#: Tenant isolation (the default): every mandate MUST carry a signed tenant_id
+#: equal to the executing gateway's trusted, server-side tenant.
+MANDATE_TENANT_STRICT = "strict"
+#: Explicit legacy compatibility, server-side configuration only. A mandate
+#: WITHOUT a tenant_id claim is accepted in any tenant, so this mode does NOT
+#: provide tenant isolation for such mandates. A mandate that DOES carry the
+#: claim is still enforced exactly as in strict mode (never ignored).
+MANDATE_TENANT_LEGACY = "legacy-unscoped"
+MANDATE_TENANT_MODES = (MANDATE_TENANT_STRICT, MANDATE_TENANT_LEGACY)
+
+
+def mandate_tenant_error(mandate: Any, *, tenant_id: Any, mode: str) -> Optional[str]:
+    """Return why ``mandate`` may not execute in the trusted tenant
+    ``tenant_id``, or ``None`` if it may. Pure and total: never raises.
+
+    Call it only on a mandate whose signature has already been verified, so
+    the claim is issuer-asserted, not caller-asserted. ``tenant_id`` must be
+    the gateway's server-side tenant (the authenticated mount), never a
+    request field.
+    """
+    if mode not in MANDATE_TENANT_MODES:
+        return f"MANDATE_TENANT_MODE_INVALID: {mode!r}; fail-closed"
+    if not isinstance(tenant_id, str) or not tenant_id.strip():
+        return "MISSING_TENANT_IDENTITY: no trusted server-side tenant; fail-closed"
+    if not isinstance(mandate, dict) or TENANT_CLAIM not in mandate:
+        if mode == MANDATE_TENANT_LEGACY:
+            return None
+        return ("MANDATE_TENANT_MISSING: mandate carries no signed tenant_id; "
+                "tenant isolation requires one")
+    claim = mandate[TENANT_CLAIM]
+    if not isinstance(claim, str) or not claim.strip() or claim != claim.strip():
+        return "MANDATE_TENANT_MALFORMED: tenant_id must be a non-empty string without surrounding whitespace"
+    if claim != tenant_id:
+        return "MANDATE_TENANT_MISMATCH: mandate not issued for this tenant"
+    return None
 
 
 @dataclass(frozen=True)

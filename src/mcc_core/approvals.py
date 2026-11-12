@@ -598,6 +598,11 @@ class ApprovalService:
             constraints=rec.constraints, not_before=now, not_after=rec.expires_at,
             issued_at=now, revocation_required=False, policy_hash=rec.policy_hash,
             mandate_id=f"apr-{request_id}",
+            # V05: the approval mandate is valid only in the tenant the
+            # request was made under (server-resolved at request time). A
+            # record created without a tenant (direct library use) yields a
+            # mandate without the claim, which strict tenant mode refuses.
+            tenant_id=rec.tenant_id,
             extra={
                 "approval_id": request_id,
                 "action_hash": rec.action_hash,
