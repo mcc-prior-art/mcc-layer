@@ -63,6 +63,22 @@ from tests.test_r2_numeric_constraint_http import (
     post_json,
 )
 
+@pytest.fixture(autouse=True, scope="module")
+def _release_this_modules_garbage():
+    """This module builds ~180 full governance stacks (FastAPI apps, egress
+    harnesses, audit logs), leaving a large amount of cyclic garbage. Left
+    alone, the resulting generation-2 collection lands in whichever module
+    runs next. In the full suite that is
+    tests/test_redis_approval_consume_atomicity.py, whose approve-vs-deny race
+    uses a 0.5 s per-Redis-operation timeout. A measured 566.6 ms gen-2 pause
+    (126,511 objects collected) inside that race made both sides time out and
+    lose. Collecting here, at this module's own teardown, keeps that cost in
+    the module that created it. Test hygiene only; no assertion is affected."""
+    yield
+    import gc
+    gc.collect()
+
+
 # The six original R3 cases, verbatim from the assessment.
 ORIGINAL_R3 = [{"max-amount": 5000}, {"amount_max": 5000}, {"MAX_amount": 5000},
                {"denied_beneficiary": ["vendor-42"]}, {"currency": "USD"}, {"maxAmount": 5000}]
