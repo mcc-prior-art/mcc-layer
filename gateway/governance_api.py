@@ -270,6 +270,11 @@ def mount_approval_routes(app: FastAPI, service: GovernanceService, *, api_key: 
         if bad:
             # R3: a controlled rejection, never an HTTP 500 or a silent skip.
             raise HTTPException(status_code=422, detail="INVALID_CONSTRAINTS: " + "; ".join(bad))
+        from mcc_core.action_name import action_name_error
+        bad_action = action_name_error(req.action)
+        if bad_action:
+            # R4: a controlled rejection before any record exists.
+            raise HTTPException(status_code=422, detail="INVALID_ACTION_NAME: " + bad_action)
         out = await service.create_approval(
             actor=req.actor, action=req.action, resource=req.resource,
             transaction_id=req.transaction_id, policy_hash=req.policy_hash,
@@ -374,9 +379,15 @@ def mount_consensus_routes(app: FastAPI, service: GovernanceService, *, api_key:
 def _httpx_upstream(base: str, timeout: float = 10.0):
     import httpx
 
+    from mcc_core.action_name import action_endpoint_url
+
     async def upstream(action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        # R4: the action is one validated path segment; ActionNameError is
+        # raised BEFORE any connection (GovernanceService rejects such an
+        # action earlier still -- this is the sink's own defense).
+        url = action_endpoint_url(base, action)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(f"{base.rstrip('/')}/{action}", json=payload)
+            resp = await client.post(url, json=payload)
             try:
                 body = resp.json()
             except Exception:
