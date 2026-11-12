@@ -24,6 +24,7 @@ A mandate is an Ed25519-signed claims object (`mcc_core.issue_mandate`):
 | `iat` | issuance timestamp |
 | `revocation_required` | whether a live revocation check is mandatory |
 | `policy_hash` | optional trust-set / policy-version binding |
+| `tenant_id` | the tenant / security domain the mandate is valid in. **Required in strict tenant mode (the default; V05).** See *Tenant binding* below |
 | `kid` / `sig` | Ed25519 signature metadata |
 
 The object is **domain-neutral**: only generic scopes and an opaque constraints
@@ -78,6 +79,55 @@ low-level primitive any issuer uses. Issuers can pre-check with
 * `policy_hash` optionally pins a mandate to a policy version, so a mandate
   cannot be carried across a policy change it was not issued under.
 
+## Tenant binding (V05 remediation)
+
+A gateway authenticates a **tenant**: one agent API key per mount, mapped to
+a server-side `tenant_id` that is never a request field. A signed mandate
+must therefore say which tenant it is valid in.
+
+**Strict mode** (`MCC_MANDATE_TENANT_MODE` unset or `strict`; the default for
+`build_governance_service` and for `GovernanceService`):
+- **Required claim:** after the signature is verified, the signed `tenant_id`
+  must be a non-empty string without surrounding whitespace, exactly equal to
+  the executing gateway's tenant.
+- **Refusal codes:**
+  - `MANDATE_TENANT_MISSING` when the claim is absent;
+  - `MANDATE_TENANT_MALFORMED` when it is empty, padded, `null` or not a
+    string;
+  - `MANDATE_TENANT_MISMATCH` when it names another tenant.
+
+  Each refusal is `BLOCKED`/`DENY` before any decision token, idempotency
+  reservation, audit `pre_actuation` record or actuator call.
+- **Tampering:** changing, adding or removing the claim breaks the signature
+  (`INVALID_MANDATE_SIGNATURE`).
+- **Approval-minted mandates** carry the tenant the approval was requested
+  under. `ApprovalService.consume()` also refuses another tenant's approval
+  (`TENANT_MISMATCH`) without consuming it. Before this, gateways sharing an
+  approval store and approver key could execute, and so burn, each other's
+  human approvals.
+- **Routes:** both mandate-consuming routes, `POST /mandates/execute` and
+  `POST /approvals/{id}/execute`. Delegations already required a signed
+  `tenant_id`.
+
+**Legacy mode** (`MCC_MANDATE_TENANT_MODE=legacy-unscoped`) is server-side
+configuration only:
+- **No tenant isolation:** a mandate **without** a `tenant_id` is accepted in
+  any tenant. It exists only to keep pre-V05 mandates working during
+  migration.
+- **Present claims still checked:** a mandate that carries the claim is
+  enforced exactly as in strict mode.
+- **Startup:** any other value refuses startup.
+
+**Issuers:** pass `tenant_id=` to `issue_mandate()`.
+
+**What this does NOT provide:**
+- **No per-agent identity.** Within one tenant, any holder of the tenant's
+  agent API key can present a copied mandate by naming its `subject` as
+  `actor`.
+- **The mandate is still a bearer credential inside its tenant.** Closing
+  that needs a per-agent identity or a proof-of-possession contract. Neither
+  exists, and none is added here.
+
 ## Verification order (fail-closed)
 
 `MandateVerifier.verify` runs, and denies on the first failure:
@@ -92,6 +142,9 @@ low-level primitive any issuer uses. Issuers can pre-check with
 8. **revocation** — `MANDATE_REVOKED` / `REVOCATION_UNAVAILABLE` / `REVOCATION_REQUIRED`
 
 Any exception anywhere resolves to deny (`MANDATE_ERROR: fail-closed`).
+
+The execution routes then apply the **tenant binding** above, after the
+mandate authorizes and before any token exists.
 
 ## Binding the authority to the decision token
 
@@ -139,6 +192,12 @@ sets; rotate by adding a new issuer `kid` and retiring the old one (retiring a
 `kid` revokes its mandates wholesale).
 
 ## Backward compatibility
+
+**V05 (breaking for claimless mandates):** under the default strict tenant
+mode, a mandate issued without `tenant_id` no longer executes. Either re-issue
+it with `tenant_id=<the gateway's MCC_GATEWAY_TENANT_ID>`, or set
+`MCC_MANDATE_TENANT_MODE=legacy-unscoped` explicitly for the migration. That
+setting provides no tenant isolation for claimless mandates.
 
 Mandate support is additive. `mandate_id` is a new optional, nullable token
 claim; existing tokens (and the config-driven `AuthorityModel`) are unaffected.

@@ -260,6 +260,7 @@ def test_execute_with_mandate_clamps_token_exp_to_near_expiring_mandate():
         mandate_key, issuer="axlogiq/pilot", subject="agent/ops",
         action_scope=[ACTION], resource_scope=[RESOURCE], constraints={},
         not_before=now - 100, not_after=now + mandate_remaining_seconds, issued_at=now - 100,
+        tenant_id="tenant-round6",  # V05: the tenant it executes in (strict tenant mode)
     )
     service = _service(mandate_key, token_ttl_seconds=60)
 

@@ -50,6 +50,23 @@ audit-before-actuation) → upstream. Any failure → `status: "BLOCKED"` (or
 `"EXECUTION_FAILED"` if the executor raised after authorization) and the
 upstream is never reached.
 
+**Tenant binding (V05 remediation).**
+- **Rule:** in the default strict tenant mode, the mandate must carry a signed
+  `tenant_id` equal to this gateway's tenant. That tenant comes from the
+  authenticated mount (`MCC_GATEWAY_TENANT_ID`), never from the request body.
+  The strict schema rejects a body `tenant_id` with HTTP 422.
+- **Refusals:** missing, empty, malformed or mismatched → `status: "BLOCKED"`,
+  `decision: "DENY"`, with reason `MANDATE_TENANT_MISSING`,
+  `MANDATE_TENANT_MALFORMED` or `MANDATE_TENANT_MISMATCH`. Nothing reaches the
+  coordinator or the upstream.
+- **Approvals:** approval-minted mandates carry the request's tenant and are
+  enforced the same way on `/approvals/{id}/execute`.
+- **Legacy:** `MCC_MANDATE_TENANT_MODE=legacy-unscoped` (server-side only)
+  accepts claimless mandates and provides no tenant isolation for them.
+- **Limit:** within one tenant, the agent API key authenticates the tenant, not
+  an individual agent. `actor` is still a caller-supplied value checked
+  against the mandate's `subject`.
+
 **Action names (R4 remediation).** The shipped governed upstreams POST to
 `{base}/{action}`, so `action` must follow the action-name contract in
 `mcc_core.action_name`:
@@ -179,6 +196,8 @@ Backends are env-selected and fail-closed with no silent fallback:
 | forged mandate / approval | Ed25519 signature over all claims; untrusted kid → `UNKNOWN_KID` |
 | mandate / approval substitution | `mandate_id` / `approval_id` bound into the token; consume binds action_hash/transaction/payload |
 | actor / resource / action substitution | mandate subject & scopes; gate binding; payload_hash |
+| mandate or approval used in another tenant | signed `tenant_id` must equal the mount's server-side tenant (strict mode, default) → `MANDATE_TENANT_*`; `ApprovalService.consume` refuses another tenant's approval (V05) |
+| copied mandate presented by another agent of the SAME tenant | **not prevented**: the gateway authenticates the tenant, not individual agents; `actor` is caller-supplied. Requires a per-agent identity / proof-of-possession contract (not implemented) |
 | action name altering the upstream URL (traversal, query/fragment, CR/LF, encoded or absolute forms) | action-name contract enforced before authority/token/reservation and again at each URL-building upstream → `INVALID_ACTION_NAME`, zero outbound requests (R4) |
 | transaction substitution | `transaction_id` in token + approval record |
 | policy drift | mandate `policy_hash` binding → `POLICY_BINDING_MISMATCH` |

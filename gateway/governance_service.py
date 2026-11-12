@@ -126,11 +126,18 @@ class GovernanceService:
         pre_execution_control: Optional[PreExecutionControl] = None,
         time_source: Optional[TrustedTimeSource] = None,
         delegation_verifier: Optional[DelegationVerifier] = None,
-        mandate_tenant_mode: str = MANDATE_TENANT_STRICT,
+        mandate_tenant_mode: Optional[str] = None,
     ) -> None:
         # V05: tenant isolation for signed mandates is the default. Legacy
         # (unscoped) acceptance of mandates without a tenant_id claim is an
-        # explicit server-side choice only; an unknown mode refuses to start.
+        # explicit server-side choice only: this argument, or the server's
+        # MCC_MANDATE_TENANT_MODE environment setting when the argument is
+        # omitted (never a request field). Unset -> strict. An unknown mode
+        # refuses to start.
+        if mandate_tenant_mode is None:
+            import os
+            mandate_tenant_mode = (os.environ.get("MCC_MANDATE_TENANT_MODE", "").strip()
+                                   or MANDATE_TENANT_STRICT)
         if mandate_tenant_mode not in MANDATE_TENANT_MODES:
             raise ValueError(
                 f"mandate_tenant_mode must be one of {MANDATE_TENANT_MODES}, "

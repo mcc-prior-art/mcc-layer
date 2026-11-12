@@ -76,7 +76,8 @@ async def echo(request: Request, path: str):
 def mandate(key, **over):
     kw = dict(issuer="axlogiq-demo", subject="agent/x", action_scope=["generic_op"],
               resource_scope=["res-1"], constraints={}, not_before=PAST, not_after=FUTURE,
-              revocation_required=True)
+              revocation_required=True,
+              tenant_id="pilot")  # V05: the demo gateway's (default) tenant, strict tenant mode
     kw.update(over)
     return issue_mandate(key, **kw)
 

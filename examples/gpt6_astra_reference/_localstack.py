@@ -166,6 +166,8 @@ class LocalAstraDemoStack:
             resource_scope=list(mandate_resource_scope) if mandate_resource_scope else [demo_repo],
             constraints={}, not_before=int(time.time()) - 10, not_after=int(time.time()) + 3600,
             issued_at=int(time.time()),
+            # V05: bound to this demo's fixed, trusted tenant (strict tenant mode).
+            tenant_id=TENANT_ID,
         )
 
         # 6. The upstream: the real (disabled-by-default) actuator is wired

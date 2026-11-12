@@ -255,7 +255,11 @@ def test_backend_unavailable_blocks_execution():
                             mandate_id="apr-req-x",
                             extra={"approval_id": "req-x", "action_hash": "h",
                                    "transaction_id": "txn-1", "payload_hash": None,
-                                   "single_use": True})
+                                   "single_use": True},
+                            # V05: same tenant as the execution below, so the
+                            # down approval backend -- not a tenant mismatch --
+                            # is what blocks it.
+                            tenant_id="tenant-1")
     svc = GovernanceService(engine=engine, coordinator=coord, trust_set=trust,
                             revocation_registry=InMemoryRevocationRegistry(),
                             approvals=down_approvals, upstream=upstream, policy_hash=POLICY)

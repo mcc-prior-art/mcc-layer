@@ -103,6 +103,7 @@ class Stack:
             constraints={"max_amount": 10_000.0},
             not_before=now - 10, not_after=now + 3600, issued_at=now - 10,
             policy_hash=POLICY_HASH,
+            tenant_id=TENANT,  # V05: the tenant exec_mandate() runs in (strict tenant mode)
         )
         kw.update(overrides)
         return issue_mandate(self.mandate_issuer_key, **kw)
