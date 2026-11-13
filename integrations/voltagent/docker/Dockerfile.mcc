@@ -31,7 +31,6 @@ COPY integrations/voltagent/mcc_side /app/integrations/voltagent/mcc_side
 # built from this Dockerfile; each compose file selects the one it needs
 # via MCC_AUTHORITY_POLICY_CONFIG.
 COPY deploy/pilot/authority_policy.notify.json /app/authority_policy.notify.json
-COPY deploy/pilot/agent_credentials.demo.json /app/agent_credentials.demo.json
 COPY deploy/pilot/authority_policy.clinic.json /app/authority_policy.clinic.json
 
 ENV PYTHONPATH=/app/src:/app

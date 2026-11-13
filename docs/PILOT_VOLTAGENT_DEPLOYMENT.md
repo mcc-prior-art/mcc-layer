@@ -89,7 +89,9 @@ it — only the governed executor (inside the gateway) can reach it.
 
 | Service            | Responsibility | May it decide/execute? |
 |--------------------|----------------|------------------------|
-| `voltagent-agent`  | Reasoning, planning, tool selection, structured proposals | **No.** No operator key, no external route. |
+| `voltagent-agent`  | Reasoning, planning, tool selection, structured proposals, as principal **agent/notify-bot** | **No.** Holds only its own credential; no operator key, no shared tenant key, no external route. |
+| `voltagent-agent-unknown` | The same agent code as principal **agent/unknown** (the ESCALATE scenario); executes its own approved operation | **No.** Holds only its own credential, in its own container. |
+| `agent-credentials-init` | One-shot trusted provisioner: one credential per agent into that agent's own volume; SHA-256 registry for the gateway | Provisioning only; no network. |
 | `mcc-gateway`      | Policy, authority, decision tokens, approval, constraints, execution gate, governed executor, receipt verification, `EXECUTED`, audit chain | **Yes — sole authority.** |
 | `evaluator-quorum` | Independent N-of-M evaluator votes (holds evaluator keys) | Signs votes only; the gate still verifies. |
 | `external-service` | Controlled external pilot service; returns a receipt bound to the payload + correlation id | Executes the effect only when the governed executor calls it. |
@@ -97,7 +99,20 @@ it — only the governed executor (inside the gateway) can reach it.
 
 ## Trust boundaries & network isolation
 
-- **`agent_edge`**: `voltagent-agent`, `mcc-gateway`, `evaluator-quorum`.
+- **`agent_edge`**: `voltagent-agent`, `voltagent-agent-unknown`, `mcc-gateway`, `evaluator-quorum`.
+
+**Per-agent credentials (V05 part 2, `docs/AGENT_IDENTITY.md`).** Each agent
+principal runs in its **own** container and receives **only its own**
+credential: a file on a named volume (`agent-cred-<principal>`) mounted
+read-only at `/run/mcc-agent` in that container and no other. The volumes are
+filled by the one-shot `agent-credentials-init` service (the trusted
+provisioning boundary), which also writes the gateway's registry with SHA-256
+hashes only. No agent container receives the provisioning map, another agent's
+key, the tenant's shared key (`MCC_GATEWAY_API_KEY`) or the operator key, and
+`.env.pilot` contains no agent key at all. Rotate one agent with
+`make pilot-rotate-agent PRINCIPAL=agent/...`. Verified in real containers by
+`tests/container/test_agent_credential_isolation.py` (CI:
+`agent-credential-isolation`).
 - **`gov_internal`**: `mcc-gateway`, `evaluator-quorum`, `redis`, `external-service`.
 
 The agent shares **no network** with `external-service`. The only permitted path
@@ -190,10 +205,13 @@ Or run the whole sequence: `make pilot-demo`.
    correlation id, actor, resource, original payload) is recorded to the
    `pilot-state` volume.
 2. `make pilot-approve` — the **operator** (running in the gateway container, which
-   holds the operator key — never the agent) grants a single-use approval mandate
-   and continues the governed execution of the *original* proposed action. A
-   mismatched, expired, or forged approval is rejected; the state file is consumed
-   so an approval cannot be replayed.
+   holds the operator key — never an agent) **only approves**: it grants a
+   single-use approval mandate and hands it back on the `pilot-state` volume. It
+   holds and presents **no agent credential**. Then, in the same make target,
+   **agent/unknown executes its own approved operation** from its own container
+   with its own credential (`pilot-cli execute-approved`), under the original
+   correlation id. A mismatched, expired, or forged approval is rejected; the
+   state files are consumed and the approval is single-use at the gateway.
 
 ### Receipt verification
 
@@ -255,7 +273,8 @@ failure is recorded when audit recording remains available.
    payload; only the constrained action is executed; the receipt is bound to the
    clamped payload.
 5. **High-risk request → ESCALATE + approval.** `make pilot-escalate` (pauses,
-   nothing runs) then `make pilot-approve` (operator authorizes → executes).
+   nothing runs) then `make pilot-approve` (operator authorizes → the escalating
+   agent executes with its own credential).
 6. **Show the verified receipt + `EXECUTED`.** Point at the receipt (correlation id
    + payload hash) printed by the scenarios.
 7. **Show the audit trail + no bypass.** `make pilot-audit-verify` and

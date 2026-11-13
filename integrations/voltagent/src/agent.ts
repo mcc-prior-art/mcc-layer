@@ -11,6 +11,7 @@
  */
 
 import { Agent } from "@voltagent/core";
+import { resolveAgentIdentity } from "./agent-credential.js";
 import { MccClient } from "./mcc-client.js";
 import type { GovernedOutcome } from "./mcc-client.js";
 import { resolveModel } from "./model.js";
@@ -56,39 +57,15 @@ export interface AgentIdentityEnv {
   identity: ProposalIdentity;
 }
 
-/**
- * V05 (part 2): the credential the agent acting as `actor` presents. When
- * MCC_AGENT_API_KEYS (JSON {principal: key}) is set, each principal uses its
- * OWN registered key and a missing/malformed entry fails closed here. Unset:
- * the shared MCC_GATEWAY_API_KEY, which the gateway refuses on its identity
- * routes (/approvals, /approvals/{id}/execute, /mandates/execute) in strict mode.
- */
-export function agentApiKey(env: NodeJS.ProcessEnv, actor: string): string {
-  const raw = env.MCC_AGENT_API_KEYS;
-  if (raw === undefined || raw.trim() === "") return env.MCC_GATEWAY_API_KEY ?? "demo-key";
-  let keys: unknown;
-  try {
-    keys = JSON.parse(raw);
-  } catch {
-    throw new Error("MCC_AGENT_API_KEYS is not valid JSON (fail-closed)");
-  }
-  const key =
-    keys !== null && typeof keys === "object"
-      ? (keys as Record<string, unknown>)[actor]
-      : undefined;
-  if (typeof key !== "string" || key === "") {
-    throw new Error(`no per-agent credential for ${actor} in MCC_AGENT_API_KEYS (fail-closed)`);
-  }
-  return key;
-}
-
 /** Read the agent's (non-operator) MCC configuration from the environment. */
 export function agentEnv(env: NodeJS.ProcessEnv = process.env): AgentIdentityEnv {
-  const actor = env.MCC_VOLTAGENT_ACTOR ?? "agent/notify-bot";
+  // V05 (part 2): the actor is this agent's provisioned principal; its key is
+  // the ONE credential this container was given (see agent-credential.ts).
+  const { actor, apiKey } = resolveAgentIdentity(env, env.MCC_VOLTAGENT_ACTOR, "agent/notify-bot");
   return {
     gatewayUrl: env.MCC_GATEWAY_URL ?? "http://mcc-gateway:8001",
     quorumUrl: env.MCC_QUORUM_URL ?? "http://mcc-evaluator-quorum:8080",
-    apiKey: agentApiKey(env, actor),
+    apiKey,
     identity: {
       actor,
       resource: env.MCC_VOLTAGENT_RESOURCE ?? "crm",

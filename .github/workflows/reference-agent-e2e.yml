@@ -46,9 +46,14 @@ jobs:
           # by the outer timeout (exit 124). depends_on: service_healthy gates
           # startup, so an unhealthy redis/mock/gateway blocks the agent.
           set +e
-          timeout 720 docker compose up --build \
-            --abort-on-container-exit --exit-code-from reference-agent 2>&1 | tee compose.log
-          rc=${PIPESTATUS[0]}
+          # V05 (part 2): one container per agent principal, each holding ONLY its
+          # own provisioned credential. The driver starts the infrastructure (incl.
+          # the one-shot agent-credentials-init provisioner), waits for health, then
+          # runs every agent container to completion; ANY agent failure fails the job.
+          timeout 720 scripts/compose_agents_e2e.sh docker-compose.reference-agent.yml \
+            "mcc-gateway reference-agent-operator" \
+            "reference-agent-escalate reference-agent" compose.log
+          rc=$?
           set -e
           echo "compose exit code: ${rc}"
 
@@ -57,7 +62,7 @@ jobs:
             exit 1
           fi
           if [ "${rc}" -ne 0 ]; then
-            echo "::error::reference-agent exited non-zero (${rc})"
+            echo "::error::an agent container exited non-zero (${rc}) -- see compose.log"
             exit 1
           fi
 

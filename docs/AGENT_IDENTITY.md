@@ -70,7 +70,8 @@ idempotency key.
 - **Theft of an agent's own credential.** Whoever presents agent A's key *is*
   A to the gateway. This contract authenticates credentials; it is not proof
   of possession, and it is not hardware-bound. The response to a leaked key
-  is rotation and revocation (below).
+  is rotation and revocation (below). Deployments must deliver each key only
+  to its own agent (see *Credential distribution*).
 - **Non-identity routes are not covered.** See the route coverage matrix.
 
 ## Configuration
@@ -131,24 +132,128 @@ python scripts/generate_agent_credential.py --config secrets/agents.json --revok
    client code changes: the SDK, the VoltAgent TS client and the pilot client
    already send that header.
 3. Point the gateway at the registry (`MCC_AGENT_CREDENTIALS_CONFIG`).
-4. **Operator tooling that executes an approval on an agent's behalf** must
-   now present **that agent's** credential. An operator key alone has never
-   been able to execute; the shared agent key no longer can either.
+4. **Operators approve; agents execute.** Operator tooling holds only the
+   operator credential and only approves. The escalating agent executes its
+   own approved operation with its own credential. An operator never holds or
+   presents an agent credential (see *Credential distribution*).
 5. `MCC_AGENT_IDENTITY_MODE=legacy-shared-key` exists only to keep an
    unmigrated deployment running. It restores the impersonation exposure and
    should be temporary.
 
+## Credential distribution (PR #135 review fix)
+
+**Finding (reproduced on `d8fa730`).** The first version of this PR passed the
+whole provisioning map `MCC_AGENT_API_KEYS` (every principal's raw key) to every
+agent container. Two composes were affected:
+`docker-compose.pilot-voltagent.yml:180` and
+`docker-compose.pilot-clinic-voltagent.yml:166`. The demo composes also
+committed raw demo keys and gave one container several principals.
+
+- **Static evidence.** In the resolved compose config with synthetic canaries,
+  every agent container received all three principals' keys.
+- **Dynamic evidence.** A real-HTTP run against `gateway.app` was configured
+  from that resolved gateway environment. It ran as a local process, not a live
+  container. In it, B read A's key from B's own environment and executed A's
+  copied approval: `EXECUTED`, with 1 receipt.
+
+Selecting the right key in application code enforced nothing: a compromised
+container reads its whole environment.
+
+**Design.** The provisioning secrets stay inside the trusted provisioning
+boundary:
+
+| Element | Holds |
+|---|---|
+| `agent-credentials-init`: one-shot `python -m gateway.agent_provisioning`, root, `network_mode: none` | The only process that ever sees more than one raw agent key. It writes each agent's credential (mode 0400, owned by that agent's runtime uid) into **that agent's own named volume**. It also writes the registry, SHA-256 hashes only, for the gateway and quorum. |
+| Each agent container (one per principal) | Its own volume, mounted **read-only** at `/run/mcc-agent` (`MCC_AGENT_CREDENTIAL_FILE`). Nothing else: no provisioning map, no other agent's key, no tenant shared key (`MCC_GATEWAY_API_KEY`), no operator key. |
+| Gateway and quorum | The hash-only registry. |
+| Operator tooling | The operator key only. It approves and hands the single-use mandate back. The **agent executes** its own approved operation. |
+| `.env.pilot` | No agent key at all. |
+| `.dockerignore` | Keeps `.env*`, `secrets/`, `*.key`, `*.pem` and credential files out of every build context and image. |
+
+**Fail-closed on the agent side** (`gateway.agent_provisioning.load_agent_credential`
+and `integrations/voltagent/src/agent-credential.ts`):
+- a missing, unreadable or malformed credential file is refused;
+- unknown, missing, empty or padded fields are refused;
+- a provisioning map in the agent's environment is refused outright, even next
+  to a valid file;
+- a configured actor that differs from the provisioned principal is refused.
+
+**Persistence and rotation.**
+- Credentials are reused across restarts.
+- `make pilot-rotate-agent PRINCIPAL=agent/...`, or `--rotate`, replaces one
+  principal's key and rewrites the registry.
+- The gateway reloads the registry at start.
+
+**Verified in real containers** (`tests/container/test_agent_credential_isolation.py`,
+mandatory CI job `agent-credential-isolation`):
+- **Isolation.** B's environment, readable filesystem, mounts and image contain
+  none of A's credential, the shared or operator key, or the build-context
+  canaries.
+- **Impersonation.** B, using its own key and A's copied mandate, is refused on
+  both execute routes and on `POST /approvals`. Spoofed headers and body
+  fields gain nothing. Rejected requests leave no audit record and no receipt,
+  and do not consume the approval.
+- **Positive controls.** A then executes using the idempotency key B tried, the
+  approval is single-use, B executes its own operation, and the audit chain
+  verifies.
+- **Negative control.** Reintroducing the leak (mounting A's volume into B)
+  makes exactly the isolation tests fail.
+
 ### Shipped pilots and demos
 
-| Deployment | How it is wired |
+| Deployment | Agent containers (one per principal) |
 |---|---|
-| `docker-compose.notify-pilot.yml`, `docker-compose.reference-agent.yml`, `docker-compose.voltagent.yml` | gateway (and quorum) read the committed demo registry `deploy/pilot/agent_credentials.demo.json` (hashes of non-secret demo keys); the agent container gets `MCC_AGENT_API_KEYS` (JSON `{principal: key}`) and each principal it drives presents its own key |
-| `docker-compose.pilot-voltagent.yml`, `docker-compose.pilot-clinic-voltagent.yml` (deployable, `.env.pilot`) | the operator sets `MCC_AGENT_API_KEYS` in the git-ignored `.env.pilot`; at every gateway start `integrations/voltagent/mcc_side/agent_credentials.py` writes the hash-only registry to the config volume (missing/malformed keys refuse to start). `operator_cli.py` executes an approved escalation with the **escalated agent's** own key |
+| `docker-compose.pilot-voltagent.yml` (deployable) | `voltagent-agent` (agent/notify-bot), `voltagent-agent-unknown` (agent/unknown). The operator step (`make pilot-approve`) approves in the gateway container; the agent then executes with its own key. |
+| `docker-compose.pilot-clinic-voltagent.yml` (deployable) | `clinic-agent` (agent/axflow-clinic) |
+| `docker-compose.notify-pilot.yml`, `docker-compose.reference-agent.yml` | `*-agent` (agent/notify-bot), `*-agent-escalate` (agent/unknown). The operator sidecar is approve-only, as before. |
+| `docker-compose.voltagent.yml` (CI E2E) | `voltagent-agent`, `voltagent-agent-unknown`, plus the approve-only `voltagent-operator` sidecar. The agent runner no longer performs the operator role and holds no operator key. |
 
-The TS client (`agentApiKey` in `integrations/voltagent/src/agent.ts`) and the
-Python demo runners pick the acting principal's key from `MCC_AGENT_API_KEYS`
-and fail closed when it has no entry; they never fall back to acting as an
-agent with the shared key.
+`scripts/compose_agents_e2e.sh` runs these per-principal stacks: it starts the
+infrastructure, waits for health, then runs each agent container to
+completion, and any failure fails the job.
+
+**Trusted multi-agent test harnesses are a different thing.** The in-process
+harnesses under `tests/` (for example `tests/_notify_harness.py` and
+`tests/interoperability/harness.py`) and the VoltAgent `testserver` play
+several principals inside one trusted test process, using deterministic
+per-principal keys. They test the gateway's contract. They are not agent
+deployments and never ship as one.
+
+## Threat model and its limits
+
+**In scope: a fully compromised agent container.** Assume an attacker controls
+agent B's container: its code, environment and files, its own credential, and
+arbitrary requests. Assume B can collude with other compromised agents and copy
+mandates or approvals. Then:
+- B holds no other principal's credential, so it cannot authenticate as A;
+- presenting A's copied mandate or approval with its own key is refused;
+- B cannot create an approval in A's name;
+- authentication alone grants no authority: B's own operations still pass
+  independent authorization (mandate, quorum, approval policy).
+
+Colluding agents can each act only as themselves. They can pool what they are
+individually authorized to do; this contract does not reduce that.
+
+**Out of scope: compromise of the trusted side.** None of the above holds if
+any of these is compromised:
+- the provisioning boundary or the Docker host;
+- the gateway process or its host;
+- the decision-token signing key, an approval-signing or mandate-issuer key, or
+  a consensus evaluator quorum;
+- the operator credential, which can approve within the independent authority
+  policy.
+
+**Also not prevented:**
+- **Theft of an agent's own credential.** The key is a bearer secret with no
+  proof of possession; the response is rotation.
+- **Tampering with the shared ESCALATE state volume.** Agents can tamper with
+  it, which can deny service (delete or alter a hand-off). It grants no
+  authority: the mandate is signed for its subject and exact operation. Per-agent
+  state volumes are a follow-up.
+- **Revocation latency.** Revocation takes effect when the gateway restarts.
+
+See `docs/security/FLEET_IDENTITY_HARDENING_PLAN.md` for the follow-up design.
 
 ## Trust boundaries
 
@@ -224,4 +329,21 @@ weakened.
   - `tests/test_v05_mandate_tenant_binding_http.py::test_request_fields_cannot_supply_the_tenant`
     intentionally asserts that another tenant's key is refused at
     authentication (401).
+- **Changed by the credential-distribution fix** (the behaviour under test was
+  the flaw itself):
+  - **`tests/test_voltagent_operator_cli_idempotency.py`.** It asserted that the
+    operator EXECUTES the approved operation, which meant using the agent's
+    credential. The operator now only approves, so the execution assertions
+    moved to the agent (`integrations/voltagent/tests/agent-credential.test.ts`).
+    Its Round 26/27 checks are kept: reuse of `correlationId` as the idempotency
+    key, and fail-closed handling of a missing, blank or non-string
+    `correlationId` before any gateway call. The operator-side fail-closed
+    assertions are unchanged.
+  - **`tests/test_agent_operator_credential_separation.py`.** Its positive
+    control required each agent to still hold the shared tenant key. It now
+    also accepts the agent's own credential file, and only if that file is
+    delivered on a read-only volume mounted at its directory.
+  - **`TestNotifyPilotAgentScriptStillWorksEndToEnd`.** The scenario matrix now
+    runs as two processes, one per principal, each with only its own credential
+    file. Both must pass.
 

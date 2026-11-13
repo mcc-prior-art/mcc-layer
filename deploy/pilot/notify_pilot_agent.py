@@ -10,8 +10,11 @@ Demonstrates the four verdicts (evaluate) and a genuine EXECUTED result via the
 ESCALATE -> approve -> execute path (which reaches the mock service and requires a
 confirmed matching receipt before EXECUTED).
 
-Authority principal separation: this process holds ONLY
-``MCC_GATEWAY_API_KEY``. It never holds, reads, or derives
+Authority principal separation: this process holds ONLY its own provisioned
+per-agent credential (V05 part 2, ``MCC_AGENT_CREDENTIAL_FILE``) and runs only
+its own principal's scenarios (``pilot-agent`` = agent/notify-bot:
+ALLOW/DENY/CONSTRAIN; ``pilot-agent-escalate`` = agent/unknown: ESCALATE). It
+never holds another agent's key, the tenant's shared key, or
 ``MCC_GATEWAY_OPERATOR_API_KEY`` -- the ``pilot-operator`` service
 (``gateway_approval_operator.py``) is a separate process, in a separate
 container, that holds it. For ESCALATE, this agent records a non-secret
@@ -36,26 +39,27 @@ from mcc_client import (  # noqa: E402
     Approval, MCCClient, Verdict, MCCDeniedError, MCCError,
 )
 
+from gateway.agent_provisioning import (  # noqa: E402
+    AgentCredentialFileError,
+    agent_credential_from_env,
+)
+
 GATEWAY = os.environ.get("MCC_GATEWAY_URL", "http://mcc-gateway:8001")
-API_KEY = os.environ.get("MCC_GATEWAY_API_KEY", "demo-key")
 STATE_DIR = Path(os.environ.get("MCC_PILOT_STATE_DIR", "/pilot-state"))
 APPROVAL_WAIT_TIMEOUT_S = float(os.environ.get("MCC_APPROVAL_WAIT_TIMEOUT_S", "60.0"))
 APPROVAL_POLL_INTERVAL_S = float(os.environ.get("MCC_APPROVAL_POLL_INTERVAL_S", "1.0"))
 
-# V05 (part 2): per-agent identity. Each principal this demo drives presents
-# its OWN registered credential (MCC_AGENT_API_KEYS = JSON {principal: key});
-# the gateway registry holds only their hashes. A principal with no key here
-# fails closed before any request -- the shared tenant key is never used to
-# act as an agent.
-AGENT_API_KEYS = json.loads(os.environ.get("MCC_AGENT_API_KEYS") or "{}")
 
-
-def _client_for(actor: str) -> MCCClient:
-    key = AGENT_API_KEYS.get(actor)
-    if not isinstance(key, str) or not key:
-        raise SystemExit(f"FAILED: no per-agent credential for {actor!r} in "
-                         "MCC_AGENT_API_KEYS (fail-closed)")
-    return MCCClient(GATEWAY, api_key=key, timeout=15.0)
+def _agent_client():
+    """V05 (part 2): this process is ONE agent principal -- the single
+    credential its container was provisioned with (MCC_AGENT_CREDENTIAL_FILE).
+    It holds no other agent's key, no provisioning map, no shared tenant key
+    and no operator key. Missing or ambiguous identity fails closed here."""
+    try:
+        cred = agent_credential_from_env()
+    except AgentCredentialFileError as exc:
+        raise SystemExit(f"FAILED: {exc} (fail-closed)") from None
+    return cred.principal_id, MCCClient(GATEWAY, api_key=cred.api_key, timeout=15.0)
 
 
 def _wait_ready(client: MCCClient) -> None:
@@ -74,7 +78,7 @@ def _corr(name: str) -> str:
 
 
 def main() -> int:
-    client = MCCClient(GATEWAY, api_key=API_KEY, timeout=15.0)
+    principal, client = _agent_client()
     _wait_ready(client)
     failures = []
 
@@ -89,8 +93,15 @@ def main() -> int:
     print("MCC-Core Real Governed Executor Pilot")
     print("=" * 60)
 
+    # One container per principal: run only this principal's scenarios
+    # (agent/notify-bot: ALLOW/DENY/CONSTRAIN; agent/unknown: ESCALATE).
+    scenarios = [s for s in scenarios if s[1] == principal]
+    if not scenarios:
+        print(f"PILOT FAILED: no scenario for principal {principal} (fail-closed)")
+        return 1
+    print(f"  acting as          : {principal} (its own provisioned credential)")
+
     for expected, actor, payload in scenarios:
-        client = _client_for(actor)
         payload = dict(payload, correlation_id=_corr(expected.lower()))
         d = client.evaluate(actor_id=actor, action="send_notification",
                             resource="crm", payload=payload,
@@ -185,7 +196,8 @@ def main() -> int:
     if failures:
         print("PILOT FAILED:", "; ".join(failures))
         return 1
-    print("PILOT PASSED: four verdicts + genuine EXECUTED (confirmed receipt) + audit verified.")
+    print(f"PILOT PASSED ({principal}: {', '.join(e for e, _, _ in scenarios)}): governed verdicts "
+          "+ genuine EXECUTED (confirmed receipt) + audit verified.")
     print("The model proposes. MCC decides. The gate enforces. The audit chain records.")
     return 0
 

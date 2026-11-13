@@ -684,10 +684,6 @@ class TestNotifyPilotAgentScriptStillWorksEndToEnd:
         import threading
 
         monkeypatch.setenv("MCC_GATEWAY_URL", hz_gated.base_url)
-        monkeypatch.setenv("MCC_GATEWAY_API_KEY", API_KEY)
-        # V05 (part 2): each principal the script drives has its OWN key.
-        monkeypatch.setenv("MCC_AGENT_API_KEYS", json.dumps(
-            {p: agent_key(p) for p in ("agent/notify-bot", "agent/unknown")}))
         monkeypatch.setenv("MCC_PILOT_STATE_DIR", str(tmp_path))
         monkeypatch.setenv("MCC_APPROVAL_WAIT_TIMEOUT_S", "8")
         monkeypatch.setenv("MCC_APPROVAL_POLL_INTERVAL_S", "0.2")
@@ -704,5 +700,16 @@ class TestNotifyPilotAgentScriptStillWorksEndToEnd:
         op_thread = threading.Thread(target=operator.main, daemon=True)
         op_thread.start()
 
-        exit_code = agent.main()
-        assert exit_code == 0
+        # V05 (part 2): one process = one principal, holding ONLY its own
+        # credential file. The full scenario matrix is the union of the
+        # agent/unknown run (ESCALATE, via the gated operator) and the
+        # agent/notify-bot run (ALLOW/DENY/CONSTRAIN) -- both must pass.
+        exit_codes = {}
+        for principal in ("agent/unknown", "agent/notify-bot"):
+            cred = tmp_path / f"cred-{principal.split('/')[1]}.json"
+            cred.write_text(json.dumps({"tenant_id": "pilot", "principal_id": principal,
+                                        "credential_id": f"test-{principal}",
+                                        "api_key": agent_key(principal)}))
+            monkeypatch.setenv("MCC_AGENT_CREDENTIAL_FILE", str(cred))
+            exit_codes[principal] = agent.main()
+        assert exit_codes == {"agent/unknown": 0, "agent/notify-bot": 0}
