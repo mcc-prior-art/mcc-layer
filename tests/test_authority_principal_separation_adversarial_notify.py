@@ -33,7 +33,7 @@ from mcc_client import (
 )
 
 from pilot_notify import recorded_receipts, reset_receipts
-from tests._notify_harness import API_KEY, OPERATOR_KEY, NotifyPilotHarness
+from tests._notify_harness import API_KEY, OPERATOR_KEY, NotifyPilotHarness, agent_key
 
 
 @pytest.fixture(scope="module")
@@ -51,9 +51,10 @@ def _reset():
     yield
 
 
-def _agent_client(harness: NotifyPilotHarness) -> MCCClient:
-    """No operator key -- matches pilot-agent / reference-agent after the fix."""
-    return MCCClient(harness.base_url, api_key=API_KEY)
+def _agent_client(harness: NotifyPilotHarness, actor: str = "agent/unknown") -> MCCClient:
+    """No operator key -- matches pilot-agent / reference-agent after the fix.
+    V05 (part 2): presents ``actor``'s OWN registered credential."""
+    return MCCClient(harness.base_url, api_key=agent_key(actor))
 
 
 def _operator_client(harness: NotifyPilotHarness) -> MCCClient:
@@ -153,8 +154,11 @@ class TestCaseD_WrongBindingRejected:
                             resource="crm", payload=_payload("sep2-d-2"),
                             idempotency_key="sep2-d-2")
 
+        # V05 (part 2): the attacker uses its OWN credential, so the granted
+        # mandate's actor binding -- not the identity check -- refuses it.
+        attacker = _agent_client(hz, "agent/ATTACKER")
         with pytest.raises(MCCError):
-            agent.execute_after_approval(d2, granted)
+            attacker.execute_after_approval(d2, granted)
 
         assert recorded_receipts() == []
 

@@ -40,6 +40,15 @@ from gateway.governance_api import mount_approval_routes, mount_mandate_routes
 from gateway.governance_service import GovernanceService
 from gateway.trust import TrustSet
 
+# V05 (part 2): "agent-key" is agent/x's registered per-agent credential in the
+# mount's default "pilot" tenant; the shared tenant key is a separate, unused value.
+from tests._agent_credentials import registry as _agent_registry  # noqa: E402
+from tests._agent_credentials import shared_tenant_key  # noqa: E402
+# agent/ATTACKER holds its OWN credential so the actor-substitution test reaches
+# the approval binding it targets (raw_execute sends the acting actor's key).
+_AGENT_CREDS = _agent_registry("pilot", {"agent/x": "agent-key",
+                                         "agent/ATTACKER": "attacker-key"})
+
 POLICY = "sha256:p"
 AGENT = {"x-api-key": "agent-key"}
 OP = {"x-operator-key": "op-key"}
@@ -72,8 +81,10 @@ def build(policy_hash=POLICY):
                             revocation_registry=revocation, approvals=approvals,
                             upstream=upstream, policy_hash=policy_hash)
     app = FastAPI()
-    mount_mandate_routes(app, svc, api_key="agent-key", operator_key="op-key")
-    mount_approval_routes(app, svc, api_key="agent-key", operator_key="op-key")
+    mount_mandate_routes(app, svc, api_key=shared_tenant_key("agent-key"), operator_key="op-key",
+                     agent_credentials=_AGENT_CREDS)
+    mount_approval_routes(app, svc, api_key=shared_tenant_key("agent-key"), operator_key="op-key",
+                      agent_credentials=_AGENT_CREDS)
     return svc, TestClient(app), calls
 
 
@@ -100,7 +111,8 @@ def raw_execute(client, rid, *, mandate, actor="agent/x", action="generic_op",
                  resource="res-1", context, transaction_id="txn-1", idem="op-1"):
     """The exact raw HTTP surface a compromised proposer controls: every
     field here is attacker-choosable independent of what was escalated."""
-    return client.post(f"/approvals/{rid}/execute", headers=AGENT, json={
+    headers = {"x-api-key": "attacker-key"} if actor == "agent/ATTACKER" else AGENT
+    return client.post(f"/approvals/{rid}/execute", headers=headers, json={
         "mandate": mandate, "actor": actor, "action": action, "resource": resource,
         "context": context, "transaction_id": transaction_id, "idempotency_key": idem})
 

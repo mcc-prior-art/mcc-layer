@@ -1,7 +1,7 @@
 # Framework-Neutral Reference Governed Agent — one-command E2E.
 #
-#   docker compose -f docker-compose.reference-agent.yml up --build \
-#       --abort-on-container-exit --exit-code-from reference-agent
+#   scripts/compose_agents_e2e.sh docker-compose.reference-agent.yml \
+#       "mcc-gateway reference-agent-operator" "reference-agent-escalate reference-agent"
 #
 # Services:
 #   redis              — Redis-backed nonce/idempotency/velocity/approval state.
@@ -14,8 +14,14 @@
 #                        EXECUTED means a genuine, matching external receipt.
 #   reference-agent    — the framework-neutral reference agent: uses the SDK only;
 #                        never calls the mock service directly. There is no second
-#                        or bypass execution path. Holds ONLY MCC_GATEWAY_API_KEY --
-#                        no operator key.
+#                        or bypass execution path. Runs as agent/notify-bot
+#                        holding ONLY its own provisioned credential (V05 part
+#                        2) -- no operator key, no shared tenant key.
+#   reference-agent-escalate — the same runner as agent/unknown (ESCALATE), in
+#                        its OWN container with its OWN credential.
+#   agent-credentials-init — one-shot TRUSTED provisioner (no network): one
+#                        credential per agent into its own volume + a
+#                        SHA-256-only registry for the gateway.
 #   reference-agent-operator — SEPARATE process/container/credential holder from
 #                        reference-agent. Holds the operator key. Watches a
 #                        shared, non-secret state file (the pending approval's
@@ -59,6 +65,36 @@ services:
       timeout: 3s
       retries: 10
 
+  agent-credentials-init:
+    build:
+      context: .
+      dockerfile: deploy/pilot/Dockerfile.reference-agent
+    # V05 (part 2) -- TRUSTED PROVISIONING BOUNDARY (one-shot, no network).
+    # Generates a fresh random credential per agent into THAT agent's own
+    # volume and the gateway's registry (SHA-256 hashes only) into
+    # agent-registry. The only container that ever sees more than one raw
+    # agent key; no agent key is committed anywhere in the repository.
+    user: "0:0"
+    network_mode: none
+    command:
+      - "python"
+      - "-m"
+      - "gateway.agent_provisioning"
+      - "--registry"
+      - "/registry/agent_credentials.json"
+      - "--tenant-id"
+      - "pilot"
+      - "--owner"
+      - "10005:10005"
+      - "--agent"
+      - "agent/notify-bot=/creds/notify-bot"
+      - "--agent"
+      - "agent/unknown=/creds/unknown"
+    volumes:
+      - agent-registry:/registry
+      - agent-cred-notify-bot:/creds/notify-bot
+      - agent-cred-unknown:/creds/unknown
+
   mcc-gateway:
     build:
       context: .
@@ -74,6 +110,10 @@ services:
       # reference-agent nor reference-agent-operator reads or supplies this
       # file.
       MCC_AUTHORITY_POLICY_CONFIG: "/app/authority_policy.notify.json"
+      # V05 (part 2): the per-agent credential registry -- SHA-256 hashes only,
+      # written by agent-credentials-init into the read-only agent-registry
+      # volume. The gateway never sees a raw agent key.
+      MCC_AGENT_CREDENTIALS_CONFIG: "/registry/agent_credentials.json"
       MCC_GATEWAY_MODE: "inline"
       MCC_GATEWAY_AUDIT_LOG_PATH: "/data/audit.jsonl"
       # The governed executor: perform the outbound call and require a confirmed,
@@ -93,8 +133,11 @@ services:
       MCC_TIME_TRUST_BACKEND: "redis"
     networks: [agent_edge, gov_internal]
     volumes:
+      - agent-registry:/registry:ro
       - refagent-audit:/data
     depends_on:
+      agent-credentials-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       mock-notification:
@@ -116,10 +159,41 @@ services:
     # separate credential) can grant an approval.
     environment:
       MCC_GATEWAY_URL: "http://mcc-gateway:8001"
-      MCC_GATEWAY_API_KEY: "demo-key"
+      # V05 (part 2): this container IS one principal. It receives ONLY its own
+      # provisioned credential (read-only volume) -- never the provisioning
+      # map, the tenant's shared key, another agent's key or the operator key.
+      MCC_AGENT_CREDENTIAL_FILE: "/run/mcc-agent/credential.json"
       MCC_PILOT_STATE_DIR: "/pilot-state"
     volumes:
       - refagent-pilot-state:/pilot-state
+      - agent-cred-notify-bot:/run/mcc-agent:ro
+    networks: [agent_edge]
+    depends_on:
+      mcc-gateway:
+        condition: service_healthy
+
+  # V05 (part 2): agent/unknown is a DIFFERENT principal (its ESCALATE has no
+  # notify.send mandate), so it runs in its OWN container with its OWN
+  # credential volume -- the two agents never share a key.
+  reference-agent-escalate:
+    build:
+      context: .
+      dockerfile: deploy/pilot/Dockerfile.reference-agent
+    command: ["python", "/app/reference_agent_runner.py"]
+    # Authority principal separation: no operator key here. This container
+    # cannot self-approve its own ESCALATE even if its own code were
+    # compromised -- only reference-agent-operator (a separate container,
+    # separate credential) can grant an approval.
+    environment:
+      MCC_GATEWAY_URL: "http://mcc-gateway:8001"
+      # V05 (part 2): this container IS one principal. It receives ONLY its own
+      # provisioned credential (read-only volume) -- never the provisioning
+      # map, the tenant's shared key, another agent's key or the operator key.
+      MCC_AGENT_CREDENTIAL_FILE: "/run/mcc-agent/credential.json"
+      MCC_PILOT_STATE_DIR: "/pilot-state"
+    volumes:
+      - refagent-pilot-state:/pilot-state
+      - agent-cred-unknown:/run/mcc-agent:ro
     networks: [agent_edge]
     depends_on:
       mcc-gateway:
@@ -148,5 +222,8 @@ services:
         condition: service_healthy
 
 volumes:
+  agent-registry:
+  agent-cred-notify-bot:
+  agent-cred-unknown:
   refagent-audit:
   refagent-pilot-state:

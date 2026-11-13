@@ -37,6 +37,7 @@ import copy
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+from gateway.agent_identity import AuthenticatedAgent
 from gateway.governance_service import ExecOutcome, GovernanceService
 from mcc_attester_service import AttesterService
 from mcc_core.signing import hash_document
@@ -145,6 +146,12 @@ async def run_positive_path(
         mandate=mandate, actor=actor, action=proposal.action, resource=proposal.resource,
         context=proposal.payload, attestation=attestation, idempotency_key=logical_operation_id,
         tenant_id=tenant_id,
+        # V05 (part 2): this in-process reference pipeline embeds
+        # GovernanceService and IS the authenticating caller for the one agent
+        # it drives (library trust boundary; see docs/AGENT_IDENTITY.md). It
+        # binds the authenticated principal to ``actor``, so the governed
+        # principal == actor == signed mandate subject checks still apply.
+        agent=AuthenticatedAgent(tenant_id, actor, "gpt6-astra-reference:in-process"),
     )
 
 

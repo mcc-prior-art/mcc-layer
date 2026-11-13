@@ -32,6 +32,15 @@ from gateway.governance_api import mount_mandate_routes
 from gateway.governance_service import GovernanceService
 from gateway.trust import Issuer, IssuerKey, TrustSet
 
+# V05 (part 2): "agent-key" is agent/x's registered per-agent credential in the
+# mount's default "pilot" tenant; the shared tenant key is a separate, unused value.
+from tests._agent_credentials import registry as _agent_registry  # noqa: E402
+from tests._agent_credentials import shared_tenant_key  # noqa: E402
+# agent/ATTACKER holds its OWN credential so the actor-substitution test reaches
+# the signed-subject binding it targets (not the earlier per-agent identity check).
+_AGENT_CREDS = _agent_registry("pilot", {"agent/x": "agent-key",
+                                         "agent/ATTACKER": "attacker-key"})
+
 FUTURE = 4_000_000_000  # ~2096, well past real wall-clock now
 PAST = 1
 POLICY = "sha256:p"
@@ -66,7 +75,8 @@ def build(upstream_ok=True):
                             revocation_registry=revocation, approvals=approvals,
                             upstream=upstream, policy_hash=POLICY)
     app = FastAPI()
-    mount_mandate_routes(app, svc, api_key="agent-key", operator_key="op-key")
+    mount_mandate_routes(app, svc, api_key=shared_tenant_key("agent-key"), operator_key="op-key",
+                     agent_credentials=_AGENT_CREDS)
     return svc, issuer_key, TestClient(app), calls
 
 
@@ -166,7 +176,7 @@ def test_execute_expired_mandate_blocked():
 
 def test_execute_actor_substitution_blocked():
     _, ik, client, calls = build()
-    r = client.post("/mandates/execute", headers=AGENT, json={
+    r = client.post("/mandates/execute", headers={"x-api-key": "attacker-key"}, json={
         "mandate": mandate(ik, subject="agent/x"), "actor": "agent/ATTACKER",
         "action": "generic_op", "resource": "res-1", "context": {}})
     assert r.json()["status"] == "BLOCKED"

@@ -39,6 +39,8 @@ networks:
   gov_internal:
 
 volumes:
+  agent-cred-notify-bot:
+  agent-cred-unknown:
   pilot-audit:
   pilot-config:
   pilot-state:
@@ -69,11 +71,44 @@ services:
       timeout: 3s
       retries: 10
 
+  agent-credentials-init:
+    build:
+      context: .
+      dockerfile: integrations/voltagent/docker/Dockerfile.mcc
+    # V05 (part 2) -- TRUSTED PROVISIONING BOUNDARY (one-shot, no network).
+    # Generates each agent's credential into THAT agent's own named volume
+    # (reused across restarts) and writes the gateway's registry with SHA-256
+    # hashes only. This is the ONLY container that ever sees more than one raw
+    # agent key. Agent containers mount only their own credential volume
+    # (read-only); the gateway and quorum mount only the hash registry.
+    # Rotation: `make pilot-rotate-agent PRINCIPAL=...` (or delete the agent's
+    # volume) and restart the gateway.
+    user: "0:0"
+    network_mode: none
+    command:
+      - "python"
+      - "-m"
+      - "gateway.agent_provisioning"
+      - "--registry"
+      - "/config/agent_credentials.json"
+      - "--tenant-id"
+      - "${MCC_GATEWAY_TENANT_ID:-pilot}"
+      - "--owner"
+      - "1000:1000"
+      - "--agent"
+      - "agent/notify-bot=/creds/notify-bot"
+      - "--agent"
+      - "agent/unknown=/creds/unknown"
+    volumes:
+      - pilot-config:/config
+      - agent-cred-notify-bot:/creds/notify-bot
+      - agent-cred-unknown:/creds/unknown
+
   mcc-gateway:
     build:
       context: .
       dockerfile: integrations/voltagent/docker/Dockerfile.mcc
-    env_file: [.env.pilot]
+    env_file: ["${MCC_PILOT_ENV_FILE:-.env.pilot}"]
     # Generate a PERSISTENT gateway signing key + evaluator keyset into the config
     # volume on first start (idempotent; nothing exits early). Then serve.
     command:
@@ -92,6 +127,9 @@ services:
         exec uvicorn gateway.app:app --host 0.0.0.0 --port 8001
     environment:
       MCC_GATEWAY_MODE: "inline"
+      # V05 (part 2): the per-agent credential registry -- SHA-256 hashes only,
+      # written by agent-credentials-init. The gateway never sees a raw agent key.
+      MCC_AGENT_CREDENTIALS_CONFIG: "/config/agent_credentials.json"
       # Independent authority-side policy (PROPOSAL != PERMISSION): an
       # authenticated operator key alone no longer suffices to grant an
       # ESCALATE approval -- this exact, independently configured policy
@@ -115,6 +153,8 @@ services:
       - pilot-state:/pilot-state
     networks: [agent_edge, gov_internal]
     depends_on:
+      agent-credentials-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       external-service:
@@ -129,16 +169,19 @@ services:
     build:
       context: .
       dockerfile: integrations/voltagent/docker/Dockerfile.mcc
-    env_file: [.env.pilot]
+    env_file: ["${MCC_PILOT_ENV_FILE:-.env.pilot}"]
     command:
       - /bin/sh
       - -c
       - |
-        until [ -f /config/evaluator_1.pem ]; do echo "waiting for evaluator keys..."; sleep 1; done
+        until [ -f /config/evaluator_1.pem ] && [ -f /config/agent_credentials.json ]; do echo "waiting for evaluator keys + agent registry..."; sleep 1; done
         exec uvicorn integrations.voltagent.mcc_side.evaluator_quorum:app --host 0.0.0.0 --port 8080
     environment:
       MCC_QUORUM_GATEWAY_URL: "http://mcc-gateway:8001"
       MCC_EVALUATOR_KEYS_DIR: "/config"
+      # V05 (part 2): also accept the agents' own registered credentials
+      # (the registry the gateway wrote into the shared config volume).
+      MCC_AGENT_CREDENTIALS_CONFIG: "/config/agent_credentials.json"
     volumes:
       - pilot-config:/config:ro
     networks: [agent_edge, gov_internal]
@@ -165,8 +208,10 @@ services:
     environment:
       MCC_GATEWAY_URL: "${MCC_GATEWAY_URL:-http://mcc-gateway:8001}"
       MCC_QUORUM_URL: "${MCC_QUORUM_URL:-http://evaluator-quorum:8080}"
-      MCC_GATEWAY_API_KEY: "${MCC_GATEWAY_API_KEY:?MCC_GATEWAY_API_KEY must be set in .env.pilot}"
-      MCC_VOLTAGENT_ACTOR: "${MCC_VOLTAGENT_ACTOR:-agent/notify-bot}"
+      # V05 (part 2): this container IS one principal. It receives ONLY its own
+      # provisioned credential (read-only volume); never the provisioning map,
+      # the tenant's shared key, another agent's key or the operator key.
+      MCC_AGENT_CREDENTIAL_FILE: "/run/mcc-agent/credential.json"
       MCC_VOLTAGENT_RESOURCE: "${MCC_VOLTAGENT_RESOURCE:-crm}"
       MCC_VOLTAGENT_MODEL_PROVIDER: "${MCC_VOLTAGENT_MODEL_PROVIDER:-deterministic}"
       MCC_VOLTAGENT_MODEL: "${MCC_VOLTAGENT_MODEL:-}"
@@ -186,6 +231,60 @@ services:
         exec tail -f /dev/null
     volumes:
       - pilot-state:/pilot-state
+      - agent-cred-notify-bot:/run/mcc-agent:ro
+    networks: [agent_edge]
+    depends_on:
+      mcc-gateway:
+        condition: service_healthy
+      evaluator-quorum:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://mcc-gateway:8001/ready').then(function(r){process.exit(r.ok?0:1)}).catch(function(){process.exit(1)})"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+
+  # V05 (part 2): agent/unknown is a DIFFERENT principal (its ESCALATE scenario
+  # has no notify.send mandate), so it runs in its OWN container with its OWN
+  # credential volume -- the two agents never share a key.
+  voltagent-agent-unknown:
+    build:
+      context: .
+      dockerfile: integrations/voltagent/docker/Dockerfile.agent
+    # Credential separation: explicit allowlist, not `env_file: [.env.pilot]`.
+    # pilot-cli.ts/agent.ts (this container's code) read only the vars below --
+    # never MCC_GATEWAY_OPERATOR_API_KEY (that's e2e-runner.ts, a local dev
+    # harness that never runs in this container). A blanket env_file previously
+    # handed this container the operator key purely because it lived in the
+    # same .env.pilot as the agent's own key -- the comment below already said
+    # "No operator key here"; the wiring now actually matches it.
+    environment:
+      MCC_GATEWAY_URL: "${MCC_GATEWAY_URL:-http://mcc-gateway:8001}"
+      MCC_QUORUM_URL: "${MCC_QUORUM_URL:-http://evaluator-quorum:8080}"
+      # V05 (part 2): this container IS one principal. It receives ONLY its own
+      # provisioned credential (read-only volume); never the provisioning map,
+      # the tenant's shared key, another agent's key or the operator key.
+      MCC_AGENT_CREDENTIAL_FILE: "/run/mcc-agent/credential.json"
+      MCC_VOLTAGENT_RESOURCE: "${MCC_VOLTAGENT_RESOURCE:-crm}"
+      MCC_VOLTAGENT_MODEL_PROVIDER: "${MCC_VOLTAGENT_MODEL_PROVIDER:-deterministic}"
+      MCC_VOLTAGENT_MODEL: "${MCC_VOLTAGENT_MODEL:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      MCC_PILOT_STATE_DIR: "${MCC_PILOT_STATE_DIR:-/pilot-state}"
+    # Wait until MCC + quorum are READY (a reachable process is not ready), then
+    # idle. The operator drives scenarios with `docker compose exec` (make targets).
+    # No operator key here; no route to the external service.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        echo "waiting for MCC gateway + evaluator quorum readiness..."
+        until node -e "fetch('http://mcc-gateway:8001/ready').then(function(r){process.exit(r.ok?0:1)}).catch(function(){process.exit(1)})"; do sleep 2; done
+        until node -e "fetch('http://evaluator-quorum:8080/ready').then(function(r){process.exit(r.ok?0:1)}).catch(function(){process.exit(1)})"; do sleep 2; done
+        echo "READY: VoltAgent agent idle; run scenarios via make pilot-allow / pilot-deny / ..."
+        exec tail -f /dev/null
+    volumes:
+      - pilot-state:/pilot-state
+      - agent-cred-unknown:/run/mcc-agent:ro
     networks: [agent_edge]
     depends_on:
       mcc-gateway:

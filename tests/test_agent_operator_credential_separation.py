@@ -250,6 +250,17 @@ class TestAgentCredentialSeparation:
             if k in ("MCC_GATEWAY_API_KEY", "MCC_EGRESS_API_KEY")
             and v not in ("", "<<REQUIRED_VAR_MISSING>>")
         }
+        # V05 (part 2): a governance agent's own credential is its OWN
+        # provisioned per-agent credential file -- never the tenant's shared
+        # key -- delivered on a READ-ONLY volume mounted at that file's
+        # directory (and nowhere else). Present means: the env var names the
+        # file AND such a volume is mounted.
+        cred_file = effective.get("MCC_AGENT_CREDENTIAL_FILE", "")
+        if cred_file and cred_file != "<<REQUIRED_VAR_MISSING>>":
+            cred_dir = cred_file.rsplit("/", 1)[0]
+            mounts = yaml.safe_load(current_text)["services"][service].get("volumes", [])
+            if any(isinstance(m, str) and m.endswith(f":{cred_dir}:ro") for m in mounts):
+                agent_keys_present["MCC_AGENT_CREDENTIAL_FILE"] = cred_file
         assert agent_keys_present, f"{path}::{service} lost its own required agent credential"
 
     def test_non_vacuity_historical_vulnerable_config_leaked_the_marker(self, path, service):

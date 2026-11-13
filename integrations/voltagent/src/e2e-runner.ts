@@ -14,7 +14,15 @@
  * operator key. A clean exit alone is NOT success — the markers below must print.
  */
 
+import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { agentEnv, buildGovernedAgentFromEnv } from "./agent.js";
+import {
+  APPROVAL_FILE,
+  executeApprovedFromState,
+  loadApprovedEscalation,
+  recordEscalation,
+} from "./approved-continuation.js";
 import type { GovernedOutcome } from "./mcc-client.js";
 import { MccClient } from "./mcc-client.js";
 import { resolveModel } from "./model.js";
@@ -60,11 +68,9 @@ function printOutcome(label: string, o: GovernedOutcome | undefined): void {
 async function runAgentScenario(
   label: string,
   request: string,
-  actor: string,
 ): Promise<GovernedOutcome | undefined> {
-  const env = { ...process.env, MCC_VOLTAGENT_ACTOR: actor };
   let captured: GovernedOutcome | undefined;
-  const { agent } = await buildGovernedAgentFromEnv(env, (o) => {
+  const { agent } = await buildGovernedAgentFromEnv(process.env, (o) => {
     captured = o;
   });
   await agent.generateText(request);
@@ -72,49 +78,35 @@ async function runAgentScenario(
   return captured;
 }
 
-async function main(): Promise<number> {
-  const cfg = agentEnv(process.env);
-  const operatorKey = process.env.MCC_GATEWAY_OPERATOR_API_KEY ?? "op-key";
-  // Operator client: holds the operator key. This is NOT the agent — the agent's
-  // client never has it. Used only to grant the ESCALATE approval.
-  const operator = new MccClient({
-    gatewayUrl: cfg.gatewayUrl,
-    quorumUrl: cfg.quorumUrl,
-    apiKey: cfg.apiKey,
-    operatorKey,
-  });
+async function waitForApproval(stateDir: string, principal: string): Promise<boolean> {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    if (loadApprovedEscalation(stateDir, principal).ok) return true;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return false;
+}
 
-  console.log("=".repeat(70));
-  console.log("VoltAgent → MCC-Core Real Governed Integration (Docker E2E)");
-  console.log("=".repeat(70));
-  await waitForReady(operator, "corr-e2e-ready");
-  const { provider } = await resolveModel(process.env);
-  console.log(`  model provider      : ${provider}`);
-
-  // A. ALLOW -> genuine EXECUTED.
+/** ALLOW / DENY / CONSTRAIN as agent/notify-bot (its own container + credential). */
+async function runNotifyBot(cfg: ReturnType<typeof agentEnv>): Promise<void> {
   const allow = await runAgentScenario(
     "ALLOW",
     "Send a confirmation notification to customer-123 that their order has been approved.",
-    cfg.identity.actor,
   );
   check(allow?.verdict === "ALLOW", "ALLOW: unexpected verdict");
   check(allow?.status === "EXECUTED", "ALLOW: genuine EXECUTED absent (no verified receipt)");
   check(allow?.receipt?.receiptVerified === true, "ALLOW: external receipt not verified");
 
-  // B. DENY -> blocked, service never called.
   const deny = await runAgentScenario(
     "DENY",
     "Page customer-500 on the pager channel that their subscription lapsed.",
-    cfg.identity.actor,
   );
   check(deny?.verdict === "DENY", "DENY: unexpected verdict");
   check(deny?.executed === false && deny?.status === "BLOCKED", "DENY: must not execute");
 
-  // C. CONSTRAIN -> only the clamped payload executed.
   const constrain = await runAgentScenario(
     "CONSTRAIN",
     "Urgently notify customer-777 that their payment failed.",
-    cfg.identity.actor,
   );
   check(constrain?.verdict === "CONSTRAIN", "CONSTRAIN: unexpected verdict");
   check(constrain?.status === "EXECUTED", "CONSTRAIN: genuine EXECUTED absent");
@@ -122,50 +114,87 @@ async function main(): Promise<number> {
     (constrain?.finalPayload?.priority as number | undefined) === 3,
     "CONSTRAIN: executed payload was not clamped to priority 3",
   );
+  void cfg;
+}
 
-  // D. ESCALATE -> agent gets PENDING_APPROVAL; operator approves -> EXECUTED.
-  const escRequest = "Send a confirmation to customer-321 that their appointment is confirmed.";
-  const escalate = await runAgentScenario("ESCALATE (proposal)", escRequest, "agent/unknown");
+/**
+ * ESCALATE as agent/unknown: propose -> PENDING_APPROVAL; the separate operator
+ * sidecar (operator_cli.py --watch, operator key only) approves; THIS agent then
+ * executes its own approved operation with its own credential.
+ */
+async function runUnknown(cfg: ReturnType<typeof agentEnv>, client: MccClient): Promise<void> {
+  const stateDir = process.env.MCC_PILOT_STATE_DIR ?? "/pilot-state";
+  const escalate = await runAgentScenario(
+    "ESCALATE (proposal)",
+    "Send a confirmation to customer-321 that their appointment is confirmed.",
+  );
   check(escalate?.verdict === "ESCALATE", "ESCALATE: unexpected verdict");
   check(
     escalate?.executed === false && escalate?.status === "PENDING_APPROVAL",
     "ESCALATE: must not execute before approval",
   );
   check(Boolean(escalate?.approvalRequestId), "ESCALATE: no approval request opened");
+  if (!escalate?.approvalRequestId) return;
 
-  if (escalate?.approvalRequestId) {
-    // Operator (separate authority) approves and the governed execution
-    // continues the SAME escalated operation -- reusing escalate.finalPayload
-    // (the exact content that was escalated and approved) rather than
-    // hand-typing a new message here. The gateway now binds the approval to
-    // the exact server-stored payload (see src/mcc_core/approvals.py), so
-    // even a cosmetically-different re-typed payload for "the same" action
-    // is correctly rejected as a substitution -- this demo continues the
-    // real approved operation, not a reconstruction of it.
-    const proposal = {
-      actor: "agent/unknown",
-      action: ACTION,
-      resource: cfg.identity.resource,
-      context: escalate.finalPayload ?? {},
-    };
-    const granted = await operator.approveAsOperator(
-      escalate.approvalRequestId,
-      escalate.correlationId,
-    );
-    console.log(`\n--- Scenario: ESCALATE (operator ${granted.state}) ---`);
-    const done = await operator.executeApprovedNotification(
-      proposal,
-      escalate.approvalRequestId,
-      granted.mandate,
-      escalate.correlationId,
-    );
-    printOutcome("ESCALATE (after approval)", done);
-    check(done.status === "EXECUTED", "ESCALATE: not EXECUTED after valid approval");
-    check(done.receipt?.receiptVerified === true, "ESCALATE: receipt not verified after approval");
+  mkdirSync(stateDir, { recursive: true });
+  rmSync(join(stateDir, APPROVAL_FILE), { force: true });
+  // Continue the SAME escalated operation (escalate.finalPayload is the exact
+  // content that was escalated and approved), never a re-typed reconstruction.
+  recordEscalation(stateDir, {
+    requestId: escalate.approvalRequestId,
+    correlationId: escalate.correlationId,
+    actor: cfg.identity.actor,
+    resource: cfg.identity.resource,
+    action: ACTION,
+    context: escalate.finalPayload ?? {},
+  });
+  console.log("\n--- Scenario: ESCALATE (awaiting the operator sidecar) ---");
+  const approved = await waitForApproval(stateDir, cfg.identity.actor);
+  check(approved, "ESCALATE: the operator never granted the approval");
+  if (!approved) return;
+  console.log("  approval state      : APPROVED (operator granted)");
+  const { code, outcome } = await executeApprovedFromState({
+    stateDir,
+    client,
+    principal: cfg.identity.actor,
+  });
+  printOutcome("ESCALATE (after approval, executed by the agent itself)", outcome);
+  check(code === 0, "ESCALATE: not a verified EXECUTED after valid approval");
+}
+
+async function main(): Promise<number> {
+  // V05 (part 2): this process is ONE agent -- the principal of the single
+  // credential its container was provisioned with. It holds no operator key
+  // and no other agent's credential.
+  const cfg = agentEnv(process.env);
+  const client = new MccClient({
+    gatewayUrl: cfg.gatewayUrl,
+    quorumUrl: cfg.quorumUrl,
+    apiKey: cfg.apiKey,
+  });
+
+  console.log("=".repeat(70));
+  console.log(
+    `VoltAgent → MCC-Core Real Governed Integration (Docker E2E) as ${cfg.identity.actor}`,
+  );
+  console.log("=".repeat(70));
+  await waitForReady(client, "corr-e2e-ready");
+  const { provider } = await resolveModel(process.env);
+  console.log(`  model provider      : ${provider}`);
+
+  let role: string;
+  if (cfg.identity.actor === "agent/notify-bot") {
+    role = "ALLOW + DENY + CONSTRAIN";
+    await runNotifyBot(cfg);
+  } else if (cfg.identity.actor === "agent/unknown") {
+    role = "ESCALATE (operator approval, agent-executed)";
+    await runUnknown(cfg, client);
+  } else {
+    console.error(`no E2E role for principal ${cfg.identity.actor} (fail-closed)`);
+    return 2;
   }
 
-  // Audit chain must verify.
-  const audit = await operator.verifyAudit("corr-e2e-audit");
+  const audit = await client.verifyAudit("corr-e2e-audit");
   console.log(`\n  audit verification  : valid=${audit.valid}`);
   check(audit.valid === true, "audit chain did not verify");
 
@@ -175,8 +204,8 @@ async function main(): Promise<number> {
     for (const f of failures) console.log(`  - ${f}`);
     return 1;
   }
-  console.log("VOLTAGENT GOVERNED INTEGRATION PASSED: four verdicts + genuine EXECUTED");
-  console.log("(consensus + operator approval) + verified receipts + valid audit chain.");
+  console.log(`VOLTAGENT GOVERNED INTEGRATION PASSED (${cfg.identity.actor}: ${role})`);
+  console.log("genuine EXECUTED + verified receipts + valid audit chain.");
   console.log("VoltAgent proposes. MCC-Core decides. The gate enforces. The audit chain records.");
   return 0;
 }

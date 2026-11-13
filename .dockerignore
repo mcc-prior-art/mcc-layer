@@ -1,0 +1,21 @@
+# Build-context hygiene (V05 part 2): provisioning and operator secrets never
+# enter any image build context, so no COPY instruction can bake them into a
+# layer -- now or after a future Dockerfile change.
+.env
+.env.*
+!.env.pilot.example
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.*.example
+secrets/
+**/secrets/
+**/*.pem
+**/*.key
+**/credential.json
+**/agent_credentials.json
+.git
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+artifacts/

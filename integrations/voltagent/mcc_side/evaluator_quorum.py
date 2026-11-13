@@ -26,6 +26,7 @@ re-implement any governance or consensus logic.
 from __future__ import annotations
 
 import os
+import secrets
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -65,6 +66,17 @@ class QuorumSettings:
         self.quorum_api_key = env.get("MCC_QUORUM_API_KEY", self.api_key)
         self.keys_dir = env.get("MCC_EVALUATOR_KEYS_DIR", "").strip()
         self.timeout = float(env.get("MCC_QUORUM_TIMEOUT", "10"))
+        # V05 (part 2): a caller may also authenticate with its OWN registered
+        # per-agent credential (the gateway's registry file; hashes only). This
+        # is tenant-level client auth for vote requests -- the quorum still
+        # votes only over the gateway's authoritative payload. A malformed
+        # registry refuses to start (fail-closed).
+        self.tenant_id = env.get("MCC_GATEWAY_TENANT_ID", "").strip() or "pilot"
+        creds_path = env.get("MCC_AGENT_CREDENTIALS_CONFIG", "").strip()
+        self.agent_credentials = None
+        if creds_path:
+            from gateway.agent_identity import AgentCredentialRegistry
+            self.agent_credentials = AgentCredentialRegistry.from_file(creds_path)
 
 
 def load_evaluator_keys(keys_dir: str) -> List[SigningKey]:
@@ -89,9 +101,13 @@ def build_quorum_app(
     app.state.http = http
 
     def require_key(x_api_key: str = Header(...)) -> str:
-        if x_api_key != settings.quorum_api_key:
-            raise HTTPException(status_code=401, detail="INVALID_API_KEY")
-        return "quorum-caller"
+        if secrets.compare_digest(x_api_key.encode(), settings.quorum_api_key.encode()):
+            return "quorum-caller"
+        registry = settings.agent_credentials
+        if registry is not None and registry.resolve(
+                x_api_key, tenant_id=settings.tenant_id).agent is not None:
+            return "quorum-caller"
+        raise HTTPException(status_code=401, detail="INVALID_API_KEY")
 
     def gateway_policy_hash() -> str:
         resp = http.get(f"{settings.gateway_url}/health")

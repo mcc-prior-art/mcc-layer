@@ -33,6 +33,17 @@ from gateway.governance_api import mount_approval_routes, mount_mandate_routes
 from gateway.governance_service import GovernanceService
 from gateway.trust import TrustSet
 
+# V05 (part 2): "agent-key" is agent/x's registered per-agent credential in the
+# mount's default "pilot" tenant; the shared tenant key is a separate, unused value.
+from tests._agent_credentials import registry as _agent_registry  # noqa: E402
+from tests._agent_credentials import shared_tenant_key  # noqa: E402
+from tests._agent_credentials import agent as _agent  # noqa: E402
+# agent/ATTACKER holds its OWN credential, so the actor-substitution test
+# reaches the post-approval subject binding it targets instead of stopping at
+# the earlier per-agent identity check.
+_AGENT_CREDS = _agent_registry("pilot", {"agent/x": "agent-key",
+                                         "agent/ATTACKER": "attacker-key"})
+
 POLICY = "sha256:p"
 AGENT = {"x-api-key": "agent-key"}
 OP = {"x-operator-key": "op-key"}
@@ -68,8 +79,10 @@ def build(upstream_ok=True):
                             revocation_registry=revocation, approvals=approvals,
                             upstream=upstream, policy_hash=POLICY)
     app = FastAPI()
-    mount_mandate_routes(app, svc, api_key="agent-key", operator_key="op-key")
-    mount_approval_routes(app, svc, api_key="agent-key", operator_key="op-key")
+    mount_mandate_routes(app, svc, api_key=shared_tenant_key("agent-key"), operator_key="op-key",
+                     agent_credentials=_AGENT_CREDS)
+    mount_approval_routes(app, svc, api_key=shared_tenant_key("agent-key"), operator_key="op-key",
+                      agent_credentials=_AGENT_CREDS)
     return svc, TestClient(app), calls
 
 
@@ -84,8 +97,8 @@ def create(client, *, policy_hash=POLICY, actor="agent/x", action="generic_op",
 
 
 def execute(client, request_id, mandate, *, actor="agent/x", action="generic_op",
-            resource="res-1", transaction_id="txn-1", idem=None):
-    return client.post(f"/approvals/{request_id}/execute", headers=AGENT, json={
+            resource="res-1", transaction_id="txn-1", idem=None, headers=AGENT):
+    return client.post(f"/approvals/{request_id}/execute", headers=headers, json={
         "mandate": mandate, "actor": actor, "action": action, "resource": resource,
         "context": CTX, "transaction_id": transaction_id, "idempotency_key": idem})
 
@@ -135,7 +148,8 @@ def test_actor_substitution_after_approval_blocked():
     _, client, calls = build()
     rid = create(client, actor="agent/x")
     mandate = client.post(f"/approvals/{rid}/approve", headers=OP).json()["mandate"]
-    out = execute(client, rid, mandate, actor="agent/ATTACKER").json()
+    out = execute(client, rid, mandate, actor="agent/ATTACKER",
+                  headers={"x-api-key": "attacker-key"}).json()
     assert out["status"] == "BLOCKED"
     assert calls == []
 
@@ -206,7 +220,8 @@ def test_concurrent_execute_single_winner():
                                       # mount's default tenant "pilot"; V05 binds
                                       # consumption to that tenant (AX-approved setup
                                       # change; assertions unchanged).
-                                      idempotency_key=f"op-{i}", tenant_id="pilot")
+                                      idempotency_key=f"op-{i}", tenant_id="pilot",
+                                      agent=_agent("pilot", "agent/x"))
             for i in range(8)])
 
     outcomes = asyncio.run(race())
@@ -265,6 +280,7 @@ def test_backend_unavailable_blocks_execution():
                             approvals=down_approvals, upstream=upstream, policy_hash=POLICY)
     out = asyncio.run(svc.execute_with_approval(
         mandate=mandate, actor="agent/x", action="generic_op", resource="res-1",
-        context=CTX, transaction_id="txn-1", tenant_id="tenant-1"))
+        context=CTX, transaction_id="txn-1", tenant_id="tenant-1",
+        agent=_agent("tenant-1", "agent/x")))
     assert out.status == "BLOCKED"
     assert calls == []

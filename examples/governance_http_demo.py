@@ -43,8 +43,20 @@ Path(_trust_path).write_text(json.dumps({
                  "keys": [{"kid": ISSUER.kid, "public_key_b64": ISSUER.public_key_b64()}]}]
 }))
 
+# --- V05 part 2: agent/x's OWN per-agent credential (registry stores only its
+# hash). The shared tenant key (MCC_GATEWAY_API_KEY) cannot act as an agent on
+# /mandates/execute, /approvals or /approvals/{id}/execute. ---
+from gateway.agent_identity import hash_agent_key  # noqa: E402
+
+AGENT_X_KEY = "agent-x-key"
+_agents_path = os.path.join(_trust_dir, "agent_credentials.json")
+Path(_agents_path).write_text(json.dumps({"agents": [
+    {"credential_id": "demo-agent-x-1", "tenant_id": "pilot", "principal_id": "agent/x",
+     "key_sha256": hash_agent_key(AGENT_X_KEY), "status": "active"}]}))
+
 os.environ.update({
     "MCC_ENV": "pilot",
+    "MCC_AGENT_CREDENTIALS_CONFIG": _agents_path,
     "MCC_TRUST_CONFIG": _trust_path,
     "MCC_UPSTREAM_BASE": f"http://127.0.0.1:{UPSTREAM_PORT}",
     "MCC_GATEWAY_MODE": "inline",
@@ -55,7 +67,7 @@ os.environ.update({
 
 import gateway.app as gw  # noqa: E402  (imports AFTER env is set)
 
-AGENT = {"x-api-key": "agent-key"}
+AGENT = {"x-api-key": AGENT_X_KEY}  # agent/x presents its own credential
 OP = {"x-operator-key": "op-key"}
 CTX = {"value": 1}
 

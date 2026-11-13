@@ -62,6 +62,9 @@ from gateway.governance_api import (
 from gateway.governance_service import GovernanceService
 from gateway.trust import TrustSet
 
+from tests._agent_credentials import registry as agent_registry  # noqa: E402
+from tests._agent_credentials import shared_tenant_key  # noqa: E402
+
 POLICY = "sha256:" + "0" * 64
 AGENT = {"x-api-key": "agent-key"}
 OP = {"x-operator-key": "op-key"}
@@ -141,7 +144,11 @@ class GovGateway:
             upstream=upstream, policy_hash=POLICY, consensus_verifier=verifier)
         app = FastAPI()
         for mount in (mount_mandate_routes, mount_approval_routes, mount_consensus_routes):
-            mount(app, self.service, api_key="agent-key", operator_key="op-key", tenant_id="tenant-1")
+            # V05 (part 2): "agent-key" (the AGENT header) is ACTOR's registered
+            # per-agent credential; the mount's shared tenant key is a separate,
+            # unused value.
+            mount(app, self.service, api_key=shared_tenant_key("agent-key"), operator_key="op-key",
+                  tenant_id="tenant-1", agent_credentials=agent_registry("tenant-1", {ACTOR: "agent-key"}))
         self.client = TestClient(app)
         self._n = 0
 

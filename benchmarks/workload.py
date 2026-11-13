@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from gateway.agent_identity import AuthenticatedAgent
 from gateway.governance_service import GovernanceService
 from gateway.trust import Issuer, IssuerKey, TrustSet
 from mcc_core import (
@@ -123,6 +124,9 @@ class Stack:
         kw = dict(mandate=mandate, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
                   context=context(), tenant_id=TENANT)
         kw.update(overrides)
+        # V05 (part 2): the benchmark embeds GovernanceService in-process and
+        # IS the authenticating caller (library trust boundary).
+        kw.setdefault("agent", AuthenticatedAgent(kw["tenant_id"], kw["actor"], "benchmark:in-process"))
         return await self.service.execute_with_mandate(idempotency_key=idempotency_key, **kw)
 
     async def exec_delegation(self, delegation: Dict[str, Any], *, idempotency_key: str, **overrides: Any):

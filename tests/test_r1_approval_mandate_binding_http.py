@@ -51,6 +51,8 @@ from mcc_core import (
 from mcc_core.approvals import RedisApprovalRegistry
 from mcc_core.mandate import issue_mandate
 
+from tests._agent_credentials import registry as agent_registry  # noqa: E402
+from tests._agent_credentials import shared_tenant_key  # noqa: E402
 from gateway.governance_api import mount_approval_routes, mount_mandate_routes
 from gateway.governance_service import GovernanceService
 from gateway.trust import TrustSet
@@ -110,10 +112,16 @@ class Gateway:
             revocation_registry=self.revocation, approvals=self.approvals,
             upstream=upstream, policy_hash=POLICY)
         self.app = FastAPI()
-        mount_mandate_routes(self.app, self.service, api_key="agent-key", operator_key="op-key",
-                             tenant_id="tenant-1")
-        mount_approval_routes(self.app, self.service, api_key="agent-key", operator_key="op-key",
-                              tenant_id="tenant-1")
+        # V05 (part 2): "agent-key" (the AGENT header) is ACTOR's registered
+        # per-agent credential; the mount's shared tenant key is separate.
+        # agent/intern holds its OWN key, so the actor-substitution cases reach
+        # the approval/subject binding they target (helpers below send the
+        # acting actor's own key).
+        creds = agent_registry("tenant-1", {ACTOR: "agent-key", "agent/intern": "intern-key"})
+        mount_mandate_routes(self.app, self.service, api_key=shared_tenant_key("agent-key"),
+                             operator_key="op-key", tenant_id="tenant-1", agent_credentials=creds)
+        mount_approval_routes(self.app, self.service, api_key=shared_tenant_key("agent-key"),
+                              operator_key="op-key", tenant_id="tenant-1", agent_credentials=creds)
         self.client = TestClient(self.app)
 
     # ---- HTTP helpers ----
@@ -148,13 +156,19 @@ class Gateway:
                 "transaction_id": transaction_id,
                 "idempotency_key": idem or f"op-{uuid.uuid4().hex}"}
 
+    @staticmethod
+    def _key_for(body):
+        return {"x-api-key": "intern-key"} if body["actor"] == "agent/intern" else AGENT
+
     def mandate_execute(self, mandate, **kw):
-        r = self.client.post("/mandates/execute", headers=AGENT, json=self.body(mandate, **kw))
+        body = self.body(mandate, **kw)
+        r = self.client.post("/mandates/execute", headers=self._key_for(body), json=body)
         assert r.status_code == 200, r.text
         return r.json()
 
     def approval_execute(self, rid, mandate, **kw):
-        r = self.client.post(f"/approvals/{rid}/execute", headers=AGENT, json=self.body(mandate, **kw))
+        body = self.body(mandate, **kw)
+        r = self.client.post(f"/approvals/{rid}/execute", headers=self._key_for(body), json=body)
         assert r.status_code == 200, r.text
         return r.json()
 

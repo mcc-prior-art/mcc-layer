@@ -23,6 +23,7 @@ networks:
   gov_internal:
 
 volumes:
+  agent-cred-axflow-clinic:
   clinic-audit:
   clinic-config:
   clinic-state:
@@ -53,11 +54,41 @@ services:
       timeout: 3s
       retries: 10
 
+  agent-credentials-init:
+    build:
+      context: .
+      dockerfile: integrations/voltagent/docker/Dockerfile.mcc
+    # V05 (part 2) -- TRUSTED PROVISIONING BOUNDARY (one-shot, no network).
+    # Generates each agent's credential into THAT agent's own named volume
+    # (reused across restarts) and writes the gateway's registry with SHA-256
+    # hashes only. This is the ONLY container that ever sees more than one raw
+    # agent key. Agent containers mount only their own credential volume
+    # (read-only); the gateway and quorum mount only the hash registry.
+    # Rotation: `make pilot-rotate-agent PRINCIPAL=...` (or delete the agent's
+    # volume) and restart the gateway.
+    user: "0:0"
+    network_mode: none
+    command:
+      - "python"
+      - "-m"
+      - "gateway.agent_provisioning"
+      - "--registry"
+      - "/config/agent_credentials.json"
+      - "--tenant-id"
+      - "${MCC_GATEWAY_TENANT_ID:-pilot}"
+      - "--owner"
+      - "1000:1000"
+      - "--agent"
+      - "agent/axflow-clinic=/creds/axflow-clinic"
+    volumes:
+      - clinic-config:/config
+      - agent-cred-axflow-clinic:/creds/axflow-clinic
+
   mcc-gateway:
     build:
       context: .
       dockerfile: integrations/voltagent/docker/Dockerfile.mcc
-    env_file: [.env.pilot]
+    env_file: ["${MCC_PILOT_ENV_FILE:-.env.pilot}"]
     command:
       - /bin/sh
       - -c
@@ -72,6 +103,9 @@ services:
         exec uvicorn gateway.app:app --host 0.0.0.0 --port 8001
     environment:
       MCC_GATEWAY_MODE: "inline"
+      # V05 (part 2): the per-agent credential registry -- SHA-256 hashes only,
+      # written by agent-credentials-init. The gateway never sees a raw agent key.
+      MCC_AGENT_CREDENTIALS_CONFIG: "/config/agent_credentials.json"
       # Independent authority-side policy (PROPOSAL != PERMISSION): an
       # authenticated operator key alone no longer suffices to grant an
       # ESCALATE approval -- this exact, independently configured policy
@@ -102,6 +136,8 @@ services:
       - clinic-state:/pilot-state
     networks: [agent_edge, gov_internal]
     depends_on:
+      agent-credentials-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       clinic-service:
@@ -116,16 +152,19 @@ services:
     build:
       context: .
       dockerfile: integrations/voltagent/docker/Dockerfile.mcc
-    env_file: [.env.pilot]
+    env_file: ["${MCC_PILOT_ENV_FILE:-.env.pilot}"]
     command:
       - /bin/sh
       - -c
       - |
-        until [ -f /config/evaluator_1.pem ]; do echo "waiting for evaluator keys..."; sleep 1; done
+        until [ -f /config/evaluator_1.pem ] && [ -f /config/agent_credentials.json ]; do echo "waiting for evaluator keys + agent registry..."; sleep 1; done
         exec uvicorn integrations.voltagent.mcc_side.evaluator_quorum:app --host 0.0.0.0 --port 8080
     environment:
       MCC_QUORUM_GATEWAY_URL: "http://mcc-gateway:8001"
       MCC_EVALUATOR_KEYS_DIR: "/config"
+      # V05 (part 2): also accept the agents' own registered credentials
+      # (the registry the gateway wrote into the shared config volume).
+      MCC_AGENT_CREDENTIALS_CONFIG: "/config/agent_credentials.json"
     volumes:
       - clinic-config:/config:ro
     networks: [agent_edge, gov_internal]
@@ -151,8 +190,10 @@ services:
     environment:
       MCC_GATEWAY_URL: "${MCC_GATEWAY_URL:-http://mcc-gateway:8001}"
       MCC_QUORUM_URL: "${MCC_QUORUM_URL:-http://evaluator-quorum:8080}"
-      MCC_GATEWAY_API_KEY: "${MCC_GATEWAY_API_KEY:?MCC_GATEWAY_API_KEY must be set in .env.pilot}"
-      MCC_CLINIC_ACTOR: "agent/axflow-clinic"
+      # V05 (part 2): this container IS one principal. It receives ONLY its own
+      # provisioned credential (read-only volume); never the provisioning map,
+      # the tenant's shared key, another agent's key or the operator key.
+      MCC_AGENT_CREDENTIAL_FILE: "/run/mcc-agent/credential.json"
       MCC_CLINIC_ID: "clinic-1"
       MCC_VOLTAGENT_MODEL_PROVIDER: "deterministic"
       MCC_VOLTAGENT_MODEL: "${MCC_VOLTAGENT_MODEL:-}"
@@ -171,6 +212,7 @@ services:
         exec tail -f /dev/null
     volumes:
       - clinic-state:/pilot-state
+      - agent-cred-axflow-clinic:/run/mcc-agent:ro
     networks: [agent_edge]
     depends_on:
       mcc-gateway:

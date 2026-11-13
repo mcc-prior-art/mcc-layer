@@ -1,7 +1,8 @@
 # Real VoltAgent Governed Integration — one-command end-to-end stack.
 #
-#   docker compose -f docker-compose.voltagent.yml up --build \
-#       --abort-on-container-exit --exit-code-from voltagent-agent
+#   scripts/compose_agents_e2e.sh docker-compose.voltagent.yml \
+#       "mcc-gateway evaluator-quorum voltagent-operator" \
+#       "voltagent-agent voltagent-agent-unknown"
 #
 # Flow:
 #   redis              Redis-backed nonce/idempotency/velocity/approval/challenge.
@@ -11,8 +12,14 @@
 #                      (EXECUTED only on a confirmed matching receipt). Consensus on.
 #   evaluator-quorum   independent N-of-M evaluators (hold the private keys); sign
 #                      votes only for executable decisions. VoltAgent never holds a key.
-#   voltagent-agent    the real VoltAgent agent. Talks to the gateway + quorum only;
+#   agent-credentials-init  one-shot trusted provisioner: one credential per
+#                      agent into that agent's own volume + a hash-only registry.
+#   voltagent-agent    the real VoltAgent agent as agent/notify-bot (its own
+#                      credential only). Talks to the gateway + quorum only;
 #                      no notification-service client, no operator key, no bypass.
+#   voltagent-agent-unknown  the same agent code as agent/unknown, in its OWN
+#                      container with its OWN credential (ESCALATE).
+#   voltagent-operator approve-only operator sidecar (operator key only).
 #
 # Trust boundary: the agent shares a network with the gateway + quorum only. The
 # mock notification service is reachable by the governed executor, never the agent.
@@ -23,6 +30,9 @@ networks:
 volumes:
   mcc-config:
   voltagent-audit:
+  voltagent-state:
+  agent-cred-notify-bot:
+  agent-cred-unknown:
 
 services:
   redis:
@@ -46,6 +56,35 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  agent-credentials-init:
+    build:
+      context: .
+      dockerfile: integrations/voltagent/docker/Dockerfile.mcc
+    # V05 (part 2) -- TRUSTED PROVISIONING BOUNDARY (one-shot, no network).
+    # A fresh random credential per agent into THAT agent's own volume; the
+    # registry (SHA-256 hashes only) into mcc-config. The only container that
+    # ever sees more than one raw agent key. No agent key is committed.
+    user: "0:0"
+    network_mode: none
+    command:
+      - "python"
+      - "-m"
+      - "gateway.agent_provisioning"
+      - "--registry"
+      - "/config/agent_credentials.json"
+      - "--tenant-id"
+      - "pilot"
+      - "--owner"
+      - "1000:1000"
+      - "--agent"
+      - "agent/notify-bot=/creds/notify-bot"
+      - "--agent"
+      - "agent/unknown=/creds/unknown"
+    volumes:
+      - mcc-config:/config
+      - agent-cred-notify-bot:/creds/notify-bot
+      - agent-cred-unknown:/creds/unknown
 
   mcc-gateway:
     build:
@@ -71,6 +110,9 @@ services:
       # must also ALLOW the operation. Set only here (mcc-gateway); the
       # voltagent-agent never reads or supplies this file.
       MCC_AUTHORITY_POLICY_CONFIG: "/app/authority_policy.notify.json"
+      # V05 (part 2): per-agent credential registry -- SHA-256 hashes only,
+      # written by agent-credentials-init. The gateway never sees a raw agent key.
+      MCC_AGENT_CREDENTIALS_CONFIG: "/config/agent_credentials.json"
       MCC_GATEWAY_MODE: "inline"
       MCC_GATEWAY_AUDIT_LOG_PATH: "/data/audit.jsonl"
       # Receipt-verifying governed executor: EXECUTED only on a confirmed receipt.
@@ -95,6 +137,8 @@ services:
       - voltagent-audit:/data
     networks: [agent_edge, gov_internal]
     depends_on:
+      agent-credentials-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       mock-notification:
@@ -120,6 +164,9 @@ services:
       MCC_QUORUM_GATEWAY_URL: "http://mcc-gateway:8001"
       MCC_GATEWAY_API_KEY: "demo-key"
       MCC_EVALUATOR_KEYS_DIR: "/config"
+      # V05 (part 2): also accept the agents' own registered credentials
+      # (the hash-only registry agent-credentials-init wrote).
+      MCC_AGENT_CREDENTIALS_CONFIG: "/config/agent_credentials.json"
     volumes:
       - mcc-config:/config:ro
     networks: [agent_edge, gov_internal]
@@ -136,23 +183,72 @@ services:
     build:
       context: .
       dockerfile: integrations/voltagent/docker/Dockerfile.agent
-    # Credential separation: no operator key here. agent.ts/demo.ts/pilot-cli.ts
-    # (this container's code) never read MCC_GATEWAY_OPERATOR_API_KEY -- only
-    # e2e-runner.ts does, and that is a local dev/test harness that never runs
-    # inside this container. The agent proposes; only the gateway (which holds
-    # the operator key in its own environment, above) can approve an ESCALATE.
+    # V05 (part 2): this container IS ONE agent principal (agent/notify-bot:
+    # ALLOW/DENY/CONSTRAIN). It holds ONLY its own provisioned credential --
+    # no operator key, no shared tenant key, no other agent's credential.
     environment:
       MCC_GATEWAY_URL: "http://mcc-gateway:8001"
       MCC_QUORUM_URL: "http://evaluator-quorum:8080"
-      MCC_GATEWAY_API_KEY: "demo-key"
-      MCC_VOLTAGENT_ACTOR: "agent/notify-bot"
+      MCC_AGENT_CREDENTIAL_FILE: "/run/mcc-agent/credential.json"
+      MCC_PILOT_STATE_DIR: "/pilot-state"
       MCC_VOLTAGENT_RESOURCE: "crm"
       # Deterministic offline model by default (no paid API). Set
       # MCC_VOLTAGENT_MODEL_PROVIDER=openai + OPENAI_API_KEY to use a real LLM.
       MCC_VOLTAGENT_MODEL_PROVIDER: "deterministic"
+    volumes:
+      - voltagent-state:/pilot-state
+      - agent-cred-notify-bot:/run/mcc-agent:ro
     networks: [agent_edge]
     depends_on:
       mcc-gateway:
         condition: service_healthy
       evaluator-quorum:
+        condition: service_healthy
+
+  voltagent-agent-unknown:
+    build:
+      context: .
+      dockerfile: integrations/voltagent/docker/Dockerfile.agent
+    # V05 (part 2): this container IS ONE agent principal (agent/unknown:
+    # ESCALATE; it executes its OWN approved operation). It holds ONLY its own provisioned credential --
+    # no operator key, no shared tenant key, no other agent's credential.
+    environment:
+      MCC_GATEWAY_URL: "http://mcc-gateway:8001"
+      MCC_QUORUM_URL: "http://evaluator-quorum:8080"
+      MCC_AGENT_CREDENTIAL_FILE: "/run/mcc-agent/credential.json"
+      MCC_PILOT_STATE_DIR: "/pilot-state"
+      MCC_VOLTAGENT_RESOURCE: "crm"
+      # Deterministic offline model by default (no paid API). Set
+      # MCC_VOLTAGENT_MODEL_PROVIDER=openai + OPENAI_API_KEY to use a real LLM.
+      MCC_VOLTAGENT_MODEL_PROVIDER: "deterministic"
+    volumes:
+      - voltagent-state:/pilot-state
+      - agent-cred-unknown:/run/mcc-agent:ro
+    networks: [agent_edge]
+    depends_on:
+      mcc-gateway:
+        condition: service_healthy
+      evaluator-quorum:
+        condition: service_healthy
+
+  # Approve-ONLY operator sidecar (operator key only). It never executes and
+  # holds no agent credential: it approves each pending escalation recorded in
+  # the shared state volume and hands the single-use mandate back; the
+  # escalating agent then executes with its own credential. The gateway's
+  # independent authority policy still decides whether approval is allowed.
+  voltagent-operator:
+    build:
+      context: .
+      dockerfile: integrations/voltagent/docker/Dockerfile.mcc
+    command: ["python", "-m", "integrations.voltagent.mcc_side.operator_cli", "--watch"]
+    environment:
+      MCC_OPERATOR_GATEWAY_URL: "http://mcc-gateway:8001"
+      MCC_GATEWAY_OPERATOR_API_KEY: "op-key"
+      MCC_PILOT_STATE_DIR: "/pilot-state"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - voltagent-state:/pilot-state
+    networks: [agent_edge]
+    depends_on:
+      mcc-gateway:
         condition: service_healthy

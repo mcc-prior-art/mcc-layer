@@ -84,8 +84,11 @@ class ScenarioResult:
 
 # ---- helpers (transport + display only -- no decision logic) --------------
 
-def client_for(rt: DemoRuntime) -> MCCGatewayClient:
-    return MCCGatewayClient(rt.gateway_url, api_key=rt.api_key, operator_key=rt.operator_key)
+def client_for(rt: DemoRuntime, actor: Optional[str] = None) -> MCCGatewayClient:
+    # V05 part 2: an agent acting as ``actor`` presents its OWN credential
+    # (required on /approvals and the execute routes).
+    key = rt.agent_keys[actor] if actor else rt.api_key
+    return MCCGatewayClient(rt.gateway_url, api_key=key, operator_key=rt.operator_key)
 
 
 def token_view(token: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -297,8 +300,8 @@ def scenario_escalate_then_approve(rt: DemoRuntime) -> ScenarioResult:
     """The full ESCALATE loop: agent opens a request, an operator (held only
     on this backend, never in the browser) approves it, then the SAME
     coordinator path executes it -- exactly `examples/governance_http_demo.py`."""
-    client = client_for(rt)
     identity, action, resource = "agent/nobody", "send_payment", "acct-demo"
+    client = client_for(rt, identity)
     context = canonical_payment({"amount": 250, "currency": "usd", "source": PAYMENT_SOURCE,
                                  "beneficiary_id": PAYMENT_BENEFICIARY})
     stages = [StageResult("proposed_action", "Proposed Action", True,

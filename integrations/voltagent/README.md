@@ -129,9 +129,16 @@ npm run demo -- "Send a confirmation to customer-123 that their order has been a
 
 ```bash
 # from the repository root
-docker compose -f docker-compose.voltagent.yml up --build \
-    --abort-on-container-exit --exit-code-from voltagent-agent
+scripts/compose_agents_e2e.sh docker-compose.voltagent.yml \
+    "mcc-gateway evaluator-quorum voltagent-operator" \
+    "voltagent-agent-unknown voltagent-agent"
 ```
+
+Each agent principal runs in its **own** container with **only its own**
+provisioned credential (V05 part 2): `voltagent-agent` is `agent/notify-bot`
+(ALLOW/DENY/CONSTRAIN), `voltagent-agent-unknown` is `agent/unknown` (ESCALATE,
+then it executes its own approved operation). `voltagent-operator` is an
+approve-only sidecar holding the operator key and no agent credential.
 
 This starts redis + the mock notification service + the MCC gateway (consensus +
 receipt-verifying executor) + the independent evaluator quorum + the real

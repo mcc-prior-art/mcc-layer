@@ -100,7 +100,18 @@ def test_verify_chain():
 
 
 def test_request_approval_creates_pending():
-    c = _sdk(gw.app)
+    # V05 (part 2): POST /approvals requires the requesting agent's OWN
+    # registered credential. The module-level gateway.app has no registered
+    # agents (none configured in this test env), so mount the same governance
+    # service's approval routes with an explicit credential for agent/nobody.
+    from gateway.governance_api import mount_approval_routes
+    from tests._agent_credentials import registry
+    app = FastAPI()
+    mount_approval_routes(app, gw.governance, api_key="demo-key", operator_key=None,
+                          tenant_id=gw.settings.tenant_id,
+                          agent_credentials=registry(gw.settings.tenant_id,
+                                                     {"agent/nobody": "nobody-agent-key"}))
+    c = _sdk(app, api_key="nobody-agent-key")
     out = c.request_approval(actor="agent/nobody", action="send_payment",
                              resource="acct-1", payload_hash="sha256:deadbeef")
     assert out["state"] == "PENDING" and out["request_id"]

@@ -45,6 +45,13 @@ from mcc_core.action_name import action_name_error, validate_action_name
 from mcc_core.mandate import MANDATE_TENANT_MODES, MANDATE_TENANT_STRICT, mandate_tenant_error
 from mcc_core.trusted_time import LocalTimeSource, TimeTrustError, TrustedTimeSource
 
+from .agent_identity import (
+    AGENT_IDENTITY_MODES,
+    AGENT_IDENTITY_STRICT,
+    AgentIdentityError,
+    AuthenticatedAgent,
+    agent_identity_error,
+)
 from .pre_execution_control import PreExecutionControl
 
 
@@ -127,6 +134,7 @@ class GovernanceService:
         time_source: Optional[TrustedTimeSource] = None,
         delegation_verifier: Optional[DelegationVerifier] = None,
         mandate_tenant_mode: Optional[str] = None,
+        agent_identity_mode: Optional[str] = None,
     ) -> None:
         # V05: tenant isolation for signed mandates is the default. Legacy
         # (unscoped) acceptance of mandates without a tenant_id claim is an
@@ -143,6 +151,27 @@ class GovernanceService:
                 f"mandate_tenant_mode must be one of {MANDATE_TENANT_MODES}, "
                 f"got {mandate_tenant_mode!r}")
         self.mandate_tenant_mode = mandate_tenant_mode
+        # V05 (part 2): per-agent identity. Strict by default: every
+        # mandate-consuming execution and approval creation needs the
+        # TRUSTED AuthenticatedAgent the HTTP layer resolved from a
+        # registered credential, and that principal must equal ``actor``
+        # and the signed mandate subject. An omitted agent is REFUSED -- it
+        # never falls back to trusting ``actor``. ``legacy-shared-key`` is
+        # an explicit server-side choice only (this argument, or
+        # MCC_AGENT_IDENTITY_MODE when omitted); it provides no protection
+        # against within-tenant impersonation.
+        if agent_identity_mode is None:
+            import os
+            agent_identity_mode = (os.environ.get("MCC_AGENT_IDENTITY_MODE", "").strip()
+                                   or AGENT_IDENTITY_STRICT)
+        if agent_identity_mode not in AGENT_IDENTITY_MODES:
+            raise ValueError(
+                f"agent_identity_mode must be one of {AGENT_IDENTITY_MODES}, "
+                f"got {agent_identity_mode!r}")
+        self.agent_identity_mode = agent_identity_mode
+        # The HTTP mounts read the credential registry from here when none is
+        # passed explicitly (build_governance_service sets it).
+        self.agent_credentials = None
         self.engine = engine
         self.coordinator = coordinator
         # Clock-skew hardening (PR #122 round 3): the SINGLE source of
@@ -278,10 +307,19 @@ class GovernanceService:
         headers: Optional[Dict[str, str]] = None,
         extra_auth_claims: Optional[Dict[str, Any]] = None,
         attestation: Optional[Dict[str, Any]] = None,
+        agent: Optional[AuthenticatedAgent] = None,
     ) -> ExecOutcome:
         rejected = _invalid_action(action)
         if rejected is not None:
             return rejected
+        # V05 (part 2): the authenticated principal must BE the actor -- in
+        # this tenant -- before anything else happens: no authority
+        # evaluation, token, approval consumption, reservation, audit record
+        # or actuator call.
+        identity_error = agent_identity_error(agent, tenant_id=tenant_id, actor=actor,
+                                              mode=self.agent_identity_mode)
+        if identity_error is not None:
+            return ExecOutcome("BLOCKED", identity_error, decision="DENY")
         try:
             now = await self._now()
         except TimeTrustError as exc:
@@ -318,6 +356,15 @@ class GovernanceService:
                                             mode=self.mandate_tenant_mode)
         if tenant_error is not None:
             return ExecOutcome("BLOCKED", tenant_error, decision="DENY")
+
+        # V05 (part 2): and the SIGNED subject -- issuer-asserted, read only
+        # after the signature verified -- must be that same authenticated
+        # principal. (authorize() already compared subject with actor; this
+        # binds the mandate to the authenticated agent directly.)
+        if agent is not None and (not isinstance(mandate, dict)
+                                  or mandate.get("subject") != agent.principal_id):
+            return ExecOutcome("BLOCKED", "AGENT_SUBJECT_MISMATCH: mandate not issued to "
+                               "the authenticated agent", decision="DENY")
 
         # The EXACT final payload that would be executable -- after any
         # mandate CONSTRAIN rewrite. This, not the pre-constraint proposal, is
@@ -582,10 +629,19 @@ class GovernanceService:
         payload_hash: Optional[str] = None, constraints: Optional[Dict[str, Any]] = None,
         ttl_seconds: Optional[int] = None, tenant_id: Optional[str] = None,
         payload: Optional[Dict[str, Any]] = None,
+        agent: Optional[AuthenticatedAgent] = None,
     ) -> Dict[str, Any]:
         # R4: an approval for an unusable action name is refused up front
         # (ActionNameError, a ValueError) -- it could never execute.
         validate_action_name(action)
+        # V05 (part 2): an agent may only request approval for ITSELF. The
+        # approval mandate is minted for the request's actor, so letting a
+        # caller name another agent here would let it obtain authority in
+        # that agent's name upstream of execution. Refused before any record.
+        identity_error = agent_identity_error(agent, tenant_id=tenant_id, actor=actor,
+                                              mode=self.agent_identity_mode)
+        if identity_error is not None:
+            raise AgentIdentityError(identity_error)
         request_id = await self.approvals.request(
             actor=actor, action=action, resource=resource, transaction_id=transaction_id,
             policy_hash=policy_hash, payload_hash=payload_hash, constraints=constraints,
@@ -622,6 +678,7 @@ class GovernanceService:
         context: Dict[str, Any], transaction_id: Optional[str] = None,
         idempotency_key: Optional[str] = None, tenant_id: Optional[str] = None,
         attestation: Optional[Dict[str, Any]] = None,
+        agent: Optional[AuthenticatedAgent] = None,
     ) -> ExecOutcome:
         """Re-evaluate against the approval mandate and execute through the one
         coordinator path. The token carries the approval_id, so the coordinator
@@ -637,7 +694,7 @@ class GovernanceService:
             context=context, transaction_id=transaction_id, idempotency_key=idempotency_key,
             tenant_id=tenant_id,
             extra_auth_claims={"approval_id": approval_id} if approval_id else None,
-            attestation=attestation,
+            attestation=attestation, agent=agent,
         )
 
     # ---- consensus challenge (gateway-issued one-time nonce) ----

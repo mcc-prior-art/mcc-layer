@@ -23,7 +23,7 @@ import pytest
 from mcc_client import MCCClient
 
 from pilot_notify import recorded_receipts, reset_receipts
-from tests._notify_harness import API_KEY, OPERATOR_KEY, NotifyPilotHarness
+from tests._notify_harness import API_KEY, OPERATOR_KEY, NotifyPilotHarness, agent_key
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -74,7 +74,9 @@ def operator_module(hz, tmp_path, monkeypatch):
 
 
 def _agent_client(hz: NotifyPilotHarness) -> MCCClient:
-    return MCCClient(hz.base_url, api_key=API_KEY, timeout=15.0)
+    # V05 (part 2): every flow here acts as agent/unknown (the escalating
+    # principal), which presents its OWN registered credential.
+    return MCCClient(hz.base_url, api_key=agent_key("agent/unknown"), timeout=15.0)
 
 
 class TestCaseA_CompromisedAgentCannotSelfApprove:

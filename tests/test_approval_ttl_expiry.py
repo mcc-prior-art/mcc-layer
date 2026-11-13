@@ -59,6 +59,12 @@ from mcc_core.approvals import (
 )
 from mcc_core.signing import SigningKey
 
+# V05 (part 2): "agent-key" is agent/x's registered per-agent credential in the
+# mount's default "pilot" tenant; the shared tenant key is a separate, unused value.
+from tests._agent_credentials import registry as _agent_registry  # noqa: E402
+from tests._agent_credentials import shared_tenant_key  # noqa: E402
+_AGENT_CREDS = _agent_registry("pilot", {"agent/x": "agent-key"})
+
 REDIS_URL = os.environ.get("MCC_REDIS_URL", "redis://127.0.0.1:6379/0")
 run = asyncio.run
 
@@ -514,8 +520,10 @@ def test_e2e_execute_blocked_past_logical_expiry_with_zero_actuator_calls():
                                  revocation_registry=revocation, approvals=approvals,
                                  upstream=upstream, policy_hash=policy_hash)
         app = FastAPI()
-        mount_mandate_routes(app, svc, api_key="agent-key", operator_key="op-key")
-        mount_approval_routes(app, svc, api_key="agent-key", operator_key="op-key")
+        mount_mandate_routes(app, svc, api_key=shared_tenant_key("agent-key"), operator_key="op-key",
+                     agent_credentials=_AGENT_CREDS)
+        mount_approval_routes(app, svc, api_key=shared_tenant_key("agent-key"), operator_key="op-key",
+                      agent_credentials=_AGENT_CREDS)
 
         try:
             transport = httpx.ASGITransport(app=app)

@@ -7,11 +7,13 @@
  * `make clinic-pilot-*` targets). It waits for MCC readiness, drives the REAL
  * AXFlow clinic agent through one patient scenario, and prints the governed
  * result. For ESCALATE it only PROPOSES (no execution) and records the pending
- * state; a separate operator step approves and continues.
+ * state; the operator step only APPROVES, and `clinic-cli execute-approved`
+ * (this agent, its own credential) executes the approved operation.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { executeApprovedFromState } from "./approved-continuation.js";
 import { buildClinicAgentFromEnv, clinicAgentEnv } from "./clinic-agent.js";
 import { type GovernedOutcome, MccClient } from "./mcc-client.js";
 
@@ -63,9 +65,10 @@ function printOutcome(name: string, o: GovernedOutcome): void {
 
 async function main(): Promise<number> {
   const name = (process.argv[2] ?? "").trim().toLowerCase();
+  if (name === "execute-approved") return executeApproved();
   const scenario = SCENARIOS[name];
   if (!scenario) {
-    console.error(`usage: clinic-cli <${Object.keys(SCENARIOS).join("|")}>`);
+    console.error(`usage: clinic-cli <${Object.keys(SCENARIOS).join("|")}|execute-approved>`);
     return 2;
   }
 
@@ -92,6 +95,8 @@ async function main(): Promise<number> {
   if (name === "escalate" && outcome.approvalRequestId) {
     const stateDir = process.env.MCC_PILOT_STATE_DIR ?? "/pilot-state";
     mkdirSync(stateDir, { recursive: true });
+    // A new escalation invalidates any stale approval hand-off.
+    rmSync(join(stateDir, "approval.json"), { force: true });
     writeFileSync(
       join(stateDir, "escalation.json"),
       JSON.stringify(
@@ -127,6 +132,23 @@ async function main(): Promise<number> {
   }
   console.log(`\nSCENARIO OK: ${name} behaved as governed.`);
   return 0;
+}
+
+/** ESCALATE continuation: the clinic agent executes its OWN approved operation. */
+async function executeApproved(): Promise<number> {
+  const cfg = clinicAgentEnv(process.env);
+  const client = new MccClient({
+    gatewayUrl: cfg.gatewayUrl,
+    quorumUrl: cfg.quorumUrl,
+    apiKey: cfg.apiKey,
+  });
+  await client.waitUntilReady();
+  const { code } = await executeApprovedFromState({
+    stateDir: process.env.MCC_PILOT_STATE_DIR ?? "/pilot-state",
+    client,
+    principal: cfg.identity.actor,
+  });
+  return code;
 }
 
 main()

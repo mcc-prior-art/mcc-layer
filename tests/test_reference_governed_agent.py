@@ -48,7 +48,7 @@ from examples.reference_governed_agent import (  # noqa: E402
 )
 from examples.reference_governed_agent.authorizers import FAR_FUTURE  # noqa: E402
 
-from tests._notify_harness import API_KEY, OPERATOR_KEY, NotifyPilotHarness  # noqa: E402
+from tests._notify_harness import API_KEY, OPERATOR_KEY, NotifyPilotHarness, agent_key  # noqa: E402
 
 PKG_DIR = ROOT / "examples" / "reference_governed_agent"
 REQUEST = "Notify customer-123 that the appointment is confirmed"
@@ -73,8 +73,12 @@ def _reset():
     yield
 
 
-def _client(hz: NotifyPilotHarness) -> MCCClient:
-    return MCCClient(hz.base_url, api_key=API_KEY, operator_key=OPERATOR_KEY, timeout=15.0)
+def _client(hz: NotifyPilotHarness, actor_id: str = None) -> MCCClient:
+    # V05 (part 2): an agent acting as ``actor_id`` presents its OWN registered
+    # credential (required on /approvals and the execute routes); without an
+    # actor, the tenant's shared key (enough for /evaluate, /verify, consensus).
+    key = agent_key(actor_id) if actor_id else API_KEY
+    return MCCClient(hz.base_url, api_key=key, operator_key=OPERATOR_KEY, timeout=15.0)
 
 
 def _authorizer(hz: NotifyPilotHarness, *, verdict: str = "ALLOW") -> ConsensusAuthorizer:
@@ -86,7 +90,7 @@ def _authorizer(hz: NotifyPilotHarness, *, verdict: str = "ALLOW") -> ConsensusA
 def _agent(hz, *, scenario, operator=None, authorizer=None):
     """Build a reference agent whose provider deterministically drives ``scenario``."""
     provider = DeterministicProvider(**_PROVIDER[scenario])
-    client = _client(hz)
+    client = _client(hz, _PROVIDER[scenario]["actor_id"])
     return ReferenceGovernedAgent(
         client, provider=provider,
         operator=operator or ProgrammaticOperator(approve=True),
@@ -195,7 +199,10 @@ def test_mismatched_approval_fails_closed(harness):
                               resource="billing",
                               payload={"recipient": "x-1", "message": "m", "priority": 2,
                                        "channel": "email", "correlation_id": "corr-other"})
-    other_granted = client.approve(client.request_approval(other_d))
+    # V05 (part 2): an agent may only request approval for itself, so the
+    # OTHER operation is requested by agent/other-unknown with its own key.
+    other_client = _client(harness, "agent/other-unknown")
+    other_granted = client.approve(other_client.request_approval(other_d))
     client.approve = lambda appr, **k: Approval(
         request_id=appr.request_id, state="APPROVED", mandate=other_granted.mandate)
     result = agent.handle(REQUEST)

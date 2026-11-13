@@ -19,6 +19,9 @@ import pytest
 from benchmarks.workload import POLICY_HASH, RESOURCE, build_stack, context, now
 from mcc_core import InMemoryRevocationRegistry, VelocityLimit
 from mcc_core.mandate import RevocationStatus
+# V05 (part 2): direct library callers pass the trusted authenticated agent
+# explicitly (library trust boundary; see docs/AGENT_IDENTITY.md).
+from tests._agent_credentials import agent as _agent  # noqa: E402
 
 run = asyncio.run
 
@@ -84,14 +87,14 @@ def test_escalate_approval_executes_exactly_once_after_human_approval():
     s = build_stack()
     rec = run(s.service.create_approval(
         actor="agent/payments-bot", action="send_payment", resource=RESOURCE,
-        tenant_id="tenant-1", payload=context(),
+        tenant_id="tenant-1", payload=context(), agent=_agent("tenant-1", "agent/payments-bot"),
     ))
     approved = run(s.service.approve(rec["request_id"]))
     assert approved is not None
     out = run(s.service.execute_with_approval(
         mandate=approved, actor="agent/payments-bot", action="send_payment",
         resource=RESOURCE, context=context(), tenant_id="tenant-1",
-        idempotency_key="op-escalate-1",
+        idempotency_key="op-escalate-1", agent=_agent("tenant-1", "agent/payments-bot"),
     ))
     assert out.status == "EXECUTED"
     assert s.seen == [("send_payment", context())]
@@ -101,13 +104,13 @@ def test_escalate_approval_replay_denied_zero_additional_actuator_calls():
     s = build_stack()
     rec = run(s.service.create_approval(
         actor="agent/payments-bot", action="send_payment", resource=RESOURCE,
-        tenant_id="tenant-1", payload=context(),
+        tenant_id="tenant-1", payload=context(), agent=_agent("tenant-1", "agent/payments-bot"),
     ))
     approved = run(s.service.approve(rec["request_id"]))
     first = run(s.service.execute_with_approval(
         mandate=approved, actor="agent/payments-bot", action="send_payment",
         resource=RESOURCE, context=context(), tenant_id="tenant-1",
-        idempotency_key="op-escalate-replay-1",
+        idempotency_key="op-escalate-replay-1", agent=_agent("tenant-1", "agent/payments-bot"),
     ))
     assert first.status == "EXECUTED"
     s.reset_seen()
@@ -118,7 +121,7 @@ def test_escalate_approval_replay_denied_zero_additional_actuator_calls():
     replay = run(s.service.execute_with_approval(
         mandate=approved, actor="agent/payments-bot", action="send_payment",
         resource=RESOURCE, context=context(), tenant_id="tenant-1",
-        idempotency_key="op-escalate-replay-2",
+        idempotency_key="op-escalate-replay-2", agent=_agent("tenant-1", "agent/payments-bot"),
     ))
     assert replay.status == "BLOCKED"
     assert s.seen == []
