@@ -209,6 +209,10 @@ weakened.
   `examples/gpt6_astra_reference/pipeline.py`, the Redis smoke scripts and
   the assurance negative-control harness, all under the library trust
   boundary above.
+- **In-process demos** that boot `gateway.app` (`examples/governance_http_demo.py`,
+  the Control Room runtime in `tools/control-room/backend/runtime.py`) write a
+  hash-only registry for their demo agent and send that agent's own key on
+  the identity routes.
 - **Out-of-process harnesses** (`tests/interoperability/harness.py`,
   `assurance/sut/harness.py`, `tests/_notify_harness.py`, the reference
   localstack, the VoltAgent `testserver.py`) register a deterministic
