@@ -51,7 +51,7 @@ from mcc_core import (
 )
 
 from pilot_notify import recorded_receipts, reset_receipts
-from tests._notify_harness import API_KEY, OPERATOR_KEY, NotifyPilotHarness
+from tests._notify_harness import API_KEY, OPERATOR_KEY, NotifyPilotHarness, agent_key
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -129,8 +129,9 @@ def _client(hz, *, key: str = API_KEY) -> MCCClient:
 def _escalate(hz, *, actor="agent/unknown", action="send_notification",
               resource="notification-service", payload=None, idem="op-1"):
     """Drive a REAL ESCALATE through /evaluate + request_approval -- the
-    actual SDK call path every agent in this repo uses."""
-    client = _client(hz)
+    actual SDK call path every agent in this repo uses. V05 (part 2): the
+    agent presents its OWN registered credential (agent_key(actor))."""
+    client = _client(hz, key=agent_key(actor))
     payload = dict(payload or {"recipient": "cust-1", "message": "hi",
                                 "priority": 2, "channel": "email"})
     payload.setdefault("correlation_id", idem)
@@ -148,7 +149,7 @@ def _approve_raw(hz, request_id: str, *, operator_key: str = OPERATOR_KEY):
 
 
 def _execute_raw(hz, request_id: str, *, mandate, actor, action, resource, context,
-                 transaction_id=None, idem=None, api_key: str = API_KEY):
+                 transaction_id=None, idem=None, api_key: str = None):
     """Drive ``/approvals/{id}/execute`` directly over HTTP with a
     caller-chosen ``context`` -- the exact attacker-controlled surface Case L
     exploits: a real client can send ANY ``context`` here, independent of
@@ -156,8 +157,10 @@ def _execute_raw(hz, request_id: str, *, mandate, actor, action, resource, conte
     ``MCCClient.execute()`` (which would honestly resubmit the original
     proposal's own payload) -- this is deliberately the raw request a
     compromised proposer, not the well-behaved SDK, would send."""
+    # V05 (part 2): by default the caller is ``actor`` with its OWN credential,
+    # so the approval binding -- not the identity check -- is what is tested.
     return httpx.post(f"{hz.base_url}/approvals/{request_id}/execute",
-                      headers={"x-api-key": api_key},
+                      headers={"x-api-key": api_key or agent_key(actor)},
                       json={"mandate": mandate, "actor": actor, "action": action,
                            "resource": resource, "context": context,
                            "transaction_id": transaction_id, "idempotency_key": idem},
@@ -682,6 +685,9 @@ class TestNotifyPilotAgentScriptStillWorksEndToEnd:
 
         monkeypatch.setenv("MCC_GATEWAY_URL", hz_gated.base_url)
         monkeypatch.setenv("MCC_GATEWAY_API_KEY", API_KEY)
+        # V05 (part 2): each principal the script drives has its OWN key.
+        monkeypatch.setenv("MCC_AGENT_API_KEYS", json.dumps(
+            {p: agent_key(p) for p in ("agent/notify-bot", "agent/unknown")}))
         monkeypatch.setenv("MCC_PILOT_STATE_DIR", str(tmp_path))
         monkeypatch.setenv("MCC_APPROVAL_WAIT_TIMEOUT_S", "8")
         monkeypatch.setenv("MCC_APPROVAL_POLL_INTERVAL_S", "0.2")

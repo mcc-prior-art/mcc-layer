@@ -72,6 +72,11 @@ services:
       # must also ALLOW the operation. Set only here (mcc-gateway); neither
       # pilot-agent nor pilot-operator reads or supplies this file.
       MCC_AUTHORITY_POLICY_CONFIG: "/app/authority_policy.notify.json"
+      # V05 (part 2): per-agent identity. The registry maps each agent's OWN
+      # credential (hash only) to (tenant, principal); identity routes refuse
+      # the shared MCC_GATEWAY_API_KEY. Demo keys only -- provision real ones
+      # with scripts/generate_agent_credential.py (docs/AGENT_IDENTITY.md).
+      MCC_AGENT_CREDENTIALS_CONFIG: "/app/agent_credentials.demo.json"
       MCC_GATEWAY_MODE: "inline"
       MCC_GATEWAY_AUDIT_LOG_PATH: "/data/audit.jsonl"
       # The governed executor: perform the outbound call and require a confirmed,
@@ -116,6 +121,8 @@ services:
     environment:
       MCC_GATEWAY_URL: "http://mcc-gateway:8001"
       MCC_GATEWAY_API_KEY: "demo-key"
+      # V05 (part 2): each principal this agent drives presents its OWN key.
+      MCC_AGENT_API_KEYS: '{"agent/notify-bot": "demo-agent-key-notify-bot", "agent/unknown": "demo-agent-key-unknown"}'
       MCC_PILOT_STATE_DIR: "/pilot-state"
     volumes:
       - notify-pilot-state:/pilot-state

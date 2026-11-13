@@ -260,6 +260,17 @@ class SystemUnderTest:
                 self._procs[i] = self._notify_process
         _wait_ready(f"{self.notify_url}/health")
 
+    def agent_key(self, principal_id: str) -> str:
+        """V05 (part 2): the per-agent credential ``principal_id`` presents as
+        ``X-API-Key`` on the Gateway's identity routes (``/mandates/execute``,
+        ``/approvals``, ``/approvals/{id}/execute``). ``api_key`` remains the
+        tenant's shared key, which grants no agent identity there. The
+        in-process SUT registers these keys for
+        ``tests.interoperability.harness.AGENT_PRINCIPALS``; an external
+        gateway (``connect_external``) must register the same derivation."""
+        from tests._agent_credentials import derived_agent_key
+        return derived_agent_key(self.api_key, principal_id)
+
     def gateway_audit_chain_valid(self) -> bool:
         """The Gateway's own ``GET /verify`` -- real HTTP, independently
         recomputes and checks the append-only hash-chain audit log.

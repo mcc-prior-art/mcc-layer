@@ -66,6 +66,9 @@ from gateway.governance_api import mount_approval_routes, mount_mandate_routes
 from gateway.governance_service import GovernanceService
 from gateway.trust import TrustSet
 
+from tests._agent_credentials import registry as agent_registry  # noqa: E402
+from tests._agent_credentials import shared_tenant_key  # noqa: E402
+
 
 @pytest.fixture(autouse=True, scope="module")
 def _release_this_modules_garbage():
@@ -125,7 +128,7 @@ class Deployment:
 class Gateway:
     def __init__(self, deployment, tenant, *, approver, approval_registry, mode):
         self.tenant = tenant
-        self.key = f"agent-key-{tenant}"
+        self.key = f"agent-key-{tenant}"          # ACTOR's registered per-agent credential
         self.op = {"x-operator-key": f"op-key-{tenant}"}
         trust = TrustSet()
         trust.add_runtime_issuer("issuer/treasury", deployment.issuer.kid, deployment.issuer.public_key())
@@ -154,13 +157,19 @@ class Gateway:
             upstream=upstream, policy_hash=POLICY, mandate_tenant_mode=mode)
         app = FastAPI()
         for mount in (mount_mandate_routes, mount_approval_routes):
-            mount(app, self.service, api_key=self.key, operator_key=self.op["x-operator-key"],
-                  tenant_id=tenant)
+            # V05 (part 2): each agent this fixture simulates presents its OWN
+            # registered credential; the shared tenant key is a separate value.
+            mount(app, self.service, api_key=shared_tenant_key(self.key),
+                  operator_key=self.op["x-operator-key"], tenant_id=tenant,
+                  agent_credentials=agent_registry(tenant, {
+                      ACTOR: self.key, "agent/intern": f"{self.key}::agent/intern"}))
         self.client = TestClient(app, raise_server_exceptions=False)
 
     # ---- HTTP ----
     def post(self, url, body, *, headers=None):
         h = {"x-api-key": self.key, "content-type": "application/json", **(headers or {})}
+        if isinstance(body, dict) and body.get("actor") == "agent/intern":
+            h["x-api-key"] = f"{self.key}::agent/intern"      # that agent's own credential
         return self.client.post(url, headers=h, content=json.dumps(body))
 
     def execute(self, mandate, *, route="mandate", rid=None, actor=ACTOR, action=ACTION,

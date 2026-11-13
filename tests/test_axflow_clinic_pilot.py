@@ -28,7 +28,13 @@ from pilot_notify import receipt_verifying_upstream  # noqa: E402
 from pilot_notify.governed_upstream import payload_sha256  # noqa: E402
 
 from integrations.voltagent.mcc_side.evaluator_quorum import QuorumSettings, build_quorum_app  # noqa: E402
-from tests._notify_harness import API_KEY, OPERATOR_KEY, NotifyPilotHarness, _free_port  # noqa: E402
+from tests._notify_harness import (  # noqa: E402
+    API_KEY,
+    OPERATOR_KEY,
+    NotifyPilotHarness,
+    _free_port,
+    agent_key,
+)
 
 ACTOR = "agent/axflow-clinic"
 CLINIC = "clinic-1"
@@ -53,7 +59,8 @@ class ClinicStack:
         self.qsrv = DemoServer(self.q_app, self.qport)
         self.qsrv.start()
         self.quorum_url = f"http://127.0.0.1:{self.qport}"
-        self.client = MCCGatewayClient(self.harness.base_url, api_key=API_KEY,
+        # V05 (part 2): the clinic agent presents its OWN registered credential.
+        self.client = MCCGatewayClient(self.harness.base_url, api_key=agent_key(ACTOR),
                                        operator_key=OPERATOR_KEY)
 
     def votes(self, *, action, context, nonce, votes_count=None):

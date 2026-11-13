@@ -35,7 +35,7 @@ from pilot_notify import (  # noqa: E402
     recorded_receipts,
     reset_receipts,
 )
-from tests._notify_harness import NotifyPilotHarness, API_KEY, OPERATOR_KEY  # noqa: E402
+from tests._notify_harness import NotifyPilotHarness, API_KEY, OPERATOR_KEY, agent_key  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -53,8 +53,11 @@ def _reset():
     yield
 
 
-def _client(harness) -> MCCClient:
-    return MCCClient(harness.base_url, api_key=API_KEY, operator_key=OPERATOR_KEY)
+def _client(harness, actor: str = None) -> MCCClient:
+    # V05 (part 2): an agent acting as ``actor`` presents its OWN credential
+    # (needed on /approvals + the execute routes); otherwise the shared key.
+    key = agent_key(actor) if actor else API_KEY
+    return MCCClient(harness.base_url, api_key=key, operator_key=OPERATOR_KEY)
 
 
 def _payload(corr, *, priority=1, channel="email", recipient="cust-1", message="Hello"):
@@ -217,7 +220,7 @@ def test_missing_authorization_rejected(hz):
 
 # 9 — ESCALATE: not executed before approval; executed only after valid approval.
 def test_escalate_requires_approval_then_executes(hz):
-    client = _client(hz)
+    client = _client(hz, "agent/unknown")
     d = client.evaluate(actor_id="agent/unknown", action="send_notification",
                         resource="crm", payload=_payload("corr-esc"),
                         idempotency_key="op-corr-esc")
@@ -238,7 +241,7 @@ def test_escalate_requires_approval_then_executes(hz):
 
 # 11 — invalid approval (bogus mandate) rejected.
 def test_invalid_approval_rejected(hz):
-    client = _client(hz)
+    client = _client(hz, "agent/unknown")
     d = client.evaluate(actor_id="agent/unknown", action="send_notification",
                         resource="crm", payload=_payload("corr-badappr"))
     from mcc_client import ApprovalAuthorization

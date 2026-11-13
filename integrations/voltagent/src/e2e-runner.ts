@@ -14,7 +14,7 @@
  * operator key. A clean exit alone is NOT success — the markers below must print.
  */
 
-import { agentEnv, buildGovernedAgentFromEnv } from "./agent.js";
+import { agentApiKey, agentEnv, buildGovernedAgentFromEnv } from "./agent.js";
 import type { GovernedOutcome } from "./mcc-client.js";
 import { MccClient } from "./mcc-client.js";
 import { resolveModel } from "./model.js";
@@ -77,10 +77,12 @@ async function main(): Promise<number> {
   const operatorKey = process.env.MCC_GATEWAY_OPERATOR_API_KEY ?? "op-key";
   // Operator client: holds the operator key. This is NOT the agent — the agent's
   // client never has it. Used only to grant the ESCALATE approval.
+  // V05 (part 2): the approved ESCALATE execution is presented with the
+  // escalating agent's (agent/unknown) OWN credential, never the shared key.
   const operator = new MccClient({
     gatewayUrl: cfg.gatewayUrl,
     quorumUrl: cfg.quorumUrl,
-    apiKey: cfg.apiKey,
+    apiKey: agentApiKey(process.env, "agent/unknown"),
     operatorKey,
   });
 

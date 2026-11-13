@@ -44,6 +44,12 @@ from gateway.governance_api import mount_consensus_routes, mount_mandate_routes
 from gateway.governance_service import GovernanceService
 from gateway.trust import TrustSet
 
+# V05 (part 2): "agent-key" is agent/x's registered per-agent credential in the
+# mount's default "pilot" tenant; the shared tenant key is a separate, unused value.
+from tests._agent_credentials import registry as _agent_registry  # noqa: E402
+from tests._agent_credentials import shared_tenant_key  # noqa: E402
+_AGENT_CREDS = _agent_registry("pilot", {"agent/x": "agent-key"})
+
 FUTURE = 4_000_000_000
 AGENT = {"x-api-key": "agent-key"}
 ACTION = "generic_op"
@@ -79,8 +85,10 @@ def build(threshold=3):
                             approvals=coord.approvals, upstream=upstream, policy_hash=POLICY_HASH,
                             consensus_verifier=verifier)
     app = FastAPI()
-    mount_consensus_routes(app, svc, api_key="agent-key", operator_key="op-key")
-    mount_mandate_routes(app, svc, api_key="agent-key", operator_key="op-key")
+    mount_consensus_routes(app, svc, api_key=shared_tenant_key("agent-key"), operator_key="op-key",
+                       agent_credentials=_AGENT_CREDS)
+    mount_mandate_routes(app, svc, api_key=shared_tenant_key("agent-key"), operator_key="op-key",
+                     agent_credentials=_AGENT_CREDS)
     return evals, TestClient(app), calls
 
 

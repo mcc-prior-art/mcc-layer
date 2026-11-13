@@ -52,6 +52,9 @@ from mcc_core import (
     issue_vote,
 )
 from gateway.trust import TrustSet
+# V05 (part 2): direct library callers pass the trusted authenticated agent
+# explicitly (library trust boundary; see docs/AGENT_IDENTITY.md).
+from tests._agent_credentials import agent as _agent  # noqa: E402
 
 run = asyncio.run
 
@@ -218,7 +221,7 @@ def test_01_valid_mandate_and_valid_attestation_issues_token():
     out = run(service.execute_with_mandate(
         mandate=mandate, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=context, attestation=att.to_dict(), idempotency_key="op-test01",
-        tenant_id="tenant-gsa-1",
+        tenant_id="tenant-gsa-1", agent=_agent("tenant-gsa-1", "agent/payments-bot")
     ))
     assert out.status == "EXECUTED"
     assert out.decision == "ALLOW"
@@ -241,7 +244,7 @@ def test_02_valid_mandate_missing_attestation_blocks():
     out = run(service.execute_with_mandate(
         mandate=mandate, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=context, attestation=None,
-        tenant_id="tenant-gsa-1",
+        tenant_id="tenant-gsa-1", agent=_agent("tenant-gsa-1", "agent/payments-bot")
     ))
     assert out.status == "BLOCKED"
     assert out.decision == "DENY"
@@ -267,7 +270,7 @@ def test_03_valid_attestation_invalid_mandate_blocks():
     out = run(service.execute_with_mandate(
         mandate=bad_mandate, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=context, attestation=att.to_dict(),
-        tenant_id="tenant-gsa-1",
+        tenant_id="tenant-gsa-1", agent=_agent("tenant-gsa-1", "agent/payments-bot")
     ))
     assert out.status == "BLOCKED"
     assert out.decision == "DENY"
@@ -295,7 +298,7 @@ def test_22_constrain_rewrite_invalidates_attestation_bound_to_original_payload(
     out = run(service.execute_with_mandate(
         mandate=mandate, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=original_context, attestation=att.to_dict(),
-        tenant_id="tenant-gsa-1",
+        tenant_id="tenant-gsa-1", agent=_agent("tenant-gsa-1", "agent/payments-bot")
     ))
     assert out.status == "BLOCKED"
     assert out.decision == "DENY"
@@ -329,7 +332,7 @@ def test_23_attestation_bound_to_constrained_payload_issues_token():
     out = run(service.execute_with_mandate(
         mandate=mandate, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=original_context, attestation=att.to_dict(), idempotency_key="op-test23",
-        tenant_id="tenant-gsa-1",
+        tenant_id="tenant-gsa-1", agent=_agent("tenant-gsa-1", "agent/payments-bot")
     ))
     assert out.status == "EXECUTED"
     assert out.decision == "CONSTRAIN"
@@ -360,7 +363,7 @@ def test_24_unrelated_action_unaffected_by_attestation_requirement():
         mandate=mandate, actor="agent/payments-bot", action="check_balance", resource=RESOURCE,
         context={}, attestation=None,  # no attestation supplied, and none required
         idempotency_key="op-test24",
-        tenant_id="tenant-gsa-1",
+        tenant_id="tenant-gsa-1", agent=_agent("tenant-gsa-1", "agent/payments-bot")
     ))
     assert out.status == "EXECUTED"
     assert out.decision == "ALLOW"
@@ -375,7 +378,7 @@ def test_24b_no_pre_execution_control_configured_is_fully_backward_compatible():
     out = run(service.execute_with_mandate(
         mandate=mandate, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=context, attestation=None, idempotency_key="op-test24b",
-        tenant_id="tenant-gsa-1",
+        tenant_id="tenant-gsa-1", agent=_agent("tenant-gsa-1", "agent/payments-bot")
     ))
     assert out.status == "EXECUTED"
     assert out.decision == "ALLOW"
@@ -463,7 +466,7 @@ def test_13_mandate_e2e_required_verified_attestation_yields_evidence_bound_exec
     out = run(service.execute_with_mandate(
         mandate=mandate, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=context, attestation=raw, idempotency_key="op-test13",
-        tenant_id="tenant-gsa-1",
+        tenant_id="tenant-gsa-1", agent=_agent("tenant-gsa-1", "agent/payments-bot")
     ))
     assert out.status == "EXECUTED"
     assert out.decision == "ALLOW"
@@ -535,6 +538,7 @@ def test_15_approval_path_delegation_retains_evidence_binding():
         actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         payload_hash=hash_payload(canonical), payload=canonical,
         tenant_id="tenant-gsa-1",  # V05: requested in the tenant it executes in
+        agent=_agent("tenant-gsa-1", "agent/payments-bot"),
     ))["request_id"]
     approved_mandate = run(service.approve(request_id))
     assert approved_mandate is not None
@@ -545,7 +549,7 @@ def test_15_approval_path_delegation_retains_evidence_binding():
     out = run(service.execute_with_approval(
         mandate=approved_mandate, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=context, attestation=raw, idempotency_key="op-test15",
-        tenant_id="tenant-gsa-1",
+        tenant_id="tenant-gsa-1", agent=_agent("tenant-gsa-1", "agent/payments-bot")
     ))
     assert out.status == "EXECUTED"
 
@@ -573,7 +577,7 @@ def test_16_valid_evidence_alone_still_cannot_produce_executable_authority():
     out = run(service.execute_with_mandate(
         mandate=bad_mandate, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=context, attestation=att.to_dict(),
-        tenant_id="tenant-gsa-1",
+        tenant_id="tenant-gsa-1", agent=_agent("tenant-gsa-1", "agent/payments-bot")
     ))
     assert out.status == "BLOCKED"
     assert out.decision == "DENY"
@@ -602,7 +606,7 @@ def test_17_constrain_rewrite_plus_evidence_binding_together_hold_exactly():
     out = run(service.execute_with_mandate(
         mandate=mandate, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=original_context, attestation=raw, idempotency_key="op-test17",
-        tenant_id="tenant-gsa-1",
+        tenant_id="tenant-gsa-1", agent=_agent("tenant-gsa-1", "agent/payments-bot")
     ))
     assert out.status == "EXECUTED"
     assert out.decision == "CONSTRAIN"
@@ -627,7 +631,7 @@ def test_17b_attestation_bound_to_original_payload_is_still_rejected_pr2_invaria
     out = run(service.execute_with_mandate(
         mandate=mandate, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=original_context, attestation=att.to_dict(),
-        tenant_id="tenant-gsa-1",
+        tenant_id="tenant-gsa-1", agent=_agent("tenant-gsa-1", "agent/payments-bot")
     ))
     assert out.status == "BLOCKED"
     assert "ATTESTATION_PAYLOAD_MISMATCH" in out.reason
@@ -653,7 +657,7 @@ def test_action_with_no_requirement_issues_a_token_with_no_evidence_digest():
     out = run(service.execute_with_mandate(
         mandate=mandate, actor="agent/payments-bot", action="check_balance", resource=RESOURCE,
         context={}, attestation=None, idempotency_key="op-no-requirement",
-        tenant_id="tenant-gsa-1",
+        tenant_id="tenant-gsa-1", agent=_agent("tenant-gsa-1", "agent/payments-bot")
     ))
     assert out.status == "EXECUTED"
     record = _last_pre_actuation_record(service._test_audit)

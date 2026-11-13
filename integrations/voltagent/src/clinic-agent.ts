@@ -9,6 +9,7 @@
  */
 
 import { Agent } from "@voltagent/core";
+import { agentApiKey } from "./agent.js";
 import { createClinicModel } from "./clinic-model.js";
 import type { ClinicIdentity } from "./clinic-schemas.js";
 import type { GovernedOutcome } from "./mcc-client.js";
@@ -57,12 +58,14 @@ export interface ClinicAgentEnv {
 }
 
 export function clinicAgentEnv(env: NodeJS.ProcessEnv = process.env): ClinicAgentEnv {
+  const actor = env.MCC_CLINIC_ACTOR ?? "agent/axflow-clinic";
   return {
     gatewayUrl: env.MCC_GATEWAY_URL ?? "http://mcc-gateway:8001",
     quorumUrl: env.MCC_QUORUM_URL ?? "http://evaluator-quorum:8080",
-    apiKey: env.MCC_GATEWAY_API_KEY ?? "demo-key",
+    // V05 (part 2): the clinic agent's OWN credential (see agentApiKey).
+    apiKey: agentApiKey(env, actor),
     identity: {
-      actor: env.MCC_CLINIC_ACTOR ?? "agent/axflow-clinic",
+      actor,
       clinicId: env.MCC_CLINIC_ID ?? "clinic-1",
     },
   };

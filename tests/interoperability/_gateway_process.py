@@ -19,6 +19,8 @@ configured from environment variables written by the harness:
     MCC_TRUST_CONFIG             optional signed-mandate issuer trust set (PR #71
                                   Workstream C mandate-forgery-containment tests;
                                   absent by default -- see mandate/trust.py)
+    MCC_AGENT_CREDENTIALS_CONFIG / MCC_AGENT_IDENTITY_MODE
+                                 V05 per-agent identity (registry written by the harness)
     MCC_ATTESTATION_REQUIREMENTS_CONFIG / MCC_ATTESTATION_TRUST_CONFIG
                                   optional PR-2 Pre-Execution Attestation Control
                                   (PR-5 Workstream attestation-chain tests; absent by
@@ -69,6 +71,10 @@ def build_app() -> FastAPI:
         env["MCC_ATTESTATION_REQUIREMENTS_CONFIG"] = os.environ["MCC_ATTESTATION_REQUIREMENTS_CONFIG"]
     if "MCC_ATTESTATION_TRUST_CONFIG" in os.environ:
         env["MCC_ATTESTATION_TRUST_CONFIG"] = os.environ["MCC_ATTESTATION_TRUST_CONFIG"]
+    # V05 (part 2): per-agent credential registry + identity mode (server-side).
+    for name in ("MCC_AGENT_CREDENTIALS_CONFIG", "MCC_AGENT_IDENTITY_MODE"):
+        if name in os.environ:
+            env[name] = os.environ[name]
     service = build_governance_service(
         engine=gw.engine, signing_key=gw.signing_key, audit=gw.audit,
         policy_hash=gw.policy_hash, token_audience=gwmod.settings.token_audience,

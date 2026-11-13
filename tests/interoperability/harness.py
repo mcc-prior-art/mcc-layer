@@ -36,6 +36,19 @@ FAR_FUTURE = 4_000_000_000
 API_KEY = "demo-key"
 OPERATOR_KEY = "op-key"
 
+# V05 (part 2): the shared Gateway's identity routes (/mandates/execute,
+# /approvals, /approvals/{id}/execute) require a registered per-agent
+# credential. API_KEY stays the mount's shared tenant key (still valid on
+# /evaluate, /consensus/*, /verify); each principal below gets its OWN key
+# (SharedGovernedGateway.agent_key). Tests act as honest agents presenting
+# their own credential; identity attacks live in test_v05_agent_identity_http.
+GATEWAY_TENANT_ID = "pilot"
+AGENT_PRINCIPALS = (
+    "agent/notify-bot", "agent/egress", "agent/mandate-bot", "agent/the-real-holder",
+    "agent/an-impostor", "agent/attestation-assurance-bot", "agent/checkpoint-bot",
+    "agent/negative-control-bot", "agent/ops-bot", "agent/interop-wrong",
+)
+
 CONTRACT_VERSION = "1.0"
 
 # Scenario identifiers (the common suite every adapter runs).
@@ -111,7 +124,8 @@ class SharedGovernedGateway:
     loopback — exactly as a real deployment would."""
 
     def __init__(self, *, n_evaluators: int = 3, threshold: int = 3,
-                 extra_env: Optional[Dict[str, str]] = None) -> None:
+                 extra_env: Optional[Dict[str, str]] = None,
+                 agent_principals=AGENT_PRINCIPALS) -> None:
         reset_receipts()
         self.profiles = ProfileRegistry.default_pilot()
         self._threshold = threshold
@@ -135,6 +149,11 @@ class SharedGovernedGateway:
         self._trust_path.write_text(json.dumps(trust))
         self._audit_path = str(Path(self._tmp) / "audit.jsonl")
 
+        from tests._agent_credentials import write_registry_file
+        self._agent_creds_path = write_registry_file(
+            Path(self._tmp) / "agent_credentials.json", GATEWAY_TENANT_ID,
+            {p: self.agent_key(p) for p in agent_principals})
+
         # Spawn the real Gateway subprocess and health-gate it.
         self.port = _free_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
@@ -143,6 +162,13 @@ class SharedGovernedGateway:
         self.deployment_id = f"interop-gateway-{self.port}"
         self._identity = self._read_identity()
         self.policy_hash = self._identity["policy_hash"]
+
+    @staticmethod
+    def agent_key(principal_id: str) -> str:
+        """The per-agent credential ``principal_id`` presents as X-API-Key on
+        identity routes (registered only if listed in ``agent_principals``)."""
+        from tests._agent_credentials import derived_agent_key
+        return derived_agent_key(API_KEY, principal_id)
 
     def _spawn(self) -> subprocess.Popen:
         env = {
@@ -157,6 +183,7 @@ class SharedGovernedGateway:
             "MCC_INTEROP_NOTIFY_BASE": self.notify_base,
             "MCC_INTEROP_API_KEY": API_KEY,
             "MCC_INTEROP_OPERATOR_KEY": OPERATOR_KEY,
+            "MCC_AGENT_CREDENTIALS_CONFIG": self._agent_creds_path,
         }
         env.update(self._extra_env)
         return subprocess.Popen(

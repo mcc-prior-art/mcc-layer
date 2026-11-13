@@ -69,6 +69,12 @@ services:
         fi
         export MCC_GATEWAY_SIGNING_KEY_PATH=/config/gateway_signing.pem
         export MCC_CONSENSUS_TRUST_CONFIG=/config/consensus_trust.json
+        # V05 (part 2): per-agent credential registry (hashes only) from
+        # MCC_AGENT_API_KEYS in .env.pilot; rewritten on every start (rotation =
+        # edit + restart). Missing/malformed keys refuse to start (fail-closed).
+        python -m integrations.voltagent.mcc_side.agent_credentials \
+          --out /config/agent_credentials.json || exit 1
+        export MCC_AGENT_CREDENTIALS_CONFIG=/config/agent_credentials.json
         exec uvicorn gateway.app:app --host 0.0.0.0 --port 8001
     environment:
       MCC_GATEWAY_MODE: "inline"
@@ -121,11 +127,14 @@ services:
       - /bin/sh
       - -c
       - |
-        until [ -f /config/evaluator_1.pem ]; do echo "waiting for evaluator keys..."; sleep 1; done
+        until [ -f /config/evaluator_1.pem ] && [ -f /config/agent_credentials.json ]; do echo "waiting for evaluator keys + agent registry..."; sleep 1; done
         exec uvicorn integrations.voltagent.mcc_side.evaluator_quorum:app --host 0.0.0.0 --port 8080
     environment:
       MCC_QUORUM_GATEWAY_URL: "http://mcc-gateway:8001"
       MCC_EVALUATOR_KEYS_DIR: "/config"
+      # V05 (part 2): also accept the agents' own registered credentials
+      # (the registry the gateway wrote into the shared config volume).
+      MCC_AGENT_CREDENTIALS_CONFIG: "/config/agent_credentials.json"
     volumes:
       - clinic-config:/config:ro
     networks: [agent_edge, gov_internal]
@@ -153,6 +162,8 @@ services:
       MCC_QUORUM_URL: "${MCC_QUORUM_URL:-http://evaluator-quorum:8080}"
       MCC_GATEWAY_API_KEY: "${MCC_GATEWAY_API_KEY:?MCC_GATEWAY_API_KEY must be set in .env.pilot}"
       MCC_CLINIC_ACTOR: "agent/axflow-clinic"
+      # V05 (part 2): each principal presents its OWN registered credential.
+      MCC_AGENT_API_KEYS: "${MCC_AGENT_API_KEYS:?MCC_AGENT_API_KEYS must be set in .env.pilot}"
       MCC_CLINIC_ID: "clinic-1"
       MCC_VOLTAGENT_MODEL_PROVIDER: "deterministic"
       MCC_VOLTAGENT_MODEL: "${MCC_VOLTAGENT_MODEL:-}"

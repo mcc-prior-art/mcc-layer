@@ -44,7 +44,20 @@ def main() -> int:
     # The action is recorded by the scenario runner; default to send_notification
     # for the original VoltAgent pilot (backward-compatible).
     action = state.get("action", "send_notification")
-    agent_h = {"x-api-key": api_key}
+    # V05 (part 2): the approved execution is presented with the ESCALATED
+    # AGENT's own registered credential (MCC_AGENT_API_KEYS = JSON
+    # {principal: key}); the shared tenant key cannot execute as an agent.
+    # A missing entry fails closed before the approval is even granted.
+    try:
+        agent_keys = json.loads(os.environ.get("MCC_AGENT_API_KEYS") or "{}")
+    except ValueError:
+        agent_keys = None
+    agent_key = agent_keys.get(actor) if isinstance(agent_keys, dict) else None
+    if not isinstance(agent_key, str) or not agent_key:
+        print(f"FAILED: no per-agent credential for {actor!r} in MCC_AGENT_API_KEYS; "
+              "refusing to continue (fail-closed).")
+        return 1
+    agent_h = {"x-api-key": agent_key}
     op_h = {"x-api-key": api_key, "x-operator-key": operator_key}
 
     print("=" * 64)

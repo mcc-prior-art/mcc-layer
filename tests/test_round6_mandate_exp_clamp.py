@@ -47,6 +47,9 @@ from mcc_core import (
 )
 from mcc_core.core import Verdict
 from mcc_core.mandate import MandateAuthority, MandateVerifier
+# V05 (part 2): direct library callers pass the trusted authenticated agent
+# explicitly (library trust boundary; see docs/AGENT_IDENTITY.md).
+from tests._agent_credentials import agent as _agent  # noqa: E402
 
 run = asyncio.run
 ACTION = "generic_op"
@@ -276,7 +279,7 @@ def test_execute_with_mandate_clamps_token_exp_to_near_expiring_mandate():
 
     out = run(service.execute_with_mandate(
         mandate=mandate, actor="agent/ops", action=ACTION, resource=RESOURCE,
-        context={"value": 1}, idempotency_key="op-round6-clamp-1", tenant_id="tenant-round6",
+        context={"value": 1}, idempotency_key="op-round6-clamp-1", tenant_id="tenant-round6", agent=_agent("tenant-round6", "agent/ops"),
     ))
     assert out.status == "EXECUTED"
     assert len(captured) == 1
@@ -348,7 +351,7 @@ def test_execute_with_approval_clamps_token_exp_to_the_approval_mandate():
     out = run(service.execute_with_approval(
         mandate=mandate, actor="agent/ops", action=ACTION, resource=RESOURCE,
         context={"value": 1}, idempotency_key="op-round6-clamp-approval-1",
-        tenant_id="tenant-round6",
+        tenant_id="tenant-round6", agent=_agent("tenant-round6", "agent/ops"),
     ))
     assert out.status == "EXECUTED", out.reason
     assert len(captured) == 1

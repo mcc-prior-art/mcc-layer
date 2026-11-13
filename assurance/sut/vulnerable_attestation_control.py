@@ -106,6 +106,7 @@ def run_negative_control_scenario() -> Dict[str, Any]:
     stack's own actuation counter, so the caller can prove the vulnerable
     stand-in wrongly executes while the real one correctly blocks.
     """
+    from gateway.agent_identity import AuthenticatedAgent
     from gateway.governance_service import GovernanceService
     from gateway.pre_execution_control import (
         AttestationRequirement,
@@ -222,6 +223,11 @@ def run_negative_control_scenario() -> Dict[str, Any]:
                      "correlation_id": "negative-control-probe"},
             attestation=forged, idempotency_key="op-negative-control",
             tenant_id="negative-control-tenant",
+            # V05 (part 2): this in-process negative-control harness IS the
+            # caller that authenticated its own fixed agent (library trust
+            # boundary; see docs/AGENT_IDENTITY.md).
+            agent=AuthenticatedAgent("negative-control-tenant", "agent/negative-control-bot",
+                                     "assurance:negative-control"),
         )
         vuln_outcome = await vuln_service.execute_with_mandate(
             mandate=vuln_mandate, actor="agent/negative-control-bot", action=action, resource=resource,
@@ -229,6 +235,11 @@ def run_negative_control_scenario() -> Dict[str, Any]:
                      "correlation_id": "negative-control-probe"},
             attestation=forged, idempotency_key="op-negative-control",
             tenant_id="negative-control-tenant",
+            # V05 (part 2): this in-process negative-control harness IS the
+            # caller that authenticated its own fixed agent (library trust
+            # boundary; see docs/AGENT_IDENTITY.md).
+            agent=AuthenticatedAgent("negative-control-tenant", "agent/negative-control-bot",
+                                     "assurance:negative-control"),
         )
         return real_outcome, vuln_outcome
 

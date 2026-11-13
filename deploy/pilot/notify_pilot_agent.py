@@ -42,6 +42,21 @@ STATE_DIR = Path(os.environ.get("MCC_PILOT_STATE_DIR", "/pilot-state"))
 APPROVAL_WAIT_TIMEOUT_S = float(os.environ.get("MCC_APPROVAL_WAIT_TIMEOUT_S", "60.0"))
 APPROVAL_POLL_INTERVAL_S = float(os.environ.get("MCC_APPROVAL_POLL_INTERVAL_S", "1.0"))
 
+# V05 (part 2): per-agent identity. Each principal this demo drives presents
+# its OWN registered credential (MCC_AGENT_API_KEYS = JSON {principal: key});
+# the gateway registry holds only their hashes. A principal with no key here
+# fails closed before any request -- the shared tenant key is never used to
+# act as an agent.
+AGENT_API_KEYS = json.loads(os.environ.get("MCC_AGENT_API_KEYS") or "{}")
+
+
+def _client_for(actor: str) -> MCCClient:
+    key = AGENT_API_KEYS.get(actor)
+    if not isinstance(key, str) or not key:
+        raise SystemExit(f"FAILED: no per-agent credential for {actor!r} in "
+                         "MCC_AGENT_API_KEYS (fail-closed)")
+    return MCCClient(GATEWAY, api_key=key, timeout=15.0)
+
 
 def _wait_ready(client: MCCClient) -> None:
     deadline = time.time() + 60
@@ -75,6 +90,7 @@ def main() -> int:
     print("=" * 60)
 
     for expected, actor, payload in scenarios:
+        client = _client_for(actor)
         payload = dict(payload, correlation_id=_corr(expected.lower()))
         d = client.evaluate(actor_id=actor, action="send_notification",
                             resource="crm", payload=payload,

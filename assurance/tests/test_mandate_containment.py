@@ -50,7 +50,7 @@ def _execute(sut, mandate: Dict[str, Any], *, actor: str = ACTOR, action: str = 
              resource: str = RESOURCE, context: Dict[str, Any],
              idempotency_key: str = None) -> Dict[str, Any]:
     r = httpx.post(
-        f"{sut.gateway_url}/mandates/execute", headers={"x-api-key": sut.api_key},
+        f"{sut.gateway_url}/mandates/execute", headers={"x-api-key": sut.agent_key(actor)},  # V05 pt2: own key
         json={"mandate": mandate, "actor": actor, "action": action, "resource": resource,
               "context": context,
               "idempotency_key": idempotency_key or f"mandate-auto-{uuid.uuid4()}"},

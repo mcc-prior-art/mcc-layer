@@ -4,18 +4,28 @@ import { MccClient } from "../src/mcc-client.js";
 import { createDeterministicModel } from "../src/model.js";
 import { type ProposalIdentity, buildProposal } from "../src/schemas.js";
 import { createGovernedNotificationTool } from "../src/tools/governed-notification.js";
-import { API_KEY, GATEWAY_URL, OPERATOR_KEY, QUORUM_URL, SKIP_INTEGRATION } from "./_config.js";
+import {
+  API_KEY,
+  GATEWAY_URL,
+  OPERATOR_KEY,
+  QUORUM_URL,
+  SKIP_INTEGRATION,
+  agentKey,
+} from "./_config.js";
 
 const IDENTITY: ProposalIdentity = { actor: "agent/notify-bot", resource: "crm" };
 
-function agentClient(): MccClient {
-  return new MccClient({ gatewayUrl: GATEWAY_URL, quorumUrl: QUORUM_URL, apiKey: API_KEY });
+// V05 (part 2): an agent acting as `actor` presents its OWN credential; the
+// shared tenant key (default) suffices for evaluate + consensus execution only.
+function agentClient(actor?: string): MccClient {
+  const apiKey = actor ? agentKey(actor) : API_KEY;
+  return new MccClient({ gatewayUrl: GATEWAY_URL, quorumUrl: QUORUM_URL, apiKey });
 }
-function operatorClient(): MccClient {
+function operatorClient(actor?: string): MccClient {
   return new MccClient({
     gatewayUrl: GATEWAY_URL,
     quorumUrl: QUORUM_URL,
-    apiKey: API_KEY,
+    apiKey: actor ? agentKey(actor) : API_KEY,
     operatorKey: OPERATOR_KEY,
   });
 }
@@ -83,14 +93,16 @@ describe.skipIf(SKIP_INTEGRATION)("VoltAgent governed integration (real MCC gate
       { correlationId: "corr-it-esc" },
       { actor: "agent/unknown", resource: "crm" },
     );
-    const pending = await agentClient().governNotification(proposal, "corr-it-esc");
+    const pending = await agentClient("agent/unknown").governNotification(proposal, "corr-it-esc");
     expect(pending.verdict).toBe("ESCALATE");
     expect(pending.executed).toBe(false);
     expect(pending.status).toBe("PENDING_APPROVAL");
     expect(pending.approvalRequestId).toBeTruthy();
 
-    // Operator (separate authority, holds the operator key) approves + continues.
-    const op = operatorClient();
+    // Operator (separate authority, holds the operator key) approves; the
+    // approved execution is presented with agent/unknown's own credential
+    // (V05 part 2: the shared tenant key cannot execute as an agent).
+    const op = operatorClient("agent/unknown");
     const granted = await op.approveAsOperator(pending.approvalRequestId as string, "corr-it-esc");
     const done = await op.executeApprovedNotification(
       proposal,

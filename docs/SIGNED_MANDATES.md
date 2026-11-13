@@ -120,13 +120,19 @@ configuration only:
 
 **Issuers:** pass `tenant_id=` to `issue_mandate()`.
 
-**What this does NOT provide:**
+**What tenant binding alone does NOT provide:**
 - **No per-agent identity.** Within one tenant, any holder of the tenant's
-  agent API key can present a copied mandate by naming its `subject` as
-  `actor`.
-- **The mandate is still a bearer credential inside its tenant.** Closing
-  that needs a per-agent identity or a proof-of-possession contract. Neither
-  exists, and none is added here.
+  shared agent API key could present a copied mandate by naming its `subject`
+  as `actor`.
+- **The mandate is still a bearer credential inside its tenant.**
+
+**V05 part 2 (per-agent identity, `docs/AGENT_IDENTITY.md`)** closes the first
+point on the HTTP mandate and approval routes: the caller's own registered
+credential resolves server-side to a principal, which must equal both `actor`
+and the signed `subject`; the shared tenant key cannot act as an agent there.
+The mandate remains usable by **its own subject's** credential: there is still
+no proof-of-possession contract, so theft of that agent's credential is not
+prevented.
 
 ## Verification order (fail-closed)
 

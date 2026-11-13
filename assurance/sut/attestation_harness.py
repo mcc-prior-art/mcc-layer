@@ -168,7 +168,9 @@ class AttestationSystemUnderTest:
         }
         if attestation is not None:
             body["attestation"] = attestation
-        r = httpx.post(f"{self.gateway_url}/mandates/execute", headers={"x-api-key": self.api_key},
+        # V05 (part 2): the caller acts as ``actor`` with that agent's own credential.
+        r = httpx.post(f"{self.gateway_url}/mandates/execute",
+                        headers={"x-api-key": self.sut.agent_key(actor)},
                         json=body, timeout=10.0)
         return r.json()
 

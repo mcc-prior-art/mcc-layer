@@ -35,6 +35,7 @@ means DENY. No verified decision token — no execution.
 from __future__ import annotations
 
 import hashlib
+import secrets
 import sys
 import time
 import uuid
@@ -175,9 +176,16 @@ class EvaluateResponse(BaseModel):
 # ---------- Auth ----------
 
 def get_caller(x_api_key: str = Header(...)) -> str:
-    if x_api_key != settings.api_key:
-        raise HTTPException(status_code=401, detail="INVALID_API_KEY")
-    return "pilot"
+    # The tenant's shared key, or (V05 part 2) a registered, active per-agent
+    # credential of this tenant -- so an agent needs only its own key. These
+    # routes are decision-only/read-only and grant no agent identity.
+    if secrets.compare_digest(x_api_key.encode(), settings.api_key.encode()):
+        return "pilot"
+    registry = getattr(globals().get("governance"), "agent_credentials", None)
+    if registry is not None and registry.resolve(
+            x_api_key, tenant_id=settings.tenant_id).agent is not None:
+        return "pilot"
+    raise HTTPException(status_code=401, detail="INVALID_API_KEY")
 
 
 # ---------- Gateway ----------
