@@ -114,7 +114,8 @@ def create_app(rt: DemoRuntime) -> FastAPI:
 
     @app.post("/api/propose")
     def propose(req: ProposeRequest) -> Dict[str, Any]:
-        client = client_for(rt)
+        # F1: a registered demo agent is evaluated with ITS OWN credential.
+        client = client_for(rt, req.identity)
         try:
             result = client.propose(identity=req.identity, action=req.action,
                                     context=req.context, resource_id=req.resource_id)

@@ -487,8 +487,11 @@ def test_governance_service_verify_consensus_fails_closed_when_time_source_untru
             time_source=_AlwaysUntrusted(),
         )
         votes = _votes(keys, not_before=0, not_after=10_000_000_000, issued_at=0)
+        # F1: the caller is the authenticated agent, so this reaches the
+        # trusted-time check itself (not an identity refusal).
         result = await svc.verify_consensus(votes=votes, action=ACTION, context=PAYLOAD, actor=ACTOR,
-                                            resource=RESOURCE)
+                                            resource=RESOURCE, tenant_id="tenant-1",
+                                            agent=_agent("tenant-1", ACTOR))
         assert result["verdict"] == "DENY"
         assert "CLOCK_UNTRUSTED" in result["reason"]
 

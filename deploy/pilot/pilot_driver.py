@@ -47,12 +47,14 @@ def load_evaluator_keys(secrets_dir: Path = SECRETS) -> List[SigningKey]:
 def sign_votes(
     eval_keys: List[SigningKey], *, action: str, payload: Dict[str, Any], actor: str,
     policy_hash: str, nonce: str, resource: Optional[str] = None, verdict: str = "ALLOW",
+    tenant_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """N independent ALLOW votes bound to the challenge nonce + gateway policy hash."""
+    """N independent ALLOW votes bound to the challenge nonce + gateway policy
+    hash + (F1) the tenant the gateway-issued challenge records."""
     return [
         issue_vote(k, evaluator_id=k.kid, verdict=verdict, action=action, payload=payload,
                    actor=actor, not_before=0, not_after=FAR_FUTURE, resource=resource,
-                   policy_hash=policy_hash, nonce=nonce)
+                   policy_hash=policy_hash, nonce=nonce, tenant_id=tenant_id)
         for k in eval_keys
     ]
 
@@ -65,8 +67,13 @@ def consensus_execute(
     """Gateway-issued challenge → N-of-M signed votes → governed execute."""
     challenge = client.issue_challenge(actor=actor, action=action, resource=resource,
                                        context=context)
+    # F1: evaluators sign only for the principal + tenant the GATEWAY
+    # authenticated and recorded on the challenge.
+    if challenge.get("principal_id") != actor or not challenge.get("tenant_id"):
+        raise RuntimeError("challenge is not bound to the authenticated agent; refusing to vote")
     votes = sign_votes(eval_keys, action=action, payload=context, actor=actor,
-                       policy_hash=policy_hash, nonce=challenge["nonce"], resource=resource)
+                       policy_hash=policy_hash, nonce=challenge["nonce"], resource=resource,
+                       tenant_id=challenge["tenant_id"])
     return client.execute_with_consensus(
         votes=votes, actor=actor, action=action, resource=resource, context=context,
         nonce=challenge["nonce"], challenge_id=challenge["challenge_id"],
@@ -83,10 +90,15 @@ EVALUATE_CASES = [
 ]
 
 
-def run_evaluate_paths(client: MCCGatewayClient) -> List[str]:
+def run_evaluate_paths(client: MCCGatewayClient,
+                       agent_clients: Optional[Dict[str, MCCGatewayClient]] = None) -> List[str]:
+    """F1: a registered agent's own verdicts are requested with THAT agent's
+    credential (``agent_clients``); the shared tenant key may not evaluate as
+    a registered agent. Other (unregistered) identities use ``client``."""
     failures: List[str] = []
     for expected, identity, action, context in EVALUATE_CASES:
-        r = client.propose(identity=identity, action=action, context=context)
+        c = (agent_clients or {}).get(identity, client)
+        r = c.propose(identity=identity, action=action, context=context)
         ok = r.decision.value == expected
         extra = f"  clamped→{r.forward_context}" if r.decision == Decision.CONSTRAIN else ""
         print(f"[{r.decision.value:9}] {identity} {action} {context}{extra}")
@@ -102,17 +114,23 @@ def main() -> int:
         sys.exit("set MCC_GATEWAY_API_KEY (the agent X-API-Key)")
     client = MCCGatewayClient(url, api_key=api_key,
                               operator_key=os.environ.get("MCC_GATEWAY_OPERATOR_API_KEY"))
+    # V05/F1: the pilot agent's OWN credential (provisioned by
+    # generate_pilot_config.py; the raw key never leaves the agent side).
+    from gateway.agent_provisioning import load_agent_credential
+    cred = load_agent_credential(os.environ.get(
+        "MCC_AGENT_CREDENTIAL_FILE", str(HERE / "agent-credentials" / "payments-bot" / "credential.json")))
+    agent = MCCGatewayClient(url, api_key=cred.api_key)
 
     print("== readiness ==")
     print(f"  ready={client.is_ready()}  health={client.health().get('status')}")
 
     print("\n== authority verdicts (/evaluate) ==")
-    failures = run_evaluate_paths(client)
+    failures = run_evaluate_paths(client, {cred.principal_id: agent})
 
     print("\n== consensus → governed execution (/consensus) ==")
     policy_hash = client.health()["policy_hash"]
     eval_keys = load_evaluator_keys()
-    out = consensus_execute(client, eval_keys, actor="agent/payments-bot",
+    out = consensus_execute(agent, eval_keys, actor=cred.principal_id,
                             action="notify_endpoint", context={"amount": 100},
                             policy_hash=policy_hash, idempotency_key="pilot-driver-1")
     print(f"  consensus execute → status={out.status} decision={out.decision}")

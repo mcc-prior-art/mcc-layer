@@ -22,7 +22,13 @@ controlled container B obtains nothing that lets it act as A:
 * positive controls: B's key authenticates (read-only routes), the leaked
   shared tenant key is refused as an agent identity, A then executes its own
   approval using the SAME idempotency key B tried, A's replay is refused
-  (single-use), and B executes its own authorized operation.
+  (single-use), and B executes its own authorized operation;
+* F1 consensus impersonation: A (no notify mandate) with its own credential
+  is refused when it evaluates as B, asks the real evaluator quorum for votes
+  as B, or requests/verifies a consensus challenge as B, and cannot execute
+  B's copied challenge + quorum votes (as B, as itself, or with spoofed
+  headers): zero receipts, no audit record. B then executes the same material
+  with the same idempotency key exactly once (replay refused).
 
 Docker is required. Locally without Docker the module is SKIPPED (stated in
 the skip reason); CI sets MCC_REQUIRE_CONTAINER_TESTS=1, which turns a missing
@@ -139,6 +145,98 @@ const [rid, corr, mandate, ctx, action, resource] = JSON.parse(fs.readFileSync(0
     const r = await fetch(`http://mcc-gateway:8001/approvals/${rid}/execute`, {method: "POST",
       headers: {"content-type": "application/json", "x-api-key": own.api_key},
       body: JSON.stringify({mandate, actor: own.principal_id, action, resource, context: ctx, idempotency_key: idem})});
+    const j = await r.json();
+    res.push({http: r.status, status: j.status, reason: j.reason});
+  }
+  console.log(JSON.stringify(res));
+})();
+"""
+
+
+# F1: run INSIDE B's container (agent/notify-bot, holds the notify mandate).
+# B obtains its OWN consensus material -- evaluate, gateway challenge, quorum
+# votes -- WITHOUT executing, and prints it (the harness hands it to A as
+# "copied" material). Reads only B's own credential.
+CONSENSUS_MATERIAL_JS = r"""
+const fs = require("fs");
+const own = JSON.parse(fs.readFileSync("/run/mcc-agent/credential.json", "utf8"));
+const GW = process.env.MCC_GATEWAY_URL || "http://mcc-gateway:8001";
+const Q = process.env.MCC_QUORUM_URL || "http://evaluator-quorum:8080";
+const corr = "corr-f1-container-" + Date.now();
+const ctx = {recipient: "cust-f1", message: "f1 container probe", priority: 2, channel: "email",
+             correlation_id: corr};
+const h = {"content-type": "application/json", "x-api-key": own.api_key};
+async function post(url, body) {
+  const r = await fetch(url, {method: "POST", headers: h, body: JSON.stringify(body)});
+  return {http: r.status, body: await r.json()};
+}
+(async () => {
+  const ev = await post(GW + "/evaluate", {identity: own.principal_id, actor_id: own.principal_id,
+    action: "send_notification", resource_id: "crm", context: ctx, idempotency_key: corr});
+  const fc = ev.body.forward_context;
+  const ch = await post(GW + "/consensus/challenge", {actor: own.principal_id, action: "send_notification",
+    resource: "crm", context: fc});
+  const q = await post(Q + "/vote", {actor: own.principal_id, action: "send_notification", resource: "crm",
+    nonce: ch.body.nonce, context: ctx});
+  console.log(JSON.stringify({principal: own.principal_id, corr, verdict: ev.body.decision, fc,
+    challenge: ch.body, votes: q.body.votes || [], quorum_http: q.http}));
+})().catch((e) => { console.log(JSON.stringify({error: String(e)})); process.exit(1); });
+"""
+
+# F1: run INSIDE A's container (agent/unknown: no notify mandate). A tries to
+# act as B through every consensus surface with its OWN key, and with B's
+# copied challenge + votes (stdin). Prints one JSON document.
+CONSENSUS_ATTACK_JS = r"""
+const fs = require("fs");
+const own = JSON.parse(fs.readFileSync("/run/mcc-agent/credential.json", "utf8"));
+const m = JSON.parse(fs.readFileSync(0, "utf8"));
+const GW = process.env.MCC_GATEWAY_URL || "http://mcc-gateway:8001";
+const Q = process.env.MCC_QUORUM_URL || "http://evaluator-quorum:8080";
+const B = m.principal;
+const own_h = {"content-type": "application/json", "x-api-key": own.api_key};
+async function call(name, url, body, headers) {
+  const r = await fetch(url, {method: "POST", headers: headers || own_h, body: JSON.stringify(body)});
+  let j = null; try { j = await r.json(); } catch (e) {}
+  return {name, http: r.status, status: j && j.status, verdict: j && j.verdict,
+          votes: j && Array.isArray(j.votes) ? j.votes.length : null,
+          reason: j && (j.reason || (typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail)))};
+}
+const execBody = (actor) => ({votes: m.votes, actor, action: "send_notification", resource: "crm",
+  context: m.fc, idempotency_key: m.corr, challenge_id: m.challenge.challenge_id});
+(async () => {
+  const out = {own_principal: own.principal_id, target: B, attacks: []};
+  out.attacks.push(await call("evaluate_as_B", GW + "/evaluate",
+    {identity: B, actor_id: B, action: "send_notification", resource_id: "crm", context: m.fc}));
+  out.attacks.push(await call("quorum_vote_as_B", Q + "/vote",
+    {actor: B, action: "send_notification", resource: "crm", nonce: m.challenge.nonce, context: m.fc}));
+  out.attacks.push(await call("challenge_as_B", GW + "/consensus/challenge",
+    {actor: B, action: "send_notification", resource: "crm", context: m.fc}));
+  out.attacks.push(await call("verify_as_B", GW + "/consensus/verify",
+    {votes: m.votes, actor: B, action: "send_notification", resource: "crm", context: m.fc,
+     nonce: m.challenge.nonce}));
+  out.attacks.push(await call("execute_copied_as_B", GW + "/consensus/execute", execBody(B)));
+  out.attacks.push(await call("execute_copied_as_self", GW + "/consensus/execute", execBody(own.principal_id)));
+  out.attacks.push(await call("execute_copied_spoofed_headers", GW + "/consensus/execute", execBody(B),
+    Object.assign({"x-mcc-identity": B, "x-principal-id": B, "x-agent-principal": B,
+                   "x-tenant-id": "pilot", "x-forwarded-user": B}, own_h)));
+  console.log(JSON.stringify(out));
+})().catch((e) => { console.log(JSON.stringify({error: String(e)})); process.exit(1); });
+"""
+
+# F1 positive control: B executes its own material (same challenge, votes and
+# idempotency key A just tried).
+CONSENSUS_OWN_EXECUTE_JS = r"""
+const fs = require("fs");
+const own = JSON.parse(fs.readFileSync("/run/mcc-agent/credential.json", "utf8"));
+const m = JSON.parse(fs.readFileSync(0, "utf8"));
+const GW = process.env.MCC_GATEWAY_URL || "http://mcc-gateway:8001";
+(async () => {
+  const res = [];
+  for (const idem of [m.corr, m.corr + "-replay"]) {
+    const r = await fetch(GW + "/consensus/execute", {method: "POST",
+      headers: {"content-type": "application/json", "x-api-key": own.api_key},
+      body: JSON.stringify({votes: m.votes, actor: own.principal_id, action: "send_notification",
+        resource: "crm", context: m.fc, idempotency_key: idem, challenge_id: m.challenge.challenge_id})});
     const j = await r.json();
     res.push({http: r.status, status: j.status, reason: j.reason});
   }
@@ -307,6 +405,24 @@ def _collect(dc: Compose, canary: Dict[str, str]) -> Dict:
     f["receipts_after_replay_delta"] = _receipts(dc) - receipts0
     f["b_allow_rc"] = dc.exec(B_SVC, "npx", "tsx", "src/pilot-cli.ts", "allow", check=False).returncode
     f["receipts_after_b_allow_delta"] = _receipts(dc) - receipts0
+
+    # ---- F1: A (no notify mandate) tries to act as B through consensus. ----
+    p = dc.exec(B_SVC, "node", "-e", CONSENSUS_MATERIAL_JS, check=False)
+    material = json.loads(p.stdout.strip().splitlines()[-1])
+    f["f1_material"] = {k: material.get(k) for k in ("principal", "verdict", "quorum_http")}
+    f["f1_material"]["votes"] = len(material.get("votes") or [])
+    f["f1_material"]["challenge_principal"] = (material.get("challenge") or {}).get("principal_id")
+    f["f1_material"]["challenge_tenant"] = (material.get("challenge") or {}).get("tenant_id")
+    f["f1_material"]["vote_tenants"] = sorted({v.get("tenant_id") for v in material.get("votes") or []})
+    receipts_f1, audit_f1 = _receipts(dc), _audit_lines(dc)
+    p = dc.exec(A_SVC, "node", "-e", CONSENSUS_ATTACK_JS, input=json.dumps(material), check=False)
+    f["f1_attack"] = json.loads(p.stdout.strip().splitlines()[-1])
+    f["f1_receipts_after_attack_delta"] = _receipts(dc) - receipts_f1
+    f["f1_audit_after_attack_new"] = _audit_lines(dc)[len(audit_f1):]
+    p = dc.exec(B_SVC, "node", "-e", CONSENSUS_OWN_EXECUTE_JS, input=json.dumps(material), check=False)
+    f["f1_own_execute"] = json.loads(p.stdout.strip().splitlines()[-1])
+    f["f1_receipts_after_own_execute_delta"] = _receipts(dc) - receipts_f1
+
     f["audit_chain_valid"] = dc.exec("mcc-gateway", "python", "-c",
                                      "from mcc_core import AuditLog;print(AuditLog.verify_chain('/data/audit.jsonl'))"
                                      ).stdout.strip()
@@ -418,6 +534,48 @@ def test_approval_is_single_use_after_execution(stack):
 def test_b_executes_its_own_authorized_operation(stack):
     assert stack["b_allow_rc"] == 0
     assert stack["receipts_after_b_allow_delta"] == 2
+
+
+# ------------------------------------------------- F1: consensus impersonation
+
+def test_f1_consensus_material_was_genuine(stack):
+    # Non-vacuity: B really obtained a gateway challenge bound to itself and
+    # 3 tenant-bound quorum votes for an ALLOW decision.
+    m = stack["f1_material"]
+    assert m["principal"] == B and m["verdict"] == "ALLOW" and m["quorum_http"] == 200, m
+    assert m["votes"] >= 3 and m["vote_tenants"] == ["pilot"], m
+    assert m["challenge_principal"] == B and m["challenge_tenant"] == "pilot", m
+
+
+def _f1(stack, name):
+    return next(a for a in stack["f1_attack"]["attacks"] if a["name"] == name)
+
+
+def test_f1_a_cannot_obtain_decisions_votes_or_challenges_as_b(stack):
+    assert stack["f1_attack"]["own_principal"] == A and stack["f1_attack"]["target"] == B
+    for name in ("evaluate_as_B", "quorum_vote_as_B", "challenge_as_B", "verify_as_B"):
+        a = _f1(stack, name)
+        assert a["http"] == 403 and "AGENT_PRINCIPAL_MISMATCH" in (a["reason"] or ""), a
+        assert not a["votes"], a
+
+
+def test_f1_a_cannot_execute_bs_copied_consensus_material(stack):
+    for name in ("execute_copied_as_B", "execute_copied_spoofed_headers"):
+        a = _f1(stack, name)
+        assert a["status"] == "BLOCKED" and "AGENT_PRINCIPAL_MISMATCH" in (a["reason"] or ""), a
+    a = _f1(stack, "execute_copied_as_self")
+    assert a["status"] == "BLOCKED" and "CHALLENGE_PRINCIPAL_MISMATCH" in (a["reason"] or ""), a
+    assert stack["f1_receipts_after_attack_delta"] == 0
+    assert stack["f1_audit_after_attack_new"] == [], stack["f1_audit_after_attack_new"]
+
+
+def test_f1_b_executes_its_own_material_once_after_a_was_refused(stack):
+    # Same challenge, votes and idempotency key A tried: nothing was consumed
+    # or reserved by A's attempts; the challenge stays single-use.
+    first, replay = stack["f1_own_execute"]
+    assert first["status"] == "EXECUTED", stack["f1_own_execute"]
+    assert replay["status"] != "EXECUTED", stack["f1_own_execute"]
+    assert stack["f1_receipts_after_own_execute_delta"] == 1
 
 
 def test_audit_chain_still_verifies(stack):

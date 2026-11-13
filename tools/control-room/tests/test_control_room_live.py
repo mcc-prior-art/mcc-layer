@@ -80,7 +80,8 @@ def test_decisions_come_from_the_real_policy_path(scenario_results, scenario_id,
 
 # 3. Issued tokens are generated and signed by the existing runtime.
 def test_decision_token_is_genuinely_signed_by_the_running_gateway(runtime):
-    client = client_for(runtime)
+    # F1: agent/payments-bot is a registered agent -> its OWN credential.
+    client = client_for(runtime, "agent/payments-bot")
     health = client.health()
     public_key: Ed25519PublicKey = public_key_from_b64(health["signing"]["public_key_b64"])
 
@@ -230,6 +231,8 @@ def test_no_secrets_reach_the_http_responses(runtime, scenario_results):
     everything = "\n".join(blobs)
     assert runtime.operator_key not in everything
     assert runtime.api_key not in everything
+    for agent_key in runtime.agent_keys.values():   # F1: per-agent keys never reach the browser
+        assert agent_key not in everything
     for key in runtime.evaluator_keys:
         # The private key material itself, in every representation the
         # cryptography library can produce it in, must never appear.

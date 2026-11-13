@@ -59,8 +59,9 @@ EVALUATOR_COUNT = 3
 CONSENSUS_THRESHOLD = 3
 # Non-destructive, informative default TTL for gateway-issued decision tokens.
 TOKEN_TTL_SECONDS = "60"
-# Demo agents that act on identity routes (V05 part 2).
-DEMO_AGENT_PRINCIPALS = ("agent/nobody",)
+# Demo agents that act on identity routes (V05 part 2) -- incl. consensus
+# execution and /evaluate as themselves (F1): each gets its OWN credential.
+DEMO_AGENT_PRINCIPALS = ("agent/nobody", "agent/payments-bot", "agent/control-room-demo")
 
 
 def _build_upstream_app(seen: List[Dict[str, Any]]) -> FastAPI:

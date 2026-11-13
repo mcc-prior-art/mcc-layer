@@ -15,11 +15,11 @@ import {
 
 const IDENTITY: ProposalIdentity = { actor: "agent/notify-bot", resource: "crm" };
 
-// V05 (part 2): an agent acting as `actor` presents its OWN credential; the
-// shared tenant key (default) suffices for evaluate + consensus execution only.
-function agentClient(actor?: string): MccClient {
-  const apiKey = actor ? agentKey(actor) : API_KEY;
-  return new MccClient({ gatewayUrl: GATEWAY_URL, quorumUrl: QUORUM_URL, apiKey });
+// V05 (part 2) + F1: an agent acting as `actor` presents its OWN credential on
+// every governed route -- /evaluate, /consensus/*, the quorum's /vote and the
+// identity routes. The shared tenant key grants no agent identity.
+function agentClient(actor: string = IDENTITY.actor): MccClient {
+  return new MccClient({ gatewayUrl: GATEWAY_URL, quorumUrl: QUORUM_URL, apiKey: agentKey(actor) });
 }
 function operatorClient(actor?: string): MccClient {
   return new MccClient({
@@ -112,6 +112,21 @@ describe.skipIf(SKIP_INTEGRATION)("VoltAgent governed integration (real MCC gate
     );
     expect(done.status).toBe("EXECUTED");
     expect(done.receipt?.receiptVerified).toBe(true);
+  });
+
+  it("F1. another agent's credential cannot obtain consensus or execute as notify-bot", async () => {
+    // agent/unknown presents its OWN credential but proposes as agent/notify-bot:
+    // the gateway (/evaluate, /consensus/*) and the quorum (/vote) refuse.
+    const proposal = propose({ correlationId: "corr-it-f1" });
+    const refused = await agentClient("agent/unknown").governNotification(proposal, "corr-it-f1");
+    expect(refused.executed).toBe(false);
+    expect(refused.status).toBe("ERROR");
+    expect(refused.error).toMatch(/AGENT_PRINCIPAL_MISMATCH/);
+    expect(refused.receipt).toBeUndefined();
+    // Positive control: notify-bot executes the very same proposal.
+    const ok = await agentClient().governNotification(proposal, "corr-it-f1");
+    expect(ok.status).toBe("EXECUTED");
+    expect(ok.receipt?.receiptVerified).toBe(true);
   });
 
   it("F. duplicate execution (same idempotency key) does not run twice", async () => {

@@ -111,14 +111,16 @@ class SystemUnderTest:
 
     def gateway_votes(self, *, action: str, payload: Dict[str, Any], actor: str, nonce: str,
                        resource: Optional[str] = None, not_after: int = FAR_FUTURE,
-                       count: Optional[int] = None, verdict: str = "ALLOW") -> List[Dict[str, Any]]:
+                       count: Optional[int] = None, verdict: str = "ALLOW",
+                       tenant_id: Optional[str] = SUT_TENANT_ID) -> List[Dict[str, Any]]:
         from mcc_core.consensus import issue_vote
 
         n = count if count is not None else len(self._evaluators)
         return [
             issue_vote(self._evaluators[i], evaluator_id=self._evaluators[i].kid, verdict=verdict,
                        action=action, payload=payload, actor=actor, not_before=0, not_after=not_after,
-                       resource=resource, policy_hash=self.policy_hash, nonce=nonce)
+                       resource=resource, policy_hash=self.policy_hash, nonce=nonce,
+                       tenant_id=tenant_id)
             for i in range(n)
         ]
 
@@ -325,7 +327,8 @@ class SystemUnderTest:
 
     def gateway_vote_as(self, *, evaluator_index: int, verdict: str, action: str, payload: Dict[str, Any],
                          actor: str, nonce: str, resource: Optional[str] = None,
-                         policy_hash: Optional[str] = None) -> Dict[str, Any]:
+                         policy_hash: Optional[str] = None,
+                         tenant_id: Optional[str] = SUT_TENANT_ID) -> Dict[str, Any]:
         """One vote from a specific, genuinely TRUSTED gateway evaluator
         (identified by index into the pool the Gateway's own trust config
         was built from), with an explicit verdict -- e.g. a trusted DENY
@@ -339,12 +342,13 @@ class SystemUnderTest:
         return issue_vote(
             evaluator, evaluator_id=evaluator.kid, verdict=verdict, action=action, payload=payload,
             actor=actor, not_before=0, not_after=FAR_FUTURE, resource=resource,
-            policy_hash=policy_hash, nonce=nonce,
+            policy_hash=policy_hash, nonce=nonce, tenant_id=tenant_id,
         )
 
     def gateway_consensus_votes(self, *, action: str, payload: Dict[str, Any], actor: str, nonce: str,
                                  resource: Optional[str] = None,
-                                 policy_hash: Optional[str] = None) -> List[Dict[str, Any]]:
+                                 policy_hash: Optional[str] = None,
+                                 tenant_id: Optional[str] = SUT_TENANT_ID) -> List[Dict[str, Any]]:
         """Genuine votes for the GATEWAY's own consensus policy. Applies the
         same ``ActionProfile`` canonicalization the Gateway itself uses
         server-side to compute the authoritative payload hash (the
@@ -360,7 +364,7 @@ class SystemUnderTest:
         return [
             issue_vote(e, evaluator_id=e.kid, verdict="ALLOW", action=action, payload=canonical,
                        actor=actor, not_before=0, not_after=FAR_FUTURE, resource=resource,
-                       policy_hash=policy_hash or self.policy_hash, nonce=nonce)
+                       policy_hash=policy_hash or self.policy_hash, nonce=nonce, tenant_id=tenant_id)
             for e in self._evaluators
         ]
 

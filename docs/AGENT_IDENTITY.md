@@ -116,9 +116,11 @@ python scripts/generate_agent_credential.py --config secrets/agents.json --revok
   roll the gateway instances after any change. A revoked credential is refused
   (403) from the next start.
 - **Same key on every agent route.** A registered credential also works on the
-  non-identity agent routes of its own tenant (verify, status, consensus,
-  `gateway/app.py` `/evaluate` and `/verify`), and on the VoltAgent evaluator
-  quorum when it is given the same registry. An agent needs one key.
+  read-only routes of its own tenant (`/mandates/verify`, approval status,
+  `gateway/app.py` `/verify`), on `/evaluate` **for its own principal only**,
+  on the consensus routes (F1: identity routes) and on the VoltAgent
+  evaluator quorum (which must be given the same registry). An agent needs
+  one key.
 - **Ambiguity refuses to start.** A mount's shared key that is also a
   registered credential is refused (`AgentCredentialConfigError`): one secret
   must not mean both "any agent of this tenant" and "this agent".
@@ -253,7 +255,87 @@ any of these is compromised:
   state volumes are a follow-up.
 - **Revocation latency.** Revocation takes effect when the gateway restarts.
 
-See `docs/proposals/FLEET_IDENTITY_HARDENING_PLAN.md` (PROPOSAL, not implemented) for the follow-up design, including the verified consensus-path impersonation that this contract does not cover.
+See `docs/proposals/FLEET_IDENTITY_HARDENING_PLAN.md` (PROPOSAL; F1 implemented,
+see the next section; F2-F7 not implemented) for the follow-up design.
+
+## F1: consensus and `/evaluate` bound to the authenticated agent
+
+**Reproduced on PR #135 head `2761f4f`**, real HTTP (in-process uvicorn
+gateway, real loopback notification service, honest evaluators). Agent B,
+presenting its OWN registered credential:
+
+| Probe | Result before F1 |
+|---|---|
+| `POST /evaluate` with `identity = A` | ALLOW + decision token signed for A |
+| `/consensus/challenge` + `/consensus/verify` + `/consensus/execute` as A | challenge for A, verify ALLOW, **EXECUTED, receipt +1** |
+| REAL VoltAgent evaluator quorum `/vote` for actor A, then execute | 3 ALLOW votes for A, **EXECUTED, receipt +1** |
+| A's own challenge + A's honest votes, executed by B | **EXECUTED** (A's challenge burned) |
+| the shared tenant key on `/consensus/challenge` | 200 |
+
+After F1 every probe is refused (403 / BLOCKED), receipts +0, and A's own
+control executes. Script: the reproduction lives in the PR description;
+regression tests: `tests/test_f1_consensus_identity_http.py`.
+
+**Contract** (strict, the default; breaking for consensus clients):
+
+- **Consensus routes are identity routes.** `/consensus/challenge`,
+  `/consensus/verify` and `/consensus/execute` require a registered, active
+  per-agent credential of the mount's tenant whose principal equals `actor`
+  (`AGENT_PRINCIPAL_MISMATCH` otherwise). The shared tenant key is refused
+  (403 `AGENT_IDENTITY_REQUIRED`); revoked / other-tenant credentials 403,
+  unknown 401. Library callers pass `agent=` (an omitted agent is refused).
+- **Challenges are bound to the authenticated agent.** A gateway-issued
+  challenge records the server-resolved `tenant_id` and the authenticated
+  `principal_id` (both returned to the client). `/consensus/execute` refuses a
+  challenge issued to another principal or tenant
+  (`CHALLENGE_PRINCIPAL_MISMATCH` / `CHALLENGE_TENANT_MISMATCH`) before it is
+  consumed. The coordinator re-checks the tenant when it consumes the
+  challenge; a tenant-scoped challenge is never consumable by an unscoped
+  consumer.
+- **Votes are bound to the tenant.** Every counted vote must carry a signed
+  `tenant_id` equal to the server-resolved tenant (checked by the service
+  before the token and again by the coordinator). The vote's signed `actor`
+  claim is its principal binding: the gateway accepts a request only when
+  `actor` is the authenticated principal, so a counted vote's `actor` is
+  always that principal. *No separate `principal_id` vote claim was added: it
+  would duplicate `actor` byte for byte.*
+- **`/evaluate` binds identity.** A registered agent credential may evaluate
+  only as itself (`identity` and `actor_id` must be its principal), in every
+  mode. In strict mode the shared tenant key may not evaluate as a
+  **registered** agent (any status); identities that are not registered
+  agents (a service's own policy identity, the MVP interceptor's callers) are
+  unchanged — the shared key is a tenant **service** credential that is never
+  provisioned into agent containers (enforced by the PR #135 isolation
+  test). `/evaluate` mints a signed token but no gateway execute route
+  accepts one; its consumers are interceptors.
+- **The evaluator quorum votes only for the agent that asked.** `/vote`
+  requires a registered per-agent credential (its own shared key only in
+  explicit `legacy-shared-key` mode); `actor` must be that principal; the
+  quorum forwards that same credential to `/evaluate`, so the gateway
+  authenticates the principal the votes are for; every vote carries the
+  tenant. Evaluators that sign votes themselves (reference
+  `ConsensusAuthorizer`, pilot driver) take the tenant and principal from the
+  gateway-issued challenge and refuse a challenge not bound to the decision's
+  actor.
+- **Order.** Every identity refusal happens before any decision token,
+  challenge consumption, idempotency reservation, velocity reservation, audit
+  record or actuator call (tested: audit entry count, challenge state, a
+  legitimate retry with the same idempotency key).
+- **Preserved.** Distinct-evaluator counting, duplicate / forged / expired /
+  mismatched vote rejection, veto, threshold, challenge single-use, gate
+  nonce replay protection.
+
+**Honest-quorum assumption.** F1 binds votes to a tenant and to the request's
+authenticated principal. It does not make a dishonest or compromised
+evaluator quorum safe: N colluding evaluator keys can still sign anything for
+any principal. A quorum that signs without authenticating the requester (as
+the harness evaluators in tests do) is outside this contract.
+
+**Legacy mode.** `MCC_AGENT_IDENTITY_MODE=legacy-shared-key` (server-side,
+explicit) restores caller-asserted `actor` on the consensus routes and lets
+the shared key evaluate as any identity. It gives NO protection against
+within-tenant impersonation. Registered credentials stay bound in every mode,
+and the tenant binding of votes and challenges applies in every mode.
 
 ## Trust boundaries
 
@@ -280,21 +362,23 @@ See `docs/proposals/FLEET_IDENTITY_HARDENING_PLAN.md` (PROPOSAL, not implemented
 | `POST /approvals` (create) | no, but mints authority for `actor` | **yes**: actor must be the principal | refused before any record |
 | `POST /approvals/{id}/approve`, `/deny`, `/invalidate` | no | operator key (unchanged) | approval mandate is minted for the record's actor, now always the creating principal |
 | `POST /mandates/verify`, `GET /approvals/{id}` | no (read-only, no token) | no: shared or registered tenant key | informational |
-| `POST /consensus/challenge`, `/consensus/verify`, `/consensus/execute` | **no**: authority is the N-of-M evaluator quorum, signed over `actor` | **no — OPEN, verified impersonation** | `actor` is caller-asserted. Verified: agent B with its OWN key obtained honest votes for actor A and `/consensus/execute` EXECUTED as A. Follow-up F1 in `docs/proposals/FLEET_IDENTITY_HARDENING_PLAN.md` (breaking for consensus clients) |
+| `POST /consensus/challenge`, `/consensus/verify`, `/consensus/execute` | no: authority is the N-of-M evaluator quorum, signed over `actor` + `tenant_id` | **yes (F1)**: route + service; challenge bound to tenant + principal; votes bound to tenant | before F1: verified impersonation (B with its own key EXECUTED as A). Refused before token / challenge consumption / reservation / audit |
 | `GovernanceService.execute_with_delegation` (no HTTP route) | no: an owner-signed delegation | **no** (library only) | delegation subject compared with a caller-supplied actor; library trust boundary applies |
-| `gateway/app.py` `POST /evaluate`, `GET /verify` | no: unsigned config mandates (`AuthorityModel`), decision-only / read-only | **no** (out of scope) | `MCC_GATEWAY_API_KEY` or a registered agent credential (tenant-level auth only); `identity` is a body field. Same caller-asserted-identity class; tracked separately |
-| VoltAgent evaluator quorum `POST /vote` | no: signs votes over the gateway's authoritative payload | **no** | quorum key or a registered agent credential (tenant-level auth only) |
-| `main.py` `/evaluate` (governance mode) | no | **no** (out of scope) | consensus-based |
-| egress proxy `POST /v1/http/execute` | no: config `AuthorityModel` | **no** (out of scope) | `actor` is a body field |
-| MVP interceptor (`interceptors/egress_proxy.py`) | no | **no** (out of scope) | identity from `X-MCC-Identity` (documented as mTLS/workload identity in production) |
+| `gateway/app.py` `POST /evaluate` | no: unsigned config mandates (`AuthorityModel`); returns a signed decision token for `identity` | **yes for agent credentials (F1)**: an agent key evaluates only as itself; the shared key may not evaluate as a registered agent (strict) | the shared tenant (service) key still evaluates non-agent identities — a holder of that key can act as any *unregistered* identity; it is never provisioned to agents |
+| `gateway/app.py` `GET /verify` | no (read-only) | no: shared or registered tenant key | informational |
+| VoltAgent evaluator quorum `POST /vote` | no: signs votes over the gateway's authoritative payload | **yes (F1)**: registered credential, actor = principal, credential forwarded to `/evaluate`, votes carry the tenant | quorum shared key only in explicit legacy mode |
+| `main.py` `/evaluate`, `/evaluate/challenge` (separate runtime) | no | **no — OPEN** (no per-agent registry; one tenant key) | consensus via its own embedded coordinator, which is tenant-unscoped; `identity` is a body field. Follow-up F1b |
+| egress proxy `POST /v1/http/execute` (separate service) | no: config `AuthorityModel` + optional consensus | **no — OPEN** (one service key, `actor` is a body field) | its coordinator is tenant-unscoped (votes need no `tenant_id`; a gateway-issued tenant-scoped challenge is NOT consumable there). Follow-up F1b |
+| MVP interceptor (`interceptors/egress_proxy.py`) | no | **no — OPEN** | identity from `X-MCC-Identity`, evaluated with the shared service key; F1 now refuses that key for a *registered* agent identity, so it works only for unregistered identities. Production intent: mTLS/workload identity. Follow-up F1b |
+| Pilot Execution API `POST /v1/proposals` + `/v1/operations/{id}/execute` (mounted only in `examples/external_pilot`) | no: config `AuthorityModel` | **no — OPEN** | tenant-level `MCC_PROPOSAL_TENANTS` keys; the proposal's `actor` is caller-asserted. Follow-up F1b |
 
 **No alternate route consumes a signed mandate**, so none bypasses this
-contract for the V05 copied-mandate attack. **But the consensus path lets one
-agent act as another for whatever the evaluator quorum approves for that
-actor** (verified, above). That is the same impersonation class, through a
-different authority source, and this PR does not close it. The routes marked *out of scope*
-have their own caller-asserted-identity exposure for **other** authority
-sources. They are listed so they are not mistaken for covered.
+contract for the V05 copied-mandate attack. **F1 closes the verified
+consensus-path impersonation on the gateway** (and binds `/evaluate` and the
+quorum). The rows marked **OPEN** are separately deployed runtimes or
+example-only surfaces that authenticate only a tenant/service key and take
+the actor from the caller. They are listed so they are not mistaken for
+covered; follow-up F1b in the fleet plan.
 
 ## Test and demo migrations
 
@@ -349,4 +433,49 @@ weakened.
   - **`TestNotifyPilotAgentScriptStillWorksEndToEnd`.** The scenario matrix now
     runs as two processes, one per principal, each with only its own credential
     file. Both must pass.
+
+### F1 migration record (consensus, `/evaluate`, quorum)
+
+No assertion was removed or weakened. Every consensus client now presents the
+**actor's own** credential, and every vote producer signs the tenant.
+
+- **Shared-key clients moved to the actor's key** (otherwise their negatives
+  would have stopped at the new identity refusal): the interoperability
+  harness (`_client(base, principal)`, all 5 adapters × 7 scenarios), the
+  assurance consensus helpers (`sut.agent_key(actor)`), `test_integration_contract`,
+  `test_governed_executor_pilot`, `test_reference_governed_agent`,
+  `test_pilot_deployment`, `test_voltagent_quorum` (`stack.agent(actor)`),
+  `test_axflow_clinic_pilot`, the compliance stack and its **replay probe**
+  (`mcc_compliance/runner.py`: the replay is now attempted by the same agent;
+  with the shared key it would have been "blocked" by identity, vacuously),
+  the reference-agent CLI's self-contained mode, the Control Room, the
+  VoltAgent TS integration tests.
+- **Vote producers sign `tenant_id`:** test fixtures (`votes_for`, `_votes`,
+  `hz.votes`, `gw.votes`, `sut.gateway_*votes`), `ConsensusAuthorizer` and the
+  pilot driver (from the challenge, refusing a challenge not bound to the
+  decision's actor), the compliance stack, the Control Room, the quorum.
+- **Evaluate-as-another-agent fixed in tests:** two tests evaluated a second
+  principal's decision through the first principal's client
+  (`test_reference_governed_agent` mandate-substitution case,
+  `test_authority_principal_separation_adversarial_notify` case D). They now
+  evaluate with that principal's own client; the assertion (the substituted
+  mandate is refused at execution) is unchanged.
+- **Library callers** of `verify_consensus` / `execute_with_consensus` pass
+  the trusted `agent=` (`test_governance_service_attestation`,
+  `test_trusted_time_round4`), so they still reach the attestation and
+  trusted-time checks they target.
+- **Quorums in tests** receive the gateway's hash-only registry
+  (`NotifyPilotHarness.agent_registry_path`, `testserver.py`).
+- **Gateway harnesses** reuse the gateway's own `/evaluate` binding
+  (`evaluate_caller_dep` + `enforce_evaluate_identity`): `_notify_harness`,
+  the interop gateway process, the reference localstack, `testserver.py`.
+- **New negatives** added next to existing ones (each with a positive
+  control on the same challenge): votes for another tenant / no tenant in
+  `test_challenge_http`, `test_consensus_enforcement_http`; the full matrix in
+  `tests/test_f1_consensus_identity_http.py`.
+- **`deploy/pilot`** (Docker pilot runbook): `generate_pilot_config.py` now
+  provisions `agent/payments-bot`'s own credential; the gateway gets
+  `MCC_AGENT_CREDENTIALS_CONFIG`; RUNBOOK §5 and the driver use that key. This
+  also repairs §5b, which since V05 part 2 used the shared key on `POST
+  /approvals` for another actor.
 

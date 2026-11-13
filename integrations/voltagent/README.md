@@ -75,6 +75,13 @@ independent evaluator quorum holds the evaluator keys and only signs votes for a
 **executable** decision, over the gateway's own authoritative payload — VoltAgent
 holds no key and cannot forge a vote. Selecting the tool is not permission.
 
+**Agent identity (F1).** The quorum votes only for the agent that asked: a
+vote request must present that agent's own registered credential and name it
+as `actor`, the quorum forwards the same credential to the gateway's
+`/evaluate`, and every vote is signed for the agent's tenant. The gateway's
+consensus routes require the same credential and principal, so one agent
+cannot obtain or use consensus as another (`docs/AGENT_IDENTITY.md`, "F1").
+
 ## Verdict behavior
 
 | Verdict     | What happens                                                                      |

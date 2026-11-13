@@ -27,6 +27,8 @@ from gateway.governance_api import (
     build_governance_service,
     mount_approval_routes,
     mount_consensus_routes,
+    enforce_evaluate_identity,
+    evaluate_caller_dep,
     mount_mandate_routes,
 )
 
@@ -40,11 +42,12 @@ from .authorizers import ConsensusAuthorizer
 API_KEY = "demo-key"
 OPERATOR_KEY = "op-key"
 
-# V05 (part 2): per-agent identity. API_KEY stays the tenant's SHARED key
-# (accepted on /evaluate, /verify, /consensus/*, /mandates/verify, GET
-# /approvals/{id}); it grants NO agent identity on the identity routes
-# (/mandates/execute, /approvals, /approvals/{id}/execute). There, each
-# principal below presents its OWN registered credential, agent_key(principal).
+# V05 (part 2) + F1: per-agent identity. API_KEY stays the tenant's SHARED
+# key (accepted on /verify, /mandates/verify, GET /approvals/{id}, and on
+# /evaluate only for non-agent identities); it grants NO agent identity on
+# the identity routes (/mandates/execute, /approvals, /approvals/{id}/execute,
+# /consensus/*). There -- and to evaluate as an agent -- each principal below
+# presents its OWN registered credential, agent_key(principal).
 TENANT_ID = "pilot"
 AGENT_PRINCIPALS = ("agent/notify-bot", "agent/unknown", "agent/other-unknown",
                     "agent/axflow-clinic", "agent/ATTACKER")
@@ -129,8 +132,14 @@ class LocalGovernedStack:
                 raise HTTPException(status_code=401, detail="INVALID_API_KEY")
             return "agent"
 
+        # F1: the SAME /evaluate identity binding as gateway/app.py.
+        evaluate_caller = evaluate_caller_dep(API_KEY, TENANT_ID, registry)
+
         @app.post("/evaluate", response_model=gwmod.EvaluateResponse)
-        def evaluate(req: gwmod.EvaluateRequest, _=Depends(require_api_key)):
+        def evaluate(req: gwmod.EvaluateRequest, caller=Depends(evaluate_caller)):
+            enforce_evaluate_identity(caller, identity=req.identity, actor_id=req.actor_id,
+                                      mode=self.service.agent_identity_mode,
+                                      agent_credentials=registry)
             return self.gateway.evaluate(req)
 
         @app.get("/verify")

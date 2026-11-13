@@ -44,8 +44,12 @@ from mcc_core import (
 from gateway.governance_api import mount_consensus_routes
 from gateway.governance_service import GovernanceService
 from gateway.trust import TrustSet
+from tests._agent_credentials import registry as agent_registry, shared_tenant_key
 
+# F1: /consensus/* are identity routes. "agent-key" is agent/x's OWN
+# registered credential; the mount's shared tenant key is a different value.
 AGENT = {"x-api-key": "agent-key"}
+TENANT = "pilot"
 ACTION = "generic_op"
 CTX = {"value": 1}
 POLICY_HASH = "sha256:p"
@@ -69,7 +73,7 @@ def build(threshold=3, *, challenge_registry=None):
         revocation_registry=InMemoryRevocationRegistry(),
         approvals=ApprovalService(InMemoryApprovalRegistry(), SigningKey.generate("apr")),
         consensus_verifier=verifier, require_consensus=True,
-        challenges=challenges, require_challenge=True)
+        challenges=challenges, require_challenge=True, bind_consensus_tenant=True)
     calls = []
 
     async def upstream(action, payload):
@@ -80,7 +84,9 @@ def build(threshold=3, *, challenge_registry=None):
                             approvals=coord.approvals, upstream=upstream, policy_hash=POLICY_HASH,
                             consensus_verifier=verifier, challenge_service=challenges)
     app = FastAPI()
-    mount_consensus_routes(app, svc, api_key="agent-key", operator_key="op-key")
+    mount_consensus_routes(app, svc, api_key=shared_tenant_key("agent-key"), operator_key="op-key",
+                           tenant_id=TENANT,
+                           agent_credentials=agent_registry(TENANT, {"agent/x": "agent-key"}))
     return evals, TestClient(app), calls, challenges
 
 
@@ -94,12 +100,14 @@ def get_challenge(client, *, actor="agent/x", resource="res-1", action=ACTION, c
 
 
 def votes_for(evals, ch, *, actor="agent/x", verdicts=("ALLOW", "ALLOW", "ALLOW"),
-              payload=CTX, action=ACTION, resource=None, policy_hash=None, nonce=None):
+              payload=CTX, action=ACTION, resource=None, policy_hash=None, nonce=None,
+              tenant_id=None):
     return [issue_vote(evals[i], evaluator_id=f"eval-{i}", verdict=verdicts[i], action=action,
                        payload=payload, actor=actor, not_before=0, not_after=4_000_000_000,
                        resource=resource if resource is not None else ch["resource"],
                        policy_hash=policy_hash if policy_hash is not None else ch["policy_hash"],
-                       nonce=nonce if nonce is not None else ch["nonce"])
+                       nonce=nonce if nonce is not None else ch["nonce"],
+                       tenant_id=tenant_id if tenant_id is not None else ch.get("tenant_id", TENANT))
             for i in range(len(verdicts))]
 
 
@@ -119,6 +127,8 @@ def test_challenge_has_gateway_nonce_and_binding():
     assert ch["action"] == ACTION and ch["actor"] == "agent/x" and ch["resource"] == "res-1"
     assert ch["policy_hash"] == POLICY_HASH and ch["payload_hash"].startswith("sha256:")
     assert ch["expires_at"] > ch["issued_at"]
+    # F1: bound to the server-resolved tenant and the authenticated principal.
+    assert ch["tenant_id"] == TENANT and ch["principal_id"] == "agent/x"
 
 
 # ---- The one path that actuates ----
@@ -184,6 +194,24 @@ def test_votes_wrong_actor_denied():
     assert r.json()["status"] == "BLOCKED" and calls == []
 
 
+def test_votes_wrong_tenant_denied():
+    """F1: votes signed for another tenant (or none) are not counted."""
+    evals, client, calls, _ = build()
+    ch = get_challenge(client)
+    r = execute(client, ch, votes_for(evals, ch, tenant_id="other-tenant"))
+    assert r.json()["status"] == "BLOCKED" and calls == []
+    ch = get_challenge(client)
+    unbound = [issue_vote(evals[i], evaluator_id=f"eval-{i}", verdict="ALLOW", action=ACTION,
+                          payload=CTX, actor="agent/x", not_before=0, not_after=4_000_000_000,
+                          resource=ch["resource"], policy_hash=ch["policy_hash"], nonce=ch["nonce"])
+               for i in range(3)]
+    r = execute(client, ch, unbound)
+    assert r.json()["status"] == "BLOCKED" and calls == []
+    # Positive control: the same challenge with tenant-bound votes executes.
+    assert execute(client, ch, votes_for(evals, ch)).json()["status"] == "EXECUTED"
+    assert len(calls) == 1
+
+
 def test_votes_wrong_resource_denied():
     evals, client, calls, _ = build()
     ch = get_challenge(client)
@@ -226,7 +254,8 @@ def test_forged_vote_denied():
     votes = votes_for(evals, ch)[:2] + [
         issue_vote(rogue, evaluator_id="eval-2", verdict="ALLOW", action=ACTION, payload=CTX,
                    actor="agent/x", not_before=0, not_after=4_000_000_000,
-                   resource=ch["resource"], policy_hash=ch["policy_hash"], nonce=ch["nonce"])]
+                   resource=ch["resource"], policy_hash=ch["policy_hash"], nonce=ch["nonce"],
+                   tenant_id=ch["tenant_id"])]
     r = execute(client, ch, votes)
     assert r.json()["status"] == "BLOCKED" and calls == []
 

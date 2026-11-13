@@ -29,7 +29,11 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 SECRETS = HERE / "secrets"
+# Agent-side credential directories (raw keys; never mounted into the gateway).
+AGENT_CREDENTIALS = HERE / "agent-credentials"
+PILOT_AGENT = "agent/payments-bot"
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
 
 from cryptography.hazmat.primitives import serialization  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: E402
@@ -93,11 +97,23 @@ def main() -> int:
     }
     (SECRETS / "consensus_trust.json").write_text(json.dumps(consensus, indent=2), encoding="utf-8")
 
+    # V05/F1: the pilot agent's OWN credential. Identity routes (/mandates/
+    # execute, /approvals, /consensus/*) and /evaluate-as-an-agent require a
+    # registered per-agent credential. The gateway gets the hash-only registry
+    # (in secrets/, mounted read-only); the raw key goes ONLY to the agent's
+    # own directory (agent-credentials/, git-ignored, never mounted into the
+    # gateway).
+    from gateway.agent_provisioning import provision
+    provision(registry_path=str(SECRETS / "agent_credentials.json"), tenant_id="pilot",
+              agents=[(PILOT_AGENT, str(AGENT_CREDENTIALS / "payments-bot"))])
+
     print(f"wrote pilot secrets to {SECRETS} (mode 0600 keys; trust configs hold PUBLIC keys only)")
     print(f"  gateway signing kid:  {gateway.kid}")
     print(f"  approver kid:         {approver.kid}")
     print(f"  mandate issuer kid:   {mandate_issuer.kid}")
     print(f"  evaluator kids:       {[e.kid for e in evaluators]}")
+    print(f"  pilot agent:          {PILOT_AGENT} (credential in "
+          f"{AGENT_CREDENTIALS / 'payments-bot'}; registry holds its SHA-256 only)")
     print("\nNext: copy deploy/pilot/.env.example to deploy/pilot/.env, then "
           "`docker compose -f deploy/pilot/docker-compose.yml up --build`.")
     return 0

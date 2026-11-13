@@ -208,7 +208,8 @@ class GovGateway:
             signed = context
         votes = [issue_vote(k, evaluator_id=k.kid, verdict="ALLOW", action=action, payload=signed,
                             actor=ACTOR, resource=resource, policy_hash=POLICY, nonce=nonce,
-                            not_before=0, not_after=FUTURE) for k in self.evals]
+                            not_before=0, not_after=FUTURE,
+                            tenant_id="tenant-1") for k in self.evals]   # F1: tenant-bound
         r = post_json(self.client, "/consensus/execute", AGENT, {
             "votes": votes, "actor": ACTOR, "action": action, "resource": resource,
             "context": context, "nonce": nonce, "idempotency_key": self._idem()})

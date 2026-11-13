@@ -33,6 +33,24 @@ os.environ.setdefault("MCC_GATEWAY_OPERATOR_API_KEY", "op-key")
 os.environ.setdefault("MCC_GATEWAY_MODE", "inline")
 os.environ.setdefault("MCC_GATEWAY_AUDIT_LOG_PATH", os.path.join(_audit, "audit.jsonl"))
 
+# V05/F1: each demo agent has its OWN credential; the gateway registry stores
+# only SHA-256 hashes. Identity routes (/approvals, execute) and /evaluate as
+# a registered agent require that agent's own key.
+import json as _json  # noqa: E402
+import secrets as _secrets  # noqa: E402
+
+sys.path.insert(0, str(ROOT))
+from gateway.agent_identity import hash_agent_key  # noqa: E402
+
+AGENT_KEYS = {p: _secrets.token_urlsafe(24) for p in ("agent/payments-bot", "agent/nobody")}
+_registry = os.path.join(_audit, "agent_credentials.json")
+with open(_registry, "w", encoding="utf-8") as _f:
+    _json.dump({"agents": [
+        {"credential_id": f"quickstart-{i}", "tenant_id": "pilot", "principal_id": p,
+         "key_sha256": hash_agent_key(k), "status": "active"}
+        for i, (p, k) in enumerate(sorted(AGENT_KEYS.items()))]}, _f)
+os.environ.setdefault("MCC_AGENT_CREDENTIALS_CONFIG", _registry)
+
 from examples._demo_server import DemoServer  # noqa: E402
 import pilot_api.app as pilot_app  # noqa: E402
 
@@ -60,8 +78,14 @@ def main() -> int:
 
     try:
         # 1. Client initialization.
-        client = MCCClient(f"http://127.0.0.1:{gw_port}", api_key=gw.settings.api_key,
-                           operator_key="op-key", timeout=10.0)
+        base = f"http://127.0.0.1:{gw_port}"
+        client = MCCClient(base, api_key=gw.settings.api_key, operator_key="op-key", timeout=10.0)
+
+        def client_for(actor: str) -> MCCClient:
+            """A registered agent uses its OWN key; other identities the shared one."""
+            key = AGENT_KEYS.get(actor)
+            return client if key is None else MCCClient(base, api_key=key, operator_key="op-key",
+                                                        timeout=10.0)
 
         print("MCC-Core Python SDK quickstart\n" + "=" * 40)
 
@@ -74,7 +98,7 @@ def main() -> int:
         ]
         decisions = {}
         for actor, action, payload in cases:
-            d = client.evaluate(actor_id=actor, action=action, payload=payload)
+            d = client_for(actor).evaluate(actor_id=actor, action=action, payload=payload)
             decisions[d.verdict] = d
             extra = ""
             if d.verdict == Verdict.CONSTRAIN:
@@ -93,6 +117,7 @@ def main() -> int:
         # ESCALATE: no execution until approval; then explicit governed execution.
         esc = decisions.get(Verdict.ESCALATE)
         if esc is not None:
+            client = client_for(esc.actor_id)      # the escalating agent itself
             try:
                 client.execute(esc, MandateAuthorization(mandate={"unused": True}))
             except MCCApprovalRequiredError:

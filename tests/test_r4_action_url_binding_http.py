@@ -461,7 +461,7 @@ def test_consensus_execute_unsafe_action_blocked_even_with_full_quorum(rx, actio
     gw = _wire_gateway(rx.base)
     votes = [issue_vote(k, evaluator_id=k.kid, verdict="ALLOW", action=action, payload=payment(100.0),
                         actor=ACTOR, resource=RESOURCE, policy_hash=POLICY, nonce="n-1",
-                        not_before=0, not_after=FUTURE) for k in gw.evals]
+                        not_before=0, not_after=FUTURE, tenant_id="tenant-1") for k in gw.evals]
     r = _post(gw.client, "/consensus/execute", AGENT, {
         "votes": votes, "actor": ACTOR, "action": action, "resource": RESOURCE,
         "context": payment(100.0), "nonce": "n-1", "idempotency_key": "k-1"})

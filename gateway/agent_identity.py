@@ -158,6 +158,15 @@ class AgentCredentialRegistry:
     def __len__(self) -> int:
         return len(self._by_hash)
 
+    def is_registered_principal(self, principal_id: Any, *, tenant_id: str) -> bool:
+        """F1: whether ``principal_id`` is an agent identity of ``tenant_id``
+        in this registry -- ANY status (a revoked agent is still an agent
+        identity the shared tenant key must not assume). Never raises."""
+        if not isinstance(principal_id, str):
+            return False
+        return any(e.principal_id == principal_id and e.tenant_id == tenant_id
+                   for e in self._by_hash.values())
+
     def resolve(self, presented_key: Any, *, tenant_id: str) -> "Resolution":
         """Resolve a presented key for the mount's trusted ``tenant_id``.
         Never raises; an unknown, revoked or other-tenant key is a refusal."""
@@ -203,4 +212,50 @@ def agent_identity_error(agent: Any, *, tenant_id: Any, actor: Any, mode: str) -
         return "AGENT_TENANT_MISMATCH: authenticated agent belongs to another tenant"
     if agent.principal_id != actor:
         return "AGENT_PRINCIPAL_MISMATCH: authenticated agent is not the requested actor"
+    return None
+
+
+def evaluate_identity_error(agent: Any, *, tenant_id: Any, identities: Any, mode: str,
+                            registry: Any = None) -> Optional[str]:
+    """F1: why a decision request (``POST /evaluate``) may NOT be made for the
+    named ``identities`` (the request's ``identity`` and ``actor_id``), or
+    ``None``. Pure and total; never raises.
+
+    ``/evaluate`` returns a SIGNED decision token whose subject/actor is the
+    named identity, and its verdict depends on that identity's mandates, so
+    naming another agent is an authority claim.
+
+    * A registered agent credential (``agent``) may evaluate ONLY as itself:
+      every named identity must equal its principal, in its tenant -- in
+      every mode.
+    * The mount's shared tenant key (``agent is None``) is a tenant SERVICE
+      credential (the MVP interceptor, operators). In strict mode it may not
+      evaluate as an AGENT identity: no named identity may be a principal
+      registered for this tenant (any status). Identities that are not
+      registered agents (e.g. a service's own policy identity) are unchanged.
+      In explicit ``legacy-shared-key`` mode it is unrestricted (no
+      protection, as for the other identity routes)."""
+    if mode not in AGENT_IDENTITY_MODES:
+        return f"AGENT_IDENTITY_MODE_INVALID: {mode!r}; fail-closed"
+    try:
+        named = [i for i in identities if i is not None]
+    except TypeError:
+        return "AGENT_IDENTITY_INVALID: malformed identities; fail-closed"
+    if agent is not None:
+        if not isinstance(agent, AuthenticatedAgent):
+            return "AGENT_IDENTITY_INVALID: untrusted identity context; fail-closed"
+        if agent.tenant_id != tenant_id:
+            return "AGENT_TENANT_MISMATCH: authenticated agent belongs to another tenant"
+        if any(i != agent.principal_id for i in named):
+            return ("AGENT_PRINCIPAL_MISMATCH: an agent credential may evaluate only as "
+                    "its own principal")
+        return None
+    if mode == AGENT_IDENTITY_LEGACY or registry is None:
+        return None
+    try:
+        if any(registry.is_registered_principal(i, tenant_id=tenant_id) for i in named):
+            return ("AGENT_IDENTITY_REQUIRED: the shared tenant credential cannot evaluate "
+                    "as a registered agent; use that agent's own credential")
+    except Exception:  # noqa: BLE001 - total: an unusable registry fails closed
+        return "AGENT_IDENTITY_INVALID: credential registry unavailable; fail-closed"
     return None

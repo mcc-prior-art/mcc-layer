@@ -82,8 +82,16 @@ upstream is never reached.
   - signed `subject` ≠ authenticated principal → `BLOCKED SUBJECT_MISMATCH`
     (or `AGENT_SUBJECT_MISMATCH`);
   - `POST /approvals` for another actor → `403`, no record created.
+- **Consensus routes (F1)** — `/consensus/challenge`, `/consensus/verify`,
+  `/consensus/execute` — are identity routes with the same codes as above
+  (`actor` must be the authenticated principal). The challenge records the
+  tenant + principal; votes must carry the tenant. See
+  `docs/AGENT_IDENTITY.md`, "F1".
+- **`/evaluate` (F1):** an agent credential evaluates only as its own
+  principal (`403 AGENT_PRINCIPAL_MISMATCH`); the shared key may not evaluate
+  as a registered agent (`403 AGENT_IDENTITY_REQUIRED`, strict).
 - **Other agent routes** (`/mandates/verify`, `GET /approvals/{id}`,
-  `/consensus/*`) accept the shared key or a registered credential; they
+  `GET /verify`) accept the shared key or a registered credential; they
   assert no agent identity.
 - **Legacy:** `MCC_AGENT_IDENTITY_MODE=legacy-shared-key` (server-side only)
   accepts the shared key on identity routes with a caller-asserted `actor`.

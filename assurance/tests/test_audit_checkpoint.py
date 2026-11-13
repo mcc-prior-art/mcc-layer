@@ -46,7 +46,7 @@ def _payload(**overrides):
 def _authorized_execute(sut) -> None:
     payload = _payload()
     ch = httpx.post(
-        f"{sut.gateway_url}/consensus/challenge", headers={"x-api-key": sut.api_key},
+        f"{sut.gateway_url}/consensus/challenge", headers={"x-api-key": sut.agent_key(ACTOR)},
         json={"actor": ACTOR, "action": ACTION, "resource": RESOURCE, "context": payload}, timeout=10.0,
     ).json()
     votes = sut.gateway_consensus_votes(
@@ -54,7 +54,7 @@ def _authorized_execute(sut) -> None:
         nonce=ch["nonce"], policy_hash=ch.get("policy_hash"),
     )
     r = httpx.post(
-        f"{sut.gateway_url}/consensus/execute", headers={"x-api-key": sut.api_key},
+        f"{sut.gateway_url}/consensus/execute", headers={"x-api-key": sut.agent_key(ACTOR)},
         json={"actor": ACTOR, "action": ACTION, "resource": RESOURCE, "context": payload,
               "votes": votes, "challenge_id": ch["challenge_id"],
               "idempotency_key": f"ckpt-{uuid.uuid4()}"},

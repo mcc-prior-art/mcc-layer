@@ -52,8 +52,11 @@ class ClinicStack:
         self.clinic_base = f"http://127.0.0.1:{self.cport}"
         self.harness = NotifyPilotHarness(
             upstream=upstream or receipt_verifying_upstream(self.clinic_base))
+        # F1: the quorum authenticates the requesting agent (same hash-only
+        # registry as the gateway) and votes only for that agent.
         qs = QuorumSettings({"MCC_QUORUM_GATEWAY_URL": self.harness.base_url,
-                             "MCC_GATEWAY_API_KEY": API_KEY})
+                             "MCC_GATEWAY_API_KEY": API_KEY,
+                             "MCC_AGENT_CREDENTIALS_CONFIG": self.harness.agent_registry_path})
         self.q_app = build_quorum_app(self.harness.evaluators, qs)
         self.qport = _free_port()
         self.qsrv = DemoServer(self.q_app, self.qport)
@@ -64,7 +67,7 @@ class ClinicStack:
                                        operator_key=OPERATOR_KEY)
 
     def votes(self, *, action, context, nonce, votes_count=None):
-        r = httpx.post(f"{self.quorum_url}/vote", headers={"x-api-key": API_KEY},
+        r = httpx.post(f"{self.quorum_url}/vote", headers={"x-api-key": agent_key(ACTOR)},
                        json={"actor": ACTOR, "action": action, "resource": CLINIC,
                              "context": context, "nonce": nonce}, timeout=10)
         r.raise_for_status()

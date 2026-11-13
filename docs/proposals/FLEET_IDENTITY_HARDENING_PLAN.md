@@ -12,6 +12,18 @@
 > **[proposed]** design, not implemented;
 > **[assumption]** untested premise.
 
+> **Status update (F1 PR, branch `claude/amazing-goldberg-85g3jt`, stacked on
+> PR #135):** F1 is implemented **for the gateway** — `/consensus/challenge|
+> verify|execute` are identity routes, challenges record the tenant and the
+> authenticated principal, votes carry a signed `tenant_id`, `/evaluate`
+> binds agent credentials to their own principal, and the VoltAgent quorum
+> votes only for the agent that authenticated to it. See
+> `docs/AGENT_IDENTITY.md`, "F1". The other F1 rows of section 3.D — the
+> egress proxy, the MVP interceptor, `main.py` and the example-only Pilot
+> Execution API — are separately deployed runtimes with no per-agent
+> registry and remain **OPEN**, now tracked as **F1b**. F2–F7 are not
+> implemented. The fleet objective stays **OPEN**.
+
 ## 1. Objective and threat model
 
 **Objective.** A fully compromised agent B must not acquire agent A's identity
@@ -256,6 +268,7 @@ production startup refuses.
 | # | PR | Breaking? | Acceptance tests (on that PR's final commit) |
 |---|---|---|---|
 | F1 | **Bind consensus, `/evaluate`, egress and interceptor identity to the authenticated principal** (actor = principal; tenant and principal in the challenge and votes) | **Yes**: consensus clients, quorum, egress callers | The verified consensus impersonation is refused with zero actuation. Each path gets B-as-A, copied-material and spoofed-header cases plus positive controls. The red-team corpus is unchanged. |
+| F1b | **Per-agent identity for the separately deployed runtimes**: egress proxy `/v1/http/execute`, MVP interceptor, `main.py`, Pilot Execution API (`/v1/proposals` actor) — adopt the per-agent registry (or workload identity), bind `actor` to it, tenant-scope their coordinators | **Yes**: egress / interceptor / proposal callers | Same B-as-A, copied-material and spoofed-header matrix per runtime, with positive controls |
 | F2 | **Signed registry bundle + online revocation** (B) | Registry format v2 | Revocation-propagation bound under traffic across ≥ 3 gateways; Redis-outage denial; rollback rejected |
 | F3 | **Ed25519 request signatures** (A), dual mode then required | **Yes**: all identity clients | Substitution of path, payload, audience or authority; replay across gateways; expiry; rotation overlap; proxy re-encoding rejected |
 | F4 | **Enforcement profile and startup guards** (E) | Yes, for unmigrated deployments | Startup refusal matrix; static scanner extensions |
@@ -263,9 +276,10 @@ production startup refuses.
 | F6 | **Delegation recipient binding and owner-scope aggregate budgets**; attenuation rules for any future chain | Delegation budget semantics | Collusion over several delegations cannot exceed the owner-scope limit |
 | F7 | **3,000-principal adversarial validation and performance harness** (section 5) | No | The acceptance criteria below |
 
-F1 is recommended as the **next PR**. AX may instead require it before PR #135
-merges, because PR #135 alone leaves a verified same-tenant impersonation path
-through consensus.
+F1 (gateway scope) is implemented in the PR stacked on #135; F1b is the
+recommended next PR for the separately deployed runtimes. AX may require F1
+to merge together with PR #135, because PR #135 alone leaves the verified
+same-tenant impersonation path through gateway consensus.
 
 ## 5. Phase 3: reproducible 3,000-principal adversarial validation [proposed]
 

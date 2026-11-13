@@ -150,13 +150,14 @@ class TestCaseD_WrongBindingRejected:
 
         # Re-evaluate for a DIFFERENT actor under the same action/resource,
         # then try to execute it against the first actor's granted mandate.
-        d2 = agent.evaluate(actor_id="agent/ATTACKER", action="send_notification",
-                            resource="crm", payload=_payload("sep2-d-2"),
-                            idempotency_key="sep2-d-2")
-
-        # V05 (part 2): the attacker uses its OWN credential, so the granted
-        # mandate's actor binding -- not the identity check -- refuses it.
+        # V05 (part 2) + F1: the attacker uses its OWN credential (to evaluate
+        # as itself and to execute), so the granted mandate's actor binding --
+        # not the identity check -- refuses it.
         attacker = _agent_client(hz, "agent/ATTACKER")
+        d2 = attacker.evaluate(actor_id="agent/ATTACKER", action="send_notification",
+                               resource="crm", payload=_payload("sep2-d-2"),
+                               idempotency_key="sep2-d-2")
+
         with pytest.raises(MCCError):
             attacker.execute_after_approval(d2, granted)
 

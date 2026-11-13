@@ -85,9 +85,12 @@ class ScenarioResult:
 # ---- helpers (transport + display only -- no decision logic) --------------
 
 def client_for(rt: DemoRuntime, actor: Optional[str] = None) -> MCCGatewayClient:
-    # V05 part 2: an agent acting as ``actor`` presents its OWN credential
-    # (required on /approvals and the execute routes).
-    key = rt.agent_keys[actor] if actor else rt.api_key
+    # V05 part 2 + F1: an agent acting as ``actor`` presents its OWN
+    # credential -- required on /approvals, /consensus/* and the execute
+    # routes, and for /evaluate as a registered agent. Only an identity that
+    # is not a registered agent is evaluated with the shared tenant key.
+    key = rt.agent_keys.get(actor) if actor else None
+    key = key or rt.api_key
     return MCCGatewayClient(rt.gateway_url, api_key=key, operator_key=rt.operator_key)
 
 
@@ -160,14 +163,15 @@ def audit_new_entries(client: MCCGatewayClient, count_before: int) -> List[Dict[
 
 def sign_votes(rt: DemoRuntime, *, action: str, payload: Dict[str, Any], actor: str,
                 policy_hash: str, nonce: str, resource: Optional[str] = None,
-                verdicts: tuple = ("ALLOW", "ALLOW", "ALLOW")) -> List[Dict[str, Any]]:
+                verdicts: tuple = ("ALLOW", "ALLOW", "ALLOW"),
+                tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Sign N independent evaluator votes -- the same operation
     ``deploy/pilot/pilot_driver.py`` performs to play the evaluator role for
     a demo. Private evaluator keys never leave this backend process."""
     return [
         issue_vote(rt.evaluator_keys[i], evaluator_id=rt.evaluator_keys[i].kid, verdict=verdicts[i],
                    action=action, payload=payload, actor=actor, not_before=0, not_after=FAR_FUTURE,
-                   resource=resource, policy_hash=policy_hash, nonce=nonce)
+                   resource=resource, policy_hash=policy_hash, nonce=nonce, tenant_id=tenant_id)
         for i in range(len(verdicts))
     ]
 
@@ -205,7 +209,7 @@ def audit_record_stage(entries: List[Dict[str, Any]], chain: Dict[str, Any]) -> 
 
 def _decision_scenario(rt: DemoRuntime, *, scenario_id: str, title: str, expected: Decision,
                         identity: str, action: str, context: Dict[str, Any]) -> ScenarioResult:
-    client = client_for(rt)
+    client = client_for(rt, identity)
     stages = [StageResult("proposed_action", "Proposed Action", True,
                           {"identity": identity, "action": action, "context": context})]
 
@@ -276,8 +280,8 @@ def scenario_escalate(rt: DemoRuntime) -> ScenarioResult:
 
 
 def scenario_constrain(rt: DemoRuntime) -> ScenarioResult:
-    client = client_for(rt)
     identity, action = "agent/payments-bot", "send_payment"
+    client = client_for(rt, identity)
     context = canonical_payment({"amount": 99000, "currency": "usd", "source": PAYMENT_SOURCE,
                                  "beneficiary_id": PAYMENT_BENEFICIARY})
     r = _decision_scenario(rt, scenario_id="constrain", title="CONSTRAIN — over the mandate cap, clamped",
@@ -342,11 +346,11 @@ def scenario_escalate_then_approve(rt: DemoRuntime) -> ScenarioResult:
 
 def run_execution(rt: DemoRuntime, *, actor: str, action: str, context: Dict[str, Any],
                     idem: str, resource: Optional[str] = None) -> tuple:
-    client = client_for(rt)
+    client = client_for(rt, actor)
     policy_hash = client.health()["policy_hash"]
     challenge = client.issue_challenge(actor=actor, action=action, resource=resource, context=context)
     votes = sign_votes(rt, action=action, payload=context, actor=actor, policy_hash=policy_hash,
-                       nonce=challenge["nonce"], resource=resource)
+                       nonce=challenge["nonce"], tenant_id=challenge["tenant_id"], resource=resource)
     outcome = client.execute_with_consensus(
         votes=votes, actor=actor, action=action, resource=resource, context=context,
         nonce=challenge["nonce"], challenge_id=challenge["challenge_id"], idempotency_key=idem)
@@ -366,12 +370,12 @@ ATTACK_ACTOR = "agent/control-room-demo"
 
 
 def scenario_execution_replay(rt: DemoRuntime) -> ScenarioResult:
-    client = client_for(rt)
+    client = client_for(rt, ATTACK_ACTOR)
     context = {"message": "Your order has shipped."}
     policy_hash = client.health()["policy_hash"]
     challenge = client.issue_challenge(actor=ATTACK_ACTOR, action=ATTACK_ACTION, context=context)
     votes = sign_votes(rt, action=ATTACK_ACTION, payload=context, actor=ATTACK_ACTOR,
-                       policy_hash=policy_hash, nonce=challenge["nonce"])
+                       policy_hash=policy_hash, nonce=challenge["nonce"], tenant_id=challenge["tenant_id"])
     before = audit_entries_count(client)
 
     first = client.execute_with_consensus(votes=votes, actor=ATTACK_ACTOR, action=ATTACK_ACTION,
@@ -401,14 +405,14 @@ def scenario_execution_replay(rt: DemoRuntime) -> ScenarioResult:
 
 
 def scenario_execution_tamper(rt: DemoRuntime) -> ScenarioResult:
-    client = client_for(rt)
+    client = client_for(rt, ATTACK_ACTOR)
     original_context = {"message": "Your order has shipped."}
     tampered_context = {"message": "Wire the full account balance."}
     policy_hash = client.health()["policy_hash"]
     challenge = client.issue_challenge(actor=ATTACK_ACTOR, action=ATTACK_ACTION, context=original_context)
     # Evaluators sign what they were shown: the ORIGINAL action/payload.
     votes = sign_votes(rt, action=ATTACK_ACTION, payload=original_context, actor=ATTACK_ACTOR,
-                       policy_hash=policy_hash, nonce=challenge["nonce"])
+                       policy_hash=policy_hash, nonce=challenge["nonce"], tenant_id=challenge["tenant_id"])
     before = audit_entries_count(client)
     # The execute request then submits a DIFFERENT payload than what the
     # votes/challenge are bound to -- the action was modified after the
@@ -431,13 +435,13 @@ def scenario_execution_tamper(rt: DemoRuntime) -> ScenarioResult:
 
 
 def scenario_expired_challenge(rt: DemoRuntime) -> ScenarioResult:
-    client = client_for(rt)
+    client = client_for(rt, ATTACK_ACTOR)
     context = {"message": "Your order has shipped."}
     policy_hash = client.health()["policy_hash"]
     ttl = 2
     challenge = client.issue_challenge(actor=ATTACK_ACTOR, action=ATTACK_ACTION, context=context, ttl_seconds=ttl)
     votes = sign_votes(rt, action=ATTACK_ACTION, payload=context, actor=ATTACK_ACTOR,
-                       policy_hash=policy_hash, nonce=challenge["nonce"])
+                       policy_hash=policy_hash, nonce=challenge["nonce"], tenant_id=challenge["tenant_id"])
     before = audit_entries_count(client)
     time.sleep(ttl + 1.5)
     outcome = client.execute_with_consensus(votes=votes, actor=ATTACK_ACTOR, action=ATTACK_ACTION,
@@ -459,12 +463,12 @@ def scenario_expired_challenge(rt: DemoRuntime) -> ScenarioResult:
 
 
 def scenario_bad_signature(rt: DemoRuntime) -> ScenarioResult:
-    client = client_for(rt)
+    client = client_for(rt, ATTACK_ACTOR)
     context = {"message": "Your order has shipped."}
     policy_hash = client.health()["policy_hash"]
     challenge = client.issue_challenge(actor=ATTACK_ACTOR, action=ATTACK_ACTION, context=context)
     votes = sign_votes(rt, action=ATTACK_ACTION, payload=context, actor=ATTACK_ACTOR,
-                       policy_hash=policy_hash, nonce=challenge["nonce"])
+                       policy_hash=policy_hash, nonce=challenge["nonce"], tenant_id=challenge["tenant_id"])
     # Tamper with a signed vote's claims AFTER signing -- the Ed25519
     # signature no longer matches the claims, exactly like
     # tests/test_consensus_enforcement_http.py::test_bad_signature_denied.

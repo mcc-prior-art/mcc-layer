@@ -408,8 +408,26 @@ app = FastAPI(
 )
 
 
+def get_evaluate_caller(x_api_key: str = Header(...)):
+    """F1: ``(tenant_id, agent)`` for /evaluate -- the AuthenticatedAgent of a
+    registered per-agent credential, or ``None`` for the shared tenant key."""
+    from .governance_api import evaluate_caller_dep
+    registry = getattr(globals().get("governance"), "agent_credentials", None)
+    return evaluate_caller_dep(settings.api_key, settings.tenant_id, registry)(x_api_key)
+
+
 @app.post("/evaluate", response_model=EvaluateResponse, response_model_exclude_none=False)
-def evaluate(req: EvaluateRequest, _caller: str = Depends(get_caller)) -> EvaluateResponse:
+def evaluate(req: EvaluateRequest, caller=Depends(get_evaluate_caller)) -> EvaluateResponse:
+    # F1: /evaluate signs a decision token for ``identity``/``actor_id`` and
+    # its verdict follows that identity's mandates. An agent credential may
+    # evaluate only as itself; in strict mode the shared tenant key may not
+    # evaluate as a registered agent. Refused before any audit record/token.
+    from .governance_api import enforce_evaluate_identity
+    gov = globals().get("governance")
+    enforce_evaluate_identity(
+        caller, identity=req.identity, actor_id=req.actor_id,
+        mode=getattr(gov, "agent_identity_mode", "strict"),
+        agent_credentials=getattr(gov, "agent_credentials", None))
     return gateway.evaluate(req)
 
 

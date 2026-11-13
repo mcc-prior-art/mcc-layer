@@ -413,6 +413,7 @@ def test_27_consensus_execute_path_is_also_gated_by_attestation():
                 k, evaluator_id=k.kid, verdict="ALLOW", action=ACTION, payload=canonical,
                 actor="agent/payments-bot", resource=RESOURCE, policy_hash=POLICY_HASH,
                 nonce=nonce, not_before=now - 10, not_after=now + 3600, issued_at=now,
+                tenant_id="tenant-gsa-1",   # F1: votes are tenant-bound
             )
             for k in evaluator_keys
         ]
@@ -423,7 +424,7 @@ def test_27_consensus_execute_path_is_also_gated_by_attestation():
     out_missing = run(service.execute_with_consensus(
         votes=votes, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=context, nonce="consensus-nonce-1",
-        tenant_id="tenant-gsa-1",
+        tenant_id="tenant-gsa-1", agent=_agent("tenant-gsa-1", "agent/payments-bot"),
     ))
     assert out_missing.status == "BLOCKED"
     assert "ATTESTATION_REQUIRED" in out_missing.reason
@@ -435,7 +436,7 @@ def test_27_consensus_execute_path_is_also_gated_by_attestation():
         votes=votes2, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=context, nonce="consensus-nonce-2", attestation=att.to_dict(),
         idempotency_key="op-test27",
-        tenant_id="tenant-gsa-1",
+        tenant_id="tenant-gsa-1", agent=_agent("tenant-gsa-1", "agent/payments-bot"),
     ))
     assert out_ok.status == "EXECUTED"
 
@@ -500,7 +501,7 @@ def test_14_consensus_e2e_required_verified_attestation_yields_evidence_bound_ex
             k, evaluator_id=k.kid, verdict="ALLOW", action=ACTION, payload=canonical,
             actor="agent/payments-bot", resource=RESOURCE, policy_hash=POLICY_HASH,
             nonce="evd-consensus-op-nonce", not_before=now - 10, not_after=now + 3600,
-            issued_at=now,
+            issued_at=now, tenant_id="tenant-gsa-1",   # F1: votes are tenant-bound
         )
         for k in evaluator_keys
     ]
@@ -509,7 +510,7 @@ def test_14_consensus_e2e_required_verified_attestation_yields_evidence_bound_ex
         votes=votes, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=context, nonce="evd-consensus-op-nonce", attestation=raw,
         idempotency_key="op-test14",
-        tenant_id="tenant-gsa-1",
+        tenant_id="tenant-gsa-1", agent=_agent("tenant-gsa-1", "agent/payments-bot"),
     ))
     assert out.status == "EXECUTED"
 

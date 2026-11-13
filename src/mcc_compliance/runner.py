@@ -128,7 +128,9 @@ def _probe_replay(cs: ComplianceStack, decision: Any, material: Any) -> bool:
     challenge/nonce must make this fail closed (no second execution)."""
     before = cs.recorded_executions()
     try:
-        cs.client().execute(decision, material)
+        # F1: the replay is attempted by the SAME agent (its own credential),
+        # so a rejection is the single-use check -- never an identity refusal.
+        cs.client(getattr(decision, "actor_id", None)).execute(decision, material)
     except MCCError:
         return cs.recorded_executions() == before  # blocked and nothing new ran
     return cs.recorded_executions() == before  # no new execution => still blocked

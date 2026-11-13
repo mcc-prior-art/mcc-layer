@@ -28,6 +28,7 @@ from .agent_identity import (
     AgentCredentialRegistry,
     AgentIdentityError,
     agent_identity_mode_from_env,
+    evaluate_identity_error,
 )
 from .governance_service import GovernanceService
 
@@ -189,6 +190,10 @@ class ChallengeCreateResponse(_Strict):
     resource: Optional[str] = None
     payload_hash: str
     policy_hash: Optional[str] = None
+    # F1: the server-resolved tenant and authenticated principal the challenge
+    # is bound to; evaluators sign votes for exactly this tenant.
+    tenant_id: Optional[str] = None
+    principal_id: Optional[str] = None
     issued_at: int
     expires_at: int
 
@@ -252,6 +257,37 @@ def _identity_dep(api_key: str, tenant_id: str, agent_credentials, mode: str):
         raise HTTPException(status_code=401, detail="INVALID_API_KEY")
 
     return require_identity
+
+
+def evaluate_caller_dep(api_key: str, tenant_id: str, agent_credentials):
+    """F1: authentication for decision routes (``POST /evaluate``). Returns
+    ``(tenant_id, agent)``: the trusted AuthenticatedAgent for a registered,
+    active credential of this tenant, or ``(tenant_id, None)`` for the
+    mount's shared tenant (service) key. A revoked / other-tenant credential
+    is 403; anything else 401. Pair with :func:`enforce_evaluate_identity`."""
+    def evaluate_caller(x_api_key: str = Header(...)):
+        if agent_credentials is not None:
+            res = agent_credentials.resolve(x_api_key, tenant_id=tenant_id)
+            if res.agent is not None:
+                return tenant_id, res.agent
+            if res.error in ("AGENT_CREDENTIAL_REVOKED", "AGENT_CREDENTIAL_WRONG_TENANT"):
+                raise HTTPException(status_code=403, detail=res.error)
+        if secrets.compare_digest(str(x_api_key), str(api_key)):
+            return tenant_id, None
+        raise HTTPException(status_code=401, detail="INVALID_API_KEY")
+
+    return evaluate_caller
+
+
+def enforce_evaluate_identity(caller, *, identity, actor_id, mode, agent_credentials) -> None:
+    """F1: refuse (403) a decision request naming an identity the caller may
+    not evaluate as -- BEFORE any authority evaluation, audit record or token
+    (see :func:`gateway.agent_identity.evaluate_identity_error`)."""
+    tenant, agent = caller
+    err = evaluate_identity_error(agent, tenant_id=tenant, identities=(identity, actor_id),
+                                  mode=mode, registry=agent_credentials)
+    if err is not None:
+        raise HTTPException(status_code=403, detail=err)
 
 
 def _mount_identity(service, api_key, tenant_id, agent_credentials):
@@ -420,36 +456,46 @@ def mount_consensus_routes(app: FastAPI, service: GovernanceService, *, api_key:
                            agent_credentials=None) -> None:
     """Multi-Context Consensus endpoints: N-of-M independent signed evaluators
     must agree before a token is issued. /verify is a pure check; /execute runs
-    the one coordinator path only on consensus."""
-    # V05: consensus is NOT an identity route (it consumes no mandate; its
-    # authority is the evaluator quorum). It accepts the shared tenant key or
-    # any registered per-agent credential of this tenant, as before.
-    registry, _ = _mount_identity(service, api_key, tenant_id, agent_credentials)
-    require_agent, _ = _auth_deps(api_key, operator_key, tenant_id, registry)
+    the one coordinator path only on consensus.
+
+    F1: all three are IDENTITY routes (like /mandates/execute). Each requires
+    a registered per-agent credential of this tenant whose principal equals
+    the requested ``actor``; the mount's shared tenant key grants no agent
+    identity here (403 AGENT_IDENTITY_REQUIRED in strict mode). Before F1 any
+    tenant key could name any ``actor`` and execute under consensus as that
+    agent (verified on PR #135 head 2761f4f)."""
+    _registry, require_identity = _mount_identity(service, api_key, tenant_id, agent_credentials)
 
     @app.post("/consensus/challenge", response_model=ChallengeCreateResponse)
-    async def create_challenge(req: ChallengeCreateRequest, _=Depends(require_agent)):
+    async def create_challenge(req: ChallengeCreateRequest, ident=Depends(require_identity)):
+        tenant, agent = ident
         out = await service.issue_challenge(
             action=req.action, actor=req.actor, resource=req.resource,
-            context=req.context, ttl_seconds=req.ttl_seconds)
+            context=req.context, ttl_seconds=req.ttl_seconds, tenant_id=tenant, agent=agent)
         if "error" in out:
-            raise HTTPException(status_code=409, detail=out["error"])
+            raise HTTPException(status_code=403 if out.get("identity_error") else 409,
+                                detail=out["error"])
         return ChallengeCreateResponse(**out)
 
     @app.post("/consensus/verify", response_model=ConsensusVerifyResponse)
-    async def verify_consensus(req: ConsensusVerifyRequest, _=Depends(require_agent)):
+    async def verify_consensus(req: ConsensusVerifyRequest, ident=Depends(require_identity)):
+        tenant, agent = ident
         out = await service.verify_consensus(votes=req.votes, action=req.action,
                                              context=req.context, actor=req.actor,
-                                             resource=req.resource, nonce=req.nonce)
+                                             resource=req.resource, nonce=req.nonce,
+                                             tenant_id=tenant, agent=agent)
+        if out.pop("identity_error", False):
+            raise HTTPException(status_code=403, detail=out["reason"])
         return ConsensusVerifyResponse(**out)
 
     @app.post("/consensus/execute", response_model=ExecuteResponse)
-    async def execute_with_consensus(req: ConsensusExecuteRequest, tenant: str = Depends(require_agent)):
+    async def execute_with_consensus(req: ConsensusExecuteRequest, ident=Depends(require_identity)):
+        tenant, agent = ident
         out = await service.execute_with_consensus(
             votes=req.votes, actor=req.actor, action=req.action, resource=req.resource,
             context=req.context, transaction_id=req.transaction_id,
             idempotency_key=req.idempotency_key, tenant_id=tenant, nonce=req.nonce,
-            challenge_id=req.challenge_id, attestation=req.attestation)
+            challenge_id=req.challenge_id, attestation=req.attestation, agent=agent)
         return ExecuteResponse(status=out.status, reason=out.reason, decision=out.decision,
                                audit_ref=out.audit_ref, execution=out.execution)
 
@@ -606,6 +652,8 @@ def build_governance_service(
         challenges=challenge_service, require_challenge=require_challenge,
         time_source=time_source,
         max_dispatch_staleness_seconds=_max_dispatch_staleness_from_env(env),
+        # F1: votes + challenges re-checked against the token's signed tenant.
+        bind_consensus_tenant=True,
     )
 
     if upstream is None:

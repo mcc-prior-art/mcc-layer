@@ -35,7 +35,7 @@ from pilot_notify import (  # noqa: E402
     recorded_receipts,
     reset_receipts,
 )
-from tests._notify_harness import NotifyPilotHarness, API_KEY, OPERATOR_KEY, agent_key  # noqa: E402
+from tests._notify_harness import NotifyPilotHarness, OPERATOR_KEY, agent_key  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -53,11 +53,11 @@ def _reset():
     yield
 
 
-def _client(harness, actor: str = None) -> MCCClient:
-    # V05 (part 2): an agent acting as ``actor`` presents its OWN credential
-    # (needed on /approvals + the execute routes); otherwise the shared key.
-    key = agent_key(actor) if actor else API_KEY
-    return MCCClient(harness.base_url, api_key=key, operator_key=OPERATOR_KEY)
+def _client(harness, actor: str = "agent/notify-bot") -> MCCClient:
+    # V05 (part 2) + F1: an agent acting as ``actor`` presents its OWN
+    # credential on every governed route (/evaluate, /consensus/*, /approvals,
+    # the execute routes), so each negative reaches its intended check.
+    return MCCClient(harness.base_url, api_key=agent_key(actor), operator_key=OPERATOR_KEY)
 
 
 def _payload(corr, *, priority=1, channel="email", recipient="cust-1", message="Hello"):

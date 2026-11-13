@@ -198,15 +198,21 @@ def _consensus_app(threshold=3):
                             approvals=coord.approvals, upstream=upstream, policy_hash="sha256:p",
                             consensus_verifier=verifier, challenge_service=challenges)
     app = FastAPI()
-    mount_consensus_routes(app, svc, api_key="agent-key", operator_key="op-key")
+    # F1: /consensus/* are identity routes -- "agent-key" is agent/x's OWN
+    # registered credential; the mount's shared tenant key is a separate value.
+    from tests._agent_credentials import registry as agent_registry, shared_tenant_key
+    mount_consensus_routes(app, svc, api_key=shared_tenant_key("agent-key"), operator_key="op-key",
+                           tenant_id="pilot",
+                           agent_credentials=agent_registry("pilot", {"agent/x": "agent-key"}))
     return evals, app, calls
 
 
 def _votes(evals, *, action, payload, actor, nonce, policy_hash="sha256:p",
-           verdicts=("ALLOW", "ALLOW", "ALLOW")):
+           verdicts=("ALLOW", "ALLOW", "ALLOW"), tenant_id="pilot"):
     return [issue_vote(evals[i], evaluator_id=f"eval-{i}", verdict=verdicts[i], action=action,
                        payload=payload, actor=actor, not_before=0, not_after=FAR_FUTURE,
-                       policy_hash=policy_hash, nonce=nonce) for i in range(len(verdicts))]
+                       policy_hash=policy_hash, nonce=nonce, tenant_id=tenant_id)
+            for i in range(len(verdicts))]
 
 
 def test_consensus_execute_through_sdk_reaches_upstream():

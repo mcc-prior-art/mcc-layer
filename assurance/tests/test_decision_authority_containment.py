@@ -56,7 +56,7 @@ def _payload(**overrides: Any) -> Dict[str, Any]:
 
 def _challenge(sut, payload: Dict[str, Any], *, actor: str = ACTOR) -> Dict[str, Any]:
     r = httpx.post(
-        f"{sut.gateway_url}/consensus/challenge", headers={"x-api-key": sut.api_key},
+        f"{sut.gateway_url}/consensus/challenge", headers={"x-api-key": sut.agent_key(actor)},
         json={"actor": actor, "action": ACTION, "resource": RESOURCE, "context": payload}, timeout=10.0,
     )
     r.raise_for_status()
@@ -66,7 +66,7 @@ def _challenge(sut, payload: Dict[str, Any], *, actor: str = ACTOR) -> Dict[str,
 def _execute(sut, payload: Dict[str, Any], challenge: Dict[str, Any], votes, *, actor: str = ACTOR,
              idempotency_key: str = None) -> Dict[str, Any]:
     r = httpx.post(
-        f"{sut.gateway_url}/consensus/execute", headers={"x-api-key": sut.api_key},
+        f"{sut.gateway_url}/consensus/execute", headers={"x-api-key": sut.agent_key(actor)},
         json={"votes": votes, "actor": actor, "action": ACTION, "resource": RESOURCE, "context": payload,
               "challenge_id": challenge["challenge_id"], "nonce": challenge["nonce"],
               "idempotency_key": idempotency_key or f"c-auto-{uuid.uuid4()}"}, timeout=10.0,

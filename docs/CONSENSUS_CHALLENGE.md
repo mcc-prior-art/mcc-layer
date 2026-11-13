@@ -52,6 +52,8 @@ client → POST /consensus/challenge { action, actor, resource, context }
 | `resource` | the bound target |
 | `payload_hash` | `sha256` of the canonical payload |
 | `policy_hash` | the gateway's policy version |
+| `tenant_id` | *(F1)* the server-resolved tenant of the issuing request |
+| `principal_id` | *(F1)* the individually authenticated agent that requested it (`null` only in explicit legacy mode) |
 | `issued_at` / `expires_at` | validity window (TTL-enforced by the store) |
 | `state` | `ISSUED → CONSUMED` (single-use) or `→ EXPIRED` |
 
@@ -73,6 +75,10 @@ ISSUED ──consume──► CONSUMED        (single-use, terminal)
 | malformed or forged votes | `ConsensusVerifier` (untrusted kid / bad signature) |
 | below threshold / veto | `ConsensusVerifier` |
 | client-supplied nonce, no challenge | `require_challenge` → BLOCKED |
+| *(F1)* challenge requested or used by an agent other than `actor` | route identity check → `403` / `BLOCKED AGENT_PRINCIPAL_MISMATCH` |
+| *(F1)* challenge issued to another principal / tenant | service pre-check (`CHALLENGE_PRINCIPAL_MISMATCH` / `CHALLENGE_TENANT_MISMATCH`) + coordinator consume (tenant) |
+| *(F1)* tenant-scoped challenge presented to an unscoped consumer | `ChallengeService.consume` → refused |
+| *(F1)* votes not signed for the challenge's tenant | `ConsensusVerifier` (`tenant_id` required) |
 
 A mismatched consume attempt does **not** spend the challenge — only a fully
 bound, valid consume flips it to `CONSUMED`.
@@ -81,8 +87,8 @@ bound, valid consume flips it to `CONSUMED`.
 
 | Method | Endpoint | Boundary |
 |---|---|---|
-| `POST` | `/consensus/challenge` | agent — mint a single-use challenge (gateway owns the nonce) |
-| `POST` | `/consensus/execute` | agent — supply `challenge_id` + votes; executes only on a valid, bound, consumed challenge |
+| `POST` | `/consensus/challenge` | agent identity (F1: own registered credential, `actor` = its principal) — mint a single-use challenge (gateway owns the nonce) |
+| `POST` | `/consensus/execute` | agent identity (F1) — supply `challenge_id` + votes; executes only on a valid, bound, consumed challenge |
 
 ```json
 POST /consensus/challenge
@@ -90,7 +96,8 @@ POST /consensus/challenge
   "resource": "cluster-1", "context": { "target": "cluster-1", "environment": "prod" } }
 → { "challenge_id": "chal-…", "nonce": "…", "action": "deploy_release",
     "actor": "agent/ops", "resource": "cluster-1", "payload_hash": "sha256:…",
-    "policy_hash": "sha256:…", "issued_at": 1780000000, "expires_at": 1780000120 }
+    "policy_hash": "sha256:…", "tenant_id": "pilot", "principal_id": "agent/ops",
+    "issued_at": 1780000000, "expires_at": 1780000120 }
 
 POST /consensus/execute
 { "challenge_id": "chal-…", "votes": [ {/* signed vote */}, … ],

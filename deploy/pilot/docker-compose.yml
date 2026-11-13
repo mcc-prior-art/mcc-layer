@@ -83,6 +83,12 @@ services:
       # --- mandate trust set (public keys; required in pilot) ---
       MCC_TRUST_CONFIG: "/secrets/trust.pilot.json"
 
+      # --- per-agent identity registry (V05/F1; SHA-256 hashes only) ---
+      # Identity routes (/mandates/execute, /approvals, /consensus/*) and
+      # /evaluate-as-an-agent need a registered per-agent credential; the
+      # raw key lives only in deploy/pilot/agent-credentials/ (agent side).
+      MCC_AGENT_CREDENTIALS_CONFIG: "/secrets/agent_credentials.json"
+
       # --- mandatory Multi-Context Consensus + gateway-issued challenge ---
       MCC_REQUIRE_CONSENSUS: "1"
       MCC_REQUIRE_CHALLENGE: "1"

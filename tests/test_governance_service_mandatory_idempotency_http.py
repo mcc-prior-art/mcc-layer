@@ -120,7 +120,8 @@ def _mandate(issuer_key, **over):
 def _votes(evaluators, *, nonce=None):
     return [issue_vote(evaluators[i], evaluator_id=f"eval-{i}", verdict="ALLOW", action=ACTION,
                        payload=CTX, actor="agent/x", not_before=0, not_after=FUTURE,
-                       resource=RESOURCE, policy_hash=POLICY, nonce=nonce)
+                       resource=RESOURCE, policy_hash=POLICY, nonce=nonce,
+                       tenant_id="pilot")   # F1: the mount's tenant
             for i in range(len(evaluators))]
 
 

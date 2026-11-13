@@ -94,10 +94,12 @@ def build(threshold=3):
 
 def votes_for(evals, *, actor="agent/x", verdicts=("ALLOW", "ALLOW", "ALLOW"),
               payload=CTX, action=ACTION, resource="res-1", policy_hash=POLICY_HASH,
-              nonce="nonce-1"):
+              nonce="nonce-1", tenant_id="pilot"):
+    # F1: votes are signed for the mount's server-resolved tenant.
     return [issue_vote(evals[i], evaluator_id=f"eval-{i}", verdict=verdicts[i], action=action,
                        payload=payload, actor=actor, not_before=0, not_after=FUTURE,
-                       resource=resource, policy_hash=policy_hash, nonce=nonce)
+                       resource=resource, policy_hash=policy_hash, nonce=nonce,
+                       tenant_id=tenant_id)
             for i in range(len(verdicts))]
 
 
@@ -150,7 +152,7 @@ def test_untrusted_evaluator_denied(tmp_path):
     votes = votes_for(evals)[:2] + [
         issue_vote(rogue, evaluator_id="eval-2", verdict="ALLOW", action=ACTION, payload=CTX,
                    actor="agent/x", not_before=0, not_after=FUTURE, resource="res-1",
-                   policy_hash=POLICY_HASH, nonce="nonce-1")]
+                   policy_hash=POLICY_HASH, nonce="nonce-1", tenant_id="pilot")]
     r = execute(client, votes)
     assert r.json()["status"] == "BLOCKED" and calls == []
 
@@ -168,7 +170,8 @@ def test_expired_vote_denied(tmp_path):
     votes = votes_for(evals)
     votes[2] = issue_vote(evals[2], evaluator_id="eval-2", verdict="ALLOW", action=ACTION,
                           payload=CTX, actor="agent/x", not_before=0, not_after=1, issued_at=0,
-                          resource="res-1", policy_hash=POLICY_HASH, nonce="nonce-1")
+                          resource="res-1", policy_hash=POLICY_HASH, nonce="nonce-1",
+                          tenant_id="pilot")
     r = execute(client, votes)
     assert r.json()["status"] == "BLOCKED" and calls == []
 
@@ -207,6 +210,17 @@ def test_policy_hash_mismatch_denied(tmp_path):
     votes = votes_for(evals, policy_hash="sha256:other")
     r = execute(client, votes)
     assert r.json()["status"] == "BLOCKED" and calls == []
+
+
+def test_tenant_mismatch_denied(tmp_path):
+    """F1: votes signed for another tenant, or for none, are not counted."""
+    evals, client, calls = build()
+    assert execute(client, votes_for(evals, tenant_id="other")).json()["status"] == "BLOCKED"
+    assert execute(client, votes_for(evals, tenant_id=None), idem="op-1b").json()["status"] == "BLOCKED"
+    assert calls == []
+    # Positive control: tenant-bound votes for the same operation execute.
+    assert execute(client, votes_for(evals), idem="op-1c").json()["status"] == "EXECUTED"
+    assert len(calls) == 1
 
 
 def test_nonce_mismatch_denied(tmp_path):

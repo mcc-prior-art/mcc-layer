@@ -35,7 +35,14 @@ from integrations.voltagent.mcc_side.evaluator_quorum import (  # noqa: E402
     QuorumSettings,
     build_quorum_app,
 )
-from tests._notify_harness import API_KEY, OPERATOR_KEY, NotifyPilotHarness, _free_port  # noqa: E402
+from tests._notify_harness import (  # noqa: E402
+    API_KEY,
+    OPERATOR_KEY,
+    TENANT_ID,
+    NotifyPilotHarness,
+    _free_port,
+    agent_key,
+)
 
 _idem_counter = itertools.count(1)
 
@@ -45,18 +52,28 @@ class QuorumStack:
 
     def __init__(self, *, upstream=None):
         self.harness = NotifyPilotHarness(upstream=upstream)
+        # F1: the quorum authenticates the requesting agent (same hash-only
+        # registry as the gateway) and votes only for that agent.
         settings = QuorumSettings(
-            {"MCC_QUORUM_GATEWAY_URL": self.harness.base_url, "MCC_GATEWAY_API_KEY": API_KEY}
+            {"MCC_QUORUM_GATEWAY_URL": self.harness.base_url, "MCC_GATEWAY_API_KEY": API_KEY,
+             "MCC_GATEWAY_TENANT_ID": TENANT_ID,
+             "MCC_AGENT_CREDENTIALS_CONFIG": self.harness.agent_registry_path}
         )
         self.q_app = build_quorum_app(self.harness.evaluators, settings)
         self.q_port = _free_port()
         self.q_server = DemoServer(self.q_app, self.q_port)
         self.q_server.start()
         self.quorum_url = f"http://127.0.0.1:{self.q_port}"
+        # Read-only routes (/verify) only; every governed call uses the actor's key.
         self.client = MCCGatewayClient(self.harness.base_url, api_key=API_KEY, operator_key=OPERATOR_KEY)
 
+    def agent(self, actor):
+        """F1: the client of ``actor`` -- presenting its OWN credential."""
+        return MCCGatewayClient(self.harness.base_url, api_key=agent_key(actor),
+                                operator_key=OPERATOR_KEY)
+
     def vote(self, *, actor, action, resource, context, nonce):
-        r = httpx.post(f"{self.quorum_url}/vote", headers={"x-api-key": API_KEY},
+        r = httpx.post(f"{self.quorum_url}/vote", headers={"x-api-key": agent_key(actor)},
                        json={"actor": actor, "action": action, "resource": resource,
                              "context": context, "nonce": nonce}, timeout=10)
         r.raise_for_status()
@@ -69,13 +86,14 @@ class QuorumStack:
         # for scenarios that aren't specifically about idempotency.
         if idempotency_key is None:
             idempotency_key = f"auto-idem-{next(_idem_counter)}"
-        d = self.client.propose(identity=actor, action=action, resource_id=resource,
-                                actor_id=actor, context=context)
-        ch = self.client.issue_challenge(actor=actor, action=action, resource=resource,
-                                         context=d.forward_context)
+        client = self.agent(actor)
+        d = client.propose(identity=actor, action=action, resource_id=resource,
+                           actor_id=actor, context=context)
+        ch = client.issue_challenge(actor=actor, action=action, resource=resource,
+                                    context=d.forward_context)
         qv = self.vote(actor=actor, action=action, resource=resource, context=context,
                        nonce=ch["nonce"])
-        out = self.client.execute_with_consensus(
+        out = client.execute_with_consensus(
             votes=qv["votes"], actor=actor, action=action, resource=resource,
             context=qv["authorized_context"], nonce=ch["nonce"], challenge_id=ch["challenge_id"],
             idempotency_key=idempotency_key)
@@ -116,7 +134,7 @@ def test_allow_consensus_executed(stack):
 
 # B — DENY -> the quorum refuses to vote; nothing executes.
 def test_deny_quorum_refuses(stack):
-    d = stack.client.propose(identity="agent/notify-bot", action="send_notification",
+    d = stack.agent("agent/notify-bot").propose(identity="agent/notify-bot", action="send_notification",
                              resource_id="crm", actor_id="agent/notify-bot",
                              context=_ctx("corr-deny", channel="pager"))
     assert d.decision.value == "DENY"
@@ -172,16 +190,16 @@ def test_forged_receipt_not_executed():
 def test_replay_not_executed_twice(stack):
     actor, action, resource = "agent/notify-bot", "send_notification", "crm"
     ctx = _ctx("corr-replay")
-    d = stack.client.propose(identity=actor, action=action, resource_id=resource,
+    d = stack.agent(actor).propose(identity=actor, action=action, resource_id=resource,
                              actor_id=actor, context=ctx)
-    ch = stack.client.issue_challenge(actor=actor, action=action, resource=resource,
+    ch = stack.agent(actor).issue_challenge(actor=actor, action=action, resource=resource,
                                       context=d.forward_context)
     qv = stack.vote(actor=actor, action=action, resource=resource, context=ctx, nonce=ch["nonce"])
-    first = stack.client.execute_with_consensus(
+    first = stack.agent(actor).execute_with_consensus(
         votes=qv["votes"], actor=actor, action=action, resource=resource,
         context=qv["authorized_context"], nonce=ch["nonce"], challenge_id=ch["challenge_id"],
         idempotency_key="op-replay-test")
-    second = stack.client.execute_with_consensus(
+    second = stack.agent(actor).execute_with_consensus(
         votes=qv["votes"], actor=actor, action=action, resource=resource,
         context=qv["authorized_context"], nonce=ch["nonce"], challenge_id=ch["challenge_id"],
         idempotency_key="op-replay-test")
@@ -193,13 +211,13 @@ def test_replay_not_executed_twice(stack):
 def test_tampered_execute_payload_rejected(stack):
     actor, action, resource = "agent/notify-bot", "send_notification", "crm"
     ctx = _ctx("corr-tamper")
-    d = stack.client.propose(identity=actor, action=action, resource_id=resource,
+    d = stack.agent(actor).propose(identity=actor, action=action, resource_id=resource,
                              actor_id=actor, context=ctx)
-    ch = stack.client.issue_challenge(actor=actor, action=action, resource=resource,
+    ch = stack.agent(actor).issue_challenge(actor=actor, action=action, resource=resource,
                                       context=d.forward_context)
     qv = stack.vote(actor=actor, action=action, resource=resource, context=ctx, nonce=ch["nonce"])
     tampered = dict(qv["authorized_context"], message="ALTERED-AFTER-VOTES")
-    out = stack.client.execute_with_consensus(
+    out = stack.agent(actor).execute_with_consensus(
         votes=qv["votes"], actor=actor, action=action, resource=resource,
         context=tampered, nonce=ch["nonce"], challenge_id=ch["challenge_id"],
         idempotency_key="op-tamper-test")

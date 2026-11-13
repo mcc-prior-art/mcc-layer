@@ -48,7 +48,13 @@ from mcc_evidence import EvidenceStatus, verify_bundle  # noqa: E402
 
 from pilot_notify import recorded_receipts, reset_receipts  # noqa: E402
 
-from tests._notify_harness import API_KEY, OPERATOR_KEY, NotifyPilotHarness  # noqa: E402
+from tests._notify_harness import (  # noqa: E402
+    API_KEY,
+    OPERATOR_KEY,
+    TENANT_ID,
+    NotifyPilotHarness,
+    agent_key,
+)
 
 REQUEST = "Notify customer-123 that the appointment is confirmed"
 
@@ -68,8 +74,11 @@ def _reset():
     yield
 
 
-def _client(h: NotifyPilotHarness) -> MCCClient:
-    return MCCClient(h.base_url, api_key=API_KEY, operator_key=OPERATOR_KEY, timeout=15.0)
+def _client(h: NotifyPilotHarness, actor: str = "agent/notify-bot") -> MCCClient:
+    # F1: the agent presents its OWN credential on /evaluate and /consensus/*,
+    # so every negative below reaches its intended check (signature, expiry,
+    # replay, policy hash) rather than an identity refusal.
+    return MCCClient(h.base_url, api_key=agent_key(actor), operator_key=OPERATOR_KEY, timeout=15.0)
 
 
 def _allow_decision(h: NotifyPilotHarness, client: MCCClient):
@@ -91,7 +100,7 @@ def _votes(h, decision, nonce, *, policy_hash=None, not_after=FAR_FUTURE):
                    action=decision.action, payload=canonical, actor=decision.actor_id,
                    not_before=0, not_after=not_after, resource=decision.resource_id,
                    policy_hash=policy_hash if policy_hash is not None else h.policy_hash,
-                   nonce=nonce)
+                   nonce=nonce, tenant_id=TENANT_ID)
         for i in range(len(h.evaluators))
     ]
 

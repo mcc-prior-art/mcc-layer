@@ -79,7 +79,9 @@ class _ScenarioAuthorizer:
         votes = [
             issue_vote(e, evaluator_id=e.kid, verdict="ALLOW", action=decision.action,
                        payload=canonical, actor=actor, not_before=0, not_after=not_after,
-                       resource=resource, policy_hash=policy_hash, nonce=ch["nonce"])
+                       resource=resource, policy_hash=policy_hash, nonce=ch["nonce"],
+                       # F1: the tenant the gateway recorded on the challenge.
+                       tenant_id=ch.get("tenant_id"))
             for e in self._stack.evaluators
         ]
         if self._mode == "signature":
@@ -114,7 +116,8 @@ class ComplianceStack:
     def client(self, actor_id: Optional[str] = None) -> MCCClient:
         # V05 (part 2): an agent acting as ``actor_id`` presents its OWN
         # registered credential (required on /approvals + the execute routes);
-        # without an actor, the tenant's shared key (evaluate/consensus only).
+        # without an actor, the tenant's shared key (read-only routes only;
+        # F1: /evaluate-as-an-agent and /consensus/* need the agent's own key).
         key = agent_key(actor_id) if actor_id else API_KEY
         return MCCClient(self.stack.base_url, api_key=key, operator_key=OPERATOR_KEY,
                          timeout=15.0)

@@ -65,12 +65,17 @@ ENV_EXAMPLE = ROOT / ".env.pilot.example"
 def stack():
     reset_receipts()
     hz = NotifyPilotHarness()
-    q_settings = QuorumSettings({"MCC_QUORUM_GATEWAY_URL": hz.base_url, "MCC_GATEWAY_API_KEY": API_KEY})
+    # F1: the quorum authenticates agents with the gateway's hash-only registry.
+    q_settings = QuorumSettings({"MCC_QUORUM_GATEWAY_URL": hz.base_url, "MCC_GATEWAY_API_KEY": API_KEY,
+                                 "MCC_AGENT_CREDENTIALS_CONFIG": hz.agent_registry_path})
     q_app = build_quorum_app(hz.evaluators, q_settings)
     q_port = _free_port()
     q_server = DemoServer(q_app, q_port)
     q_server.start()
-    client = MCCGatewayClient(hz.base_url, api_key=API_KEY, operator_key=OPERATOR_KEY)
+    # F1: agent/notify-bot presents its OWN credential (evaluate + consensus),
+    # so each fail-closed case below reaches the vote/challenge check itself.
+    client = MCCGatewayClient(hz.base_url, api_key=agent_key("agent/notify-bot"),
+                              operator_key=OPERATOR_KEY)
     try:
         yield hz, client, f"http://127.0.0.1:{q_port}"
     finally:

@@ -35,7 +35,7 @@ def _authorized_execute(sut) -> None:
 
     payload = _payload()
     ch = httpx.post(
-        f"{sut.gateway_url}/consensus/challenge", headers={"x-api-key": sut.api_key},
+        f"{sut.gateway_url}/consensus/challenge", headers={"x-api-key": sut.agent_key(ACTOR)},
         json={"actor": ACTOR, "action": ACTION, "resource": RESOURCE, "context": payload}, timeout=10.0,
     ).json()
     votes = sut.gateway_consensus_votes(
@@ -43,7 +43,7 @@ def _authorized_execute(sut) -> None:
         nonce=ch["nonce"], policy_hash=ch.get("policy_hash"),
     )
     r = httpx.post(
-        f"{sut.gateway_url}/consensus/execute", headers={"x-api-key": sut.api_key},
+        f"{sut.gateway_url}/consensus/execute", headers={"x-api-key": sut.agent_key(ACTOR)},
         json={"votes": votes, "actor": ACTOR, "action": ACTION, "resource": RESOURCE, "context": payload,
               "challenge_id": ch["challenge_id"], "nonce": ch["nonce"],
               "idempotency_key": f"g-authorized-{uuid.uuid4()}"}, timeout=10.0,
@@ -58,7 +58,7 @@ def _rejected_attempt(sut) -> None:
 
     payload = _payload()
     ch = httpx.post(
-        f"{sut.gateway_url}/consensus/challenge", headers={"x-api-key": sut.api_key},
+        f"{sut.gateway_url}/consensus/challenge", headers={"x-api-key": sut.agent_key(ACTOR)},
         json={"actor": ACTOR, "action": ACTION, "resource": RESOURCE, "context": payload}, timeout=10.0,
     ).json()
     votes = sut.gateway_consensus_votes(
@@ -66,7 +66,7 @@ def _rejected_attempt(sut) -> None:
         nonce=ch["nonce"], policy_hash=ch.get("policy_hash"),
     )[:1]
     r = httpx.post(
-        f"{sut.gateway_url}/consensus/execute", headers={"x-api-key": sut.api_key},
+        f"{sut.gateway_url}/consensus/execute", headers={"x-api-key": sut.agent_key(ACTOR)},
         json={"votes": votes, "actor": ACTOR, "action": ACTION, "resource": RESOURCE, "context": payload,
               "challenge_id": ch["challenge_id"], "nonce": ch["nonce"]}, timeout=10.0,
     ).json()

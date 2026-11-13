@@ -74,6 +74,13 @@ class ConsensusAuthorizer:
     def material(self, client: Any, decision: Decision) -> Authorization:
         challenge = client.issue_challenge(decision)
         nonce = challenge["nonce"]
+        # F1: sign only for the tenant + principal the GATEWAY authenticated
+        # and recorded on the challenge -- never for a caller's claim.
+        tenant_id = challenge.get("tenant_id")
+        principal_id = challenge.get("principal_id")
+        if not tenant_id or not principal_id or principal_id != decision.actor_id:
+            raise ValueError("challenge is not bound to the authenticated principal of this "
+                             "decision; evaluators refuse to vote (fail-closed)")
         canonical = self._profiles.for_action(decision.action).canonical_payload(
             dict(decision.authorized_payload)
         )
@@ -83,6 +90,7 @@ class ConsensusAuthorizer:
                 verdict=self._verdict, action=decision.action, payload=canonical,
                 actor=decision.actor_id, not_before=0, not_after=FAR_FUTURE,
                 resource=decision.resource_id, policy_hash=self._policy_hash, nonce=nonce,
+                tenant_id=tenant_id,
             )
             for i in range(self._threshold)
         ]

@@ -36,6 +36,11 @@ This writes, into `deploy/pilot/secrets/` (git-ignored, mode-0600 keys):
 | `evaluator_{1..3}.pem` | independent consensus evaluator keys (private) |
 | `trust.pilot.json` | mandate trust set — **public** keys only |
 | `consensus_trust.json` | consensus evaluator trust set — **public** keys only |
+| `agent_credentials.json` | per-agent identity registry — SHA-256 **hashes** only |
+
+and the pilot agent's own raw credential into
+`deploy/pilot/agent-credentials/payments-bot/credential.json` (mode 0400,
+git-ignored, never mounted into the gateway). Re-running reuses it.
 
 Nothing here is committed (`deploy/pilot/.gitignore`). Rotate by re-running with
 `--force` (and rolling the trust configs).
@@ -108,17 +113,26 @@ Set shell vars for brevity:
 ```bash
 export KEY=$(grep MCC_GATEWAY_API_KEY deploy/pilot/.env | cut -d= -f2)
 export OP=$(grep MCC_GATEWAY_OPERATOR_API_KEY deploy/pilot/.env | cut -d= -f2)
+# The pilot agent's OWN credential (agent/payments-bot), provisioned in step 1.
+export AGENT_KEY=$(python -c 'import json;print(json.load(open("deploy/pilot/agent-credentials/payments-bot/credential.json"))["api_key"])')
 ```
+
+`KEY` is the tenant's shared (service) key. Per-agent identity (V05/F1): the
+identity routes (`/mandates/execute`, `/approvals`, `/approvals/{id}/execute`,
+`/consensus/*`) require a registered per-agent credential whose principal is
+the request's `actor`, and `/evaluate` refuses the shared key for a
+*registered* agent identity — that agent's own key must be used. See
+`docs/AGENT_IDENTITY.md`.
 
 ### 5a. The four verdicts — authority (`POST /evaluate`)
 
 ```bash
-# ALLOW  — payments-bot within its mandate cap
-curl -s localhost:8001/evaluate -H "x-api-key: $KEY" \
+# ALLOW  — payments-bot within its mandate cap (its OWN key: it is a registered agent)
+curl -s localhost:8001/evaluate -H "x-api-key: $AGENT_KEY" \
   -d '{"identity":"agent/payments-bot","action":"send_payment","context":{"amount":1000}}' | python -m json.tool
 
 # CONSTRAIN — over the cap; forward_context is clamped to 5000 (the executed body)
-curl -s localhost:8001/evaluate -H "x-api-key: $KEY" \
+curl -s localhost:8001/evaluate -H "x-api-key: $AGENT_KEY" \
   -d '{"identity":"agent/payments-bot","action":"send_payment","context":{"amount":99000}}' | python -m json.tool
 
 # ESCALATE — no standing mandate
@@ -133,9 +147,10 @@ curl -s localhost:8001/evaluate -H "x-api-key: $KEY" \
 ### 5b. ESCALATE → human approval (`/approvals`)
 
 ```bash
-# Agent opens a request bound to the exact operation.
-REQ=$(curl -s localhost:8001/approvals -H "x-api-key: $KEY" \
-  -d '{"actor":"agent/nobody","action":"send_payment","resource":"acct-1","payload_hash":"sha256:demo"}' \
+# Agent opens a request bound to the exact operation -- only for ITSELF, with
+# its own credential (a request naming another actor is refused, 403).
+REQ=$(curl -s localhost:8001/approvals -H "x-api-key: $AGENT_KEY" \
+  -d '{"actor":"agent/payments-bot","action":"send_payment","resource":"acct-1","payload_hash":"sha256:demo"}' \
   | python -c 'import sys,json;print(json.load(sys.stdin)["request_id"])')
 
 # Operator grants it -> mints a single-use, signed approval mandate.
@@ -156,6 +171,11 @@ MCC_GATEWAY_URL=http://localhost:8001 \
 MCC_GATEWAY_API_KEY=$KEY MCC_GATEWAY_OPERATOR_API_KEY=$OP \
 python deploy/pilot/pilot_driver.py
 ```
+
+The driver runs the consensus path as the pilot agent with that agent's own
+credential (`deploy/pilot/agent-credentials/payments-bot/credential.json`, or
+`MCC_AGENT_CREDENTIAL_FILE`). The evaluators sign only for the tenant and
+principal the gateway recorded on the challenge (F1).
 
 Expected: the four verdicts, a governed consensus **EXECUTED** (forwarded to the
 echo upstream), and a valid audit chain.

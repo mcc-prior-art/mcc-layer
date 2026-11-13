@@ -19,6 +19,16 @@ authoritative payload (not a client-supplied one), and the gateway still verifie
 every vote (signature, trust, threshold, veto, binding) before the governed
 executor runs. Selecting the VoltAgent tool cannot, by itself, cause execution.
 
+F1 (agent identity): the quorum votes only for the agent that asked. A vote
+request must present a registered per-agent credential (strict mode, the
+default); its ``actor`` must be that credential's principal (403 otherwise),
+and the quorum forwards THAT credential to the gateway's ``/evaluate`` -- so
+the gateway itself authenticates the principal the votes are for. Every vote
+is signed for the authenticated tenant (``tenant_id``). The quorum's own
+shared key is accepted only in explicit ``MCC_AGENT_IDENTITY_MODE=
+legacy-shared-key`` (no impersonation protection). Before F1 any tenant key
+could obtain votes for any actor (verified on PR #135 head 2761f4f).
+
 This re-uses the existing ``mcc_core.issue_vote`` signing primitive; it does not
 re-implement any governance or consensus logic.
 """
@@ -77,6 +87,9 @@ class QuorumSettings:
         if creds_path:
             from gateway.agent_identity import AgentCredentialRegistry
             self.agent_credentials = AgentCredentialRegistry.from_file(creds_path)
+        # F1: strict (default) | legacy-shared-key; anything else refuses to start.
+        from gateway.agent_identity import agent_identity_mode_from_env
+        self.identity_mode = agent_identity_mode_from_env(env)
 
 
 def load_evaluator_keys(keys_dir: str) -> List[SigningKey]:
@@ -100,13 +113,25 @@ def build_quorum_app(
     http = client or httpx.Client(timeout=settings.timeout)
     app.state.http = http
 
-    def require_key(x_api_key: str = Header(...)) -> str:
-        if secrets.compare_digest(x_api_key.encode(), settings.quorum_api_key.encode()):
-            return "quorum-caller"
+    def require_key(x_api_key: str = Header(...)):
+        """F1: ``(agent, forwarded_key)``. A registered, active per-agent
+        credential of this tenant -> its AuthenticatedAgent, and that same
+        credential is forwarded to the gateway. The quorum's shared key ->
+        ``(None, gateway service key)`` ONLY in explicit legacy mode."""
         registry = settings.agent_credentials
-        if registry is not None and registry.resolve(
-                x_api_key, tenant_id=settings.tenant_id).agent is not None:
-            return "quorum-caller"
+        if registry is not None:
+            res = registry.resolve(x_api_key, tenant_id=settings.tenant_id)
+            if res.agent is not None:
+                return res.agent, x_api_key
+            if res.error in ("AGENT_CREDENTIAL_REVOKED", "AGENT_CREDENTIAL_WRONG_TENANT"):
+                raise HTTPException(status_code=403, detail=res.error)
+        if secrets.compare_digest(x_api_key.encode(), settings.quorum_api_key.encode()):
+            from gateway.agent_identity import AGENT_IDENTITY_LEGACY
+            if settings.identity_mode == AGENT_IDENTITY_LEGACY:
+                return None, settings.api_key
+            raise HTTPException(status_code=403, detail=(
+                "AGENT_IDENTITY_REQUIRED: votes are issued only to an individually "
+                "authenticated agent; use your own per-agent credential"))
         raise HTTPException(status_code=401, detail="INVALID_API_KEY")
 
     def gateway_policy_hash() -> str:
@@ -130,9 +155,18 @@ def build_quorum_app(
             raise HTTPException(status_code=503, detail=f"gateway unreachable: {type(exc).__name__}")
 
     @app.post("/vote", response_model=VoteResponse)
-    def vote(req: VoteRequest, _=Depends(require_key)) -> VoteResponse:
+    def vote(req: VoteRequest, caller=Depends(require_key)) -> VoteResponse:
+        agent, forwarded_key = caller
+        # 0. F1: vote only for the agent that asked -- never for another actor.
+        if agent is not None and req.actor != agent.principal_id:
+            raise HTTPException(status_code=403, detail=(
+                "AGENT_PRINCIPAL_MISMATCH: the quorum votes only for the authenticated "
+                "agent's own principal"))
+        vote_tenant = agent.tenant_id if agent is not None else settings.tenant_id
         # 1. Independently evaluate the proposal against the gateway. The quorum
-        #    does NOT trust the caller's claim about the verdict or payload.
+        #    does NOT trust the caller's claim about the verdict or payload. The
+        #    caller's own credential is forwarded, so the GATEWAY authenticates
+        #    the principal (it refuses an agent evaluating as anyone else).
         body: Dict[str, Any] = {
             "identity": req.actor, "actor_id": req.actor,
             "action": req.action, "context": dict(req.context),
@@ -141,11 +175,15 @@ def build_quorum_app(
             body["resource_id"] = req.resource
         try:
             resp = http.post(f"{settings.gateway_url}/evaluate", json=body,
-                             headers={"x-api-key": settings.api_key})
+                             headers={"x-api-key": forwarded_key})
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"gateway evaluate failed: {exc}")
         if resp.status_code == 401:
             raise HTTPException(status_code=502, detail="quorum not authorized to the gateway")
+        if resp.status_code == 403:
+            raise HTTPException(status_code=403, detail=f"gateway refused: {resp.json().get('detail')}")
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"gateway evaluate status {resp.status_code}")
         decision = resp.json()
         verdict = str(decision.get("decision", ""))
         authorized = dict(decision.get("forward_context") or {})
@@ -163,7 +201,8 @@ def build_quorum_app(
         votes = [
             issue_vote(k, evaluator_id=k.kid, verdict="ALLOW", action=req.action,
                        payload=authorized, actor=req.actor, not_before=0, not_after=FAR_FUTURE,
-                       resource=req.resource, policy_hash=policy_hash, nonce=req.nonce)
+                       resource=req.resource, policy_hash=policy_hash, nonce=req.nonce,
+                       tenant_id=vote_tenant)
             for k in evaluator_keys
         ]
         return VoteResponse(verdict=verdict, authorized_context=authorized,
