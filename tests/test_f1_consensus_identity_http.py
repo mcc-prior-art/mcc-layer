@@ -561,3 +561,68 @@ def test_library_challenge_from_another_tenant_is_refused_before_consumption(hz)
         agent=other))
     assert out.status == "BLOCKED" and "CHALLENGE_TENANT_MISMATCH" in out.reason
     assert _receipts() == 0 and _challenge_state(hz, ch["challenge_id"]) == "ISSUED"
+
+
+# ------------------------- the quorum's OWN checks, isolated from the gateway
+
+def _quorum_with_permissive_gateway(mode=AGENT_IDENTITY_STRICT):
+    """The real quorum app in front of a STUB gateway that would ALLOW
+    anything -- so these tests prove the quorum's own checks, not the
+    gateway's defense in depth behind it."""
+    import tempfile
+
+    from fastapi.testclient import TestClient
+
+    from integrations.voltagent.mcc_side.evaluator_quorum import QuorumSettings, build_quorum_app
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.path, request.headers.get("x-api-key")))
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"policy_hash": "sha256:stub"})
+        body = json.loads(request.content)
+        return httpx.Response(200, json={"decision": "ALLOW", "forward_context": body["context"]})
+    reg = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+    json.dump({"agents": [
+        {"credential_id": f"c-{p}", "tenant_id": TENANT_ID, "principal_id": p,
+         "key_sha256": hash_agent_key(agent_key(p)), "status": "active"} for p in (A, B)]}, reg)
+    reg.close()
+    settings = QuorumSettings({"MCC_QUORUM_GATEWAY_URL": "http://gw.stub", "MCC_GATEWAY_API_KEY": "svc",
+                               "MCC_QUORUM_API_KEY": "q-shared", "MCC_GATEWAY_TENANT_ID": TENANT_ID,
+                               "MCC_AGENT_CREDENTIALS_CONFIG": reg.name, "MCC_AGENT_IDENTITY_MODE": mode})
+    app = build_quorum_app([SigningKey.generate("e0")], settings,
+                           client=httpx.Client(transport=httpx.MockTransport(handler)))
+    return TestClient(app), calls
+
+
+def _vote_body(actor):
+    return {"actor": actor, "action": ACTION, "resource": RESOURCE, "nonce": "n",
+            "context": _payload("c")}
+
+
+def test_quorum_itself_refuses_another_actor_before_asking_the_gateway():
+    tc, calls = _quorum_with_permissive_gateway()
+    r = tc.post("/vote", headers={"x-api-key": agent_key(B)}, json=_vote_body(A))
+    assert r.status_code == 403 and "AGENT_PRINCIPAL_MISMATCH" in r.json()["detail"]
+    assert calls == []                                   # gateway never consulted
+    ok = tc.post("/vote", headers={"x-api-key": agent_key(B)}, json=_vote_body(B))   # control
+    assert ok.status_code == 200 and len(ok.json()["votes"]) == 1
+    assert ok.json()["votes"][0]["tenant_id"] == TENANT_ID and ok.json()["votes"][0]["actor"] == B
+    # the caller's OWN credential is what was forwarded to /evaluate
+    assert ("/evaluate", agent_key(B)) in calls
+
+
+def test_quorum_itself_refuses_its_shared_key_in_strict_mode():
+    tc, calls = _quorum_with_permissive_gateway()
+    r = tc.post("/vote", headers={"x-api-key": "q-shared"}, json=_vote_body(A))
+    assert r.status_code == 403 and "AGENT_IDENTITY_REQUIRED" in r.json()["detail"]
+    assert calls == []
+    legacy, lcalls = _quorum_with_permissive_gateway(AGENT_IDENTITY_LEGACY)   # explicit legacy
+    assert legacy.post("/vote", headers={"x-api-key": "q-shared"}, json=_vote_body(A)).status_code == 200
+    assert ("/evaluate", "svc") in lcalls
+
+
+def test_quorum_refuses_unknown_key():
+    tc, calls = _quorum_with_permissive_gateway()
+    assert tc.post("/vote", headers={"x-api-key": "nope"}, json=_vote_body(A)).status_code == 401
+    assert calls == []
