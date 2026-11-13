@@ -45,6 +45,12 @@ from pilot.reference_python.attestation_integration import AttestationChainPilot
 from pilot.reference_python.attester_client import AttesterClientError
 
 ACTOR = "agent/pr6-pilot-test-partner"
+
+
+def _agent_key(sut) -> str:
+    """V05 (part 2): ACTOR's OWN registered credential on the gateway's
+    identity routes (the shared tenant key cannot act as an agent there)."""
+    return sut.sut.agent_key(ACTOR)
 RESOURCE = "notifications"
 OTHER_RESOURCE = "other-resource"
 
@@ -73,7 +79,7 @@ def mandate(asut: AttestationSystemUnderTest) -> dict[str, Any]:
 def _observe_config(asut: AttestationSystemUnderTest) -> AttestationChainConfig:
     return AttestationChainConfig(
         gateway_url=asut.gateway_url, attester_url=asut.attester_url,
-        attester_auth_secret=ATTESTER_AUTH_SECRET, gateway_api_key=asut.api_key,
+        attester_auth_secret=ATTESTER_AUTH_SECRET, gateway_api_key=_agent_key(asut),
         mode="observe", action=ATTESTED_ACTION, resource=RESOURCE,
     )
 
@@ -115,6 +121,7 @@ def test_01_valid_full_chain_succeeds(asut, mandate):
     serialized = json.dumps(outcome.evidence)
     assert ATTESTER_AUTH_SECRET not in serialized
     assert asut.api_key not in serialized
+    assert _agent_key(asut) not in serialized
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +131,7 @@ def test_01_valid_full_chain_succeeds(asut, mandate):
 
 def test_02_missing_attestation_fails_closed(asut, mandate):
     before = asut.gateway_notification_receipt_count()
-    with MCCGatewayClient(asut.gateway_url, api_key=asut.api_key) as client:
+    with MCCGatewayClient(asut.gateway_url, api_key=_agent_key(asut)) as client:
         outcome = client.execute_with_mandate(
             mandate=mandate, actor=ACTOR, action=ATTESTED_ACTION, resource=RESOURCE,
             context=_context(), attestation=None,
@@ -142,7 +149,7 @@ def test_03_forged_attestation_signature_fails_closed(asut, mandate):
     before = asut.gateway_notification_receipt_count()
     ctx = _context()
     forged = asut.forge_attestation(context=ctx)
-    with MCCGatewayClient(asut.gateway_url, api_key=asut.api_key) as client:
+    with MCCGatewayClient(asut.gateway_url, api_key=_agent_key(asut)) as client:
         outcome = client.execute_with_mandate(
             mandate=mandate, actor=ACTOR, action=ATTESTED_ACTION, resource=RESOURCE,
             context=ctx, attestation=forged,
@@ -162,7 +169,7 @@ def test_04_tampered_attestation_payload_fails_closed(asut, mandate):
     ctx = _context()
     att = asut.get_attestation(context=ctx)
     tampered = asut.tamper_attestation(att, claims={**att["claims"], "risk_class": "high"})
-    with MCCGatewayClient(asut.gateway_url, api_key=asut.api_key) as client:
+    with MCCGatewayClient(asut.gateway_url, api_key=_agent_key(asut)) as client:
         outcome = client.execute_with_mandate(
             mandate=mandate, actor=ACTOR, action=ATTESTED_ACTION, resource=RESOURCE,
             context=ctx, attestation=tampered,
@@ -182,7 +189,7 @@ def test_05_wrong_action_binding_fails_closed(asut, mandate):
     # A GENUINE, trusted attestation -- but attested for a different action
     # than the one actually being executed.
     att = asut.get_attestation(action="a_completely_different_action", context=ctx)
-    with MCCGatewayClient(asut.gateway_url, api_key=asut.api_key) as client:
+    with MCCGatewayClient(asut.gateway_url, api_key=_agent_key(asut)) as client:
         outcome = client.execute_with_mandate(
             mandate=mandate, actor=ACTOR, action=ATTESTED_ACTION, resource=RESOURCE,
             context=ctx, attestation=att,
@@ -204,7 +211,7 @@ def test_06_wrong_scope_binding_fails_closed(asut, mandate):
     # to both resources, isolating PreExecutionControl's own scope check
     # from a mandate-level resource-scope rejection).
     att = asut.get_attestation(resource=OTHER_RESOURCE, context=ctx)
-    with MCCGatewayClient(asut.gateway_url, api_key=asut.api_key) as client:
+    with MCCGatewayClient(asut.gateway_url, api_key=_agent_key(asut)) as client:
         outcome = client.execute_with_mandate(
             mandate=mandate, actor=ACTOR, action=ATTESTED_ACTION, resource=RESOURCE,
             context=ctx, attestation=att,
@@ -230,7 +237,7 @@ def test_07_expired_attestation_fails_closed():
         att = short_asut.get_attestation(context=ctx)
         time.sleep(3)
 
-        with MCCGatewayClient(short_asut.gateway_url, api_key=short_asut.api_key) as client:
+        with MCCGatewayClient(short_asut.gateway_url, api_key=_agent_key(short_asut)) as client:
             outcome = client.execute_with_mandate(
                 mandate=m, actor=ACTOR, action=ATTESTED_ACTION, resource=RESOURCE,
                 context=ctx, attestation=att,
@@ -248,7 +255,7 @@ def test_08_replayed_attestation_second_use_blocked(asut, mandate):
     ctx = _context(correlation_id="pr6-replay-probe")
     att = asut.get_attestation(context=ctx)
 
-    with MCCGatewayClient(asut.gateway_url, api_key=asut.api_key) as client:
+    with MCCGatewayClient(asut.gateway_url, api_key=_agent_key(asut)) as client:
         before = asut.gateway_notification_receipt_count()
         first = client.execute_with_mandate(
             mandate=mandate, actor=ACTOR, action=ATTESTED_ACTION, resource=RESOURCE,
@@ -277,7 +284,7 @@ def test_09_evidence_for_different_payload_is_substitution_rejected(asut, mandat
     actually_submitted = _context(message="swapped-payload-after-the-fact")
     att = asut.get_attestation(context=attested_for)
 
-    with MCCGatewayClient(asut.gateway_url, api_key=asut.api_key) as client:
+    with MCCGatewayClient(asut.gateway_url, api_key=_agent_key(asut)) as client:
         outcome = client.execute_with_mandate(
             mandate=mandate, actor=ACTOR, action=ATTESTED_ACTION, resource=RESOURCE,
             context=actually_submitted, attestation=att,
@@ -303,7 +310,7 @@ def test_10_fabricated_pseudo_attestation_does_not_execute(asut, mandate):
         "expires_at": int(time.time()) + 900, "nonce": "fake-nonce",
         "payload_hash": "sha256:" + "0" * 64, "kid": asut.attester_kid, "sig": "not-a-real-signature",
     }
-    with MCCGatewayClient(asut.gateway_url, api_key=asut.api_key) as client:
+    with MCCGatewayClient(asut.gateway_url, api_key=_agent_key(asut)) as client:
         outcome = client.execute_with_mandate(
             mandate=mandate, actor=ACTOR, action=ATTESTED_ACTION, resource=RESOURCE,
             context=ctx, attestation=fabricated,
@@ -333,7 +340,7 @@ class _PoisonedGatewayClient:
 def test_11_attester_unavailable_fails_closed(asut, mandate):
     unreachable = AttestationChainConfig(
         gateway_url=asut.gateway_url, attester_url="http://127.0.0.1:1",
-        attester_auth_secret=ATTESTER_AUTH_SECRET, gateway_api_key=asut.api_key,
+        attester_auth_secret=ATTESTER_AUTH_SECRET, gateway_api_key=_agent_key(asut),
         mode="enforced", action=ATTESTED_ACTION, resource=RESOURCE, timeout_seconds=2.0,
     )
     before = asut.gateway_notification_receipt_count()

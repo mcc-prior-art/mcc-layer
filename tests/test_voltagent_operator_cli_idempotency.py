@@ -60,6 +60,8 @@ def _install_mock_gateway(monkeypatch, handler):
 def _set_env(monkeypatch, tmp_path):
     monkeypatch.setenv("MCC_OPERATOR_GATEWAY_URL", "http://mock-gateway")
     monkeypatch.setenv("MCC_GATEWAY_API_KEY", "agent-key")
+    # V05 (part 2): the operator CLI executes with the escalated agent's OWN key.
+    monkeypatch.setenv("MCC_AGENT_API_KEYS", '{"agent/notify-bot": "agent-key-notify-bot"}')
     monkeypatch.setenv("MCC_GATEWAY_OPERATOR_API_KEY", "op-key")
     monkeypatch.setenv("MCC_PILOT_STATE_DIR", str(tmp_path))
 

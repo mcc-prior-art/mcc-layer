@@ -47,6 +47,7 @@ AGENT_PRINCIPALS = (
     "agent/notify-bot", "agent/egress", "agent/mandate-bot", "agent/the-real-holder",
     "agent/an-impostor", "agent/attestation-assurance-bot", "agent/checkpoint-bot",
     "agent/negative-control-bot", "agent/ops-bot", "agent/interop-wrong",
+    "agent/pr6-pilot-test-partner",
 )
 
 CONTRACT_VERSION = "1.0"
