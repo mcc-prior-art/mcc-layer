@@ -253,7 +253,7 @@ any of these is compromised:
   state volumes are a follow-up.
 - **Revocation latency.** Revocation takes effect when the gateway restarts.
 
-See `docs/security/FLEET_IDENTITY_HARDENING_PLAN.md` for the follow-up design.
+See `docs/proposals/FLEET_IDENTITY_HARDENING_PLAN.md` (PROPOSAL, not implemented) for the follow-up design, including the verified consensus-path impersonation that this contract does not cover.
 
 ## Trust boundaries
 
@@ -280,7 +280,7 @@ See `docs/security/FLEET_IDENTITY_HARDENING_PLAN.md` for the follow-up design.
 | `POST /approvals` (create) | no, but mints authority for `actor` | **yes**: actor must be the principal | refused before any record |
 | `POST /approvals/{id}/approve`, `/deny`, `/invalidate` | no | operator key (unchanged) | approval mandate is minted for the record's actor, now always the creating principal |
 | `POST /mandates/verify`, `GET /approvals/{id}` | no (read-only, no token) | no: shared or registered tenant key | informational |
-| `POST /consensus/challenge`, `/consensus/verify`, `/consensus/execute` | **no**: authority is the N-of-M evaluator quorum, signed over `actor` | **no** (out of scope) | `actor` is caller-asserted and bound by the evaluators' signatures; consensus tenant isolation is tracked separately |
+| `POST /consensus/challenge`, `/consensus/verify`, `/consensus/execute` | **no**: authority is the N-of-M evaluator quorum, signed over `actor` | **no — OPEN, verified impersonation** | `actor` is caller-asserted. Verified: agent B with its OWN key obtained honest votes for actor A and `/consensus/execute` EXECUTED as A. Follow-up F1 in `docs/proposals/FLEET_IDENTITY_HARDENING_PLAN.md` (breaking for consensus clients) |
 | `GovernanceService.execute_with_delegation` (no HTTP route) | no: an owner-signed delegation | **no** (library only) | delegation subject compared with a caller-supplied actor; library trust boundary applies |
 | `gateway/app.py` `POST /evaluate`, `GET /verify` | no: unsigned config mandates (`AuthorityModel`), decision-only / read-only | **no** (out of scope) | `MCC_GATEWAY_API_KEY` or a registered agent credential (tenant-level auth only); `identity` is a body field. Same caller-asserted-identity class; tracked separately |
 | VoltAgent evaluator quorum `POST /vote` | no: signs votes over the gateway's authoritative payload | **no** | quorum key or a registered agent credential (tenant-level auth only) |
@@ -289,7 +289,10 @@ See `docs/security/FLEET_IDENTITY_HARDENING_PLAN.md` for the follow-up design.
 | MVP interceptor (`interceptors/egress_proxy.py`) | no | **no** (out of scope) | identity from `X-MCC-Identity` (documented as mTLS/workload identity in production) |
 
 **No alternate route consumes a signed mandate**, so none bypasses this
-contract for the V05 copied-mandate attack. The routes marked *out of scope*
+contract for the V05 copied-mandate attack. **But the consensus path lets one
+agent act as another for whatever the evaluator quorum approves for that
+actor** (verified, above). That is the same impersonation class, through a
+different authority source, and this PR does not close it. The routes marked *out of scope*
 have their own caller-asserted-identity exposure for **other** authority
 sources. They are listed so they are not mistaken for covered.
 
