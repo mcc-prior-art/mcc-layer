@@ -30,6 +30,7 @@ the exact operation:
 | `verdict` | `ALLOW` / `DENY` / `ESCALATE` / `CONSTRAIN` |
 | `action_hash`, `payload_hash`, `actor` | binds the vote to *this* operation |
 | `resource`, `policy_hash`, `nonce` | *(optional)* extra binding dimensions; **required to match when the operation supplies them** |
+| `tenant_id` | *(optional in `issue_vote`; F1)* the tenant the vote is for. **The gateway always requires it** to equal the server-resolved tenant |
 | `nbf` / `exp` | validity window |
 | `kid` / `sig` | Ed25519 signature; the kid must be a trusted evaluator |
 
@@ -42,6 +43,18 @@ always is), a counted vote **must** carry a matching value — a vote that lacks
 or mismatches a required dimension is rejected. The one-time `nonce` is what
 makes the consensus *evidence itself* non-replayable: votes bound to a consumed
 nonce cannot authorize a second operation.
+
+**Agent identity (F1).** On the gateway, a vote's signed `actor` is its
+principal binding and `tenant_id` its tenant binding. The consensus routes are
+identity routes: the request must come from a registered per-agent credential
+whose principal is `actor` (see `docs/AGENT_IDENTITY.md`, "F1"). So votes for
+agent A cannot be used by agent B, and votes signed for another tenant (or
+none) are not counted. An evaluator should take `tenant_id` and the principal
+from the gateway-issued challenge (`tenant_id`, `principal_id`), never from a
+caller's claim; the VoltAgent quorum authenticates the requesting agent
+itself and votes only for it. Unscoped embedders that call
+`ConsensusVerifier.verify` without `tenant_id` (egress proxy runtime, MVP
+interceptor, `main.py`) keep the previous binding.
 
 ## Policy & verdict
 
@@ -123,8 +136,8 @@ See [`CONSENSUS_CHALLENGE.md`](CONSENSUS_CHALLENGE.md) — `POST /consensus/chal
 
 | Method | Endpoint | Boundary |
 |---|---|---|
-| `POST` | `/consensus/verify` | agent — pure check; returns the verdict + evaluators |
-| `POST` | `/consensus/execute` | agent — execute only on consensus, through the one coordinator path |
+| `POST` | `/consensus/verify` | agent identity (F1: own credential, `actor` = principal) — pure check; returns the verdict + evaluators |
+| `POST` | `/consensus/execute` | agent identity (F1) — execute only on consensus, through the one coordinator path |
 
 ```json
 POST /consensus/execute

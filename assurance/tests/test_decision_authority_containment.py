@@ -56,7 +56,7 @@ def _payload(**overrides: Any) -> Dict[str, Any]:
 
 def _challenge(sut, payload: Dict[str, Any], *, actor: str = ACTOR) -> Dict[str, Any]:
     r = httpx.post(
-        f"{sut.gateway_url}/consensus/challenge", headers={"x-api-key": sut.api_key},
+        f"{sut.gateway_url}/consensus/challenge", headers={"x-api-key": sut.agent_key(actor)},
         json={"actor": actor, "action": ACTION, "resource": RESOURCE, "context": payload}, timeout=10.0,
     )
     r.raise_for_status()
@@ -66,7 +66,7 @@ def _challenge(sut, payload: Dict[str, Any], *, actor: str = ACTOR) -> Dict[str,
 def _execute(sut, payload: Dict[str, Any], challenge: Dict[str, Any], votes, *, actor: str = ACTOR,
              idempotency_key: str = None) -> Dict[str, Any]:
     r = httpx.post(
-        f"{sut.gateway_url}/consensus/execute", headers={"x-api-key": sut.api_key},
+        f"{sut.gateway_url}/consensus/execute", headers={"x-api-key": sut.agent_key(actor)},
         json={"votes": votes, "actor": actor, "action": ACTION, "resource": RESOURCE, "context": payload,
               "challenge_id": challenge["challenge_id"], "nonce": challenge["nonce"],
               "idempotency_key": idempotency_key or f"c-auto-{uuid.uuid4()}"}, timeout=10.0,
@@ -199,7 +199,9 @@ def test_c8_mandate_execute_fails_closed_on_the_consensus_required_topology(sut)
     before = sut.gateway_notification_receipt_count()
 
     r = httpx.post(
-        f"{sut.gateway_url}/mandates/execute", headers={"x-api-key": sut.api_key},
+        # V05 (part 2): presented with the acting agent's OWN credential, so
+        # the forged-mandate / consensus-topology checks are what block it.
+        f"{sut.gateway_url}/mandates/execute", headers={"x-api-key": sut.agent_key(ACTOR)},
         json={"mandate": {"mandate_id": "m1", "issuer_id": "nobody", "subject": ACTOR,
                            "authority": "notify.send", "sig": "AAAA"},
               "actor": ACTOR, "action": ACTION, "resource": RESOURCE, "context": _payload()},

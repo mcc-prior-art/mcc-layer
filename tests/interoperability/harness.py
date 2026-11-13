@@ -36,6 +36,22 @@ FAR_FUTURE = 4_000_000_000
 API_KEY = "demo-key"
 OPERATOR_KEY = "op-key"
 
+# V05 (part 2) + F1: the shared Gateway's identity routes (/mandates/execute,
+# /approvals, /approvals/{id}/execute, /consensus/challenge|verify|execute)
+# require a registered per-agent credential, and /evaluate binds an agent
+# credential to its own principal. API_KEY stays the mount's shared tenant
+# key (read-only /verify; /evaluate only for non-agent identities). Each
+# principal below gets its OWN key (SharedGovernedGateway.agent_key); every
+# scenario's client presents the proposal actor's own credential. Identity
+# attacks live in test_v05_agent_identity_http / test_f1_consensus_identity_http.
+GATEWAY_TENANT_ID = "pilot"
+AGENT_PRINCIPALS = (
+    "agent/notify-bot", "agent/egress", "agent/mandate-bot", "agent/the-real-holder",
+    "agent/an-impostor", "agent/attestation-assurance-bot", "agent/checkpoint-bot",
+    "agent/negative-control-bot", "agent/ops-bot", "agent/interop-wrong",
+    "agent/pr6-pilot-test-partner",
+)
+
 CONTRACT_VERSION = "1.0"
 
 # Scenario identifiers (the common suite every adapter runs).
@@ -111,7 +127,8 @@ class SharedGovernedGateway:
     loopback — exactly as a real deployment would."""
 
     def __init__(self, *, n_evaluators: int = 3, threshold: int = 3,
-                 extra_env: Optional[Dict[str, str]] = None) -> None:
+                 extra_env: Optional[Dict[str, str]] = None,
+                 agent_principals=AGENT_PRINCIPALS) -> None:
         reset_receipts()
         self.profiles = ProfileRegistry.default_pilot()
         self._threshold = threshold
@@ -135,6 +152,11 @@ class SharedGovernedGateway:
         self._trust_path.write_text(json.dumps(trust))
         self._audit_path = str(Path(self._tmp) / "audit.jsonl")
 
+        from tests._agent_credentials import write_registry_file
+        self._agent_creds_path = write_registry_file(
+            Path(self._tmp) / "agent_credentials.json", GATEWAY_TENANT_ID,
+            {p: self.agent_key(p) for p in agent_principals})
+
         # Spawn the real Gateway subprocess and health-gate it.
         self.port = _free_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
@@ -143,6 +165,13 @@ class SharedGovernedGateway:
         self.deployment_id = f"interop-gateway-{self.port}"
         self._identity = self._read_identity()
         self.policy_hash = self._identity["policy_hash"]
+
+    @staticmethod
+    def agent_key(principal_id: str) -> str:
+        """The per-agent credential ``principal_id`` presents as X-API-Key on
+        identity routes (registered only if listed in ``agent_principals``)."""
+        from tests._agent_credentials import derived_agent_key
+        return derived_agent_key(API_KEY, principal_id)
 
     def _spawn(self) -> subprocess.Popen:
         env = {
@@ -157,6 +186,7 @@ class SharedGovernedGateway:
             "MCC_INTEROP_NOTIFY_BASE": self.notify_base,
             "MCC_INTEROP_API_KEY": API_KEY,
             "MCC_INTEROP_OPERATOR_KEY": OPERATOR_KEY,
+            "MCC_AGENT_CREDENTIALS_CONFIG": self._agent_creds_path,
         }
         env.update(self._extra_env)
         return subprocess.Popen(
@@ -200,12 +230,14 @@ class SharedGovernedGateway:
 
     def votes(self, *, action: str, payload: Dict[str, Any], actor: str, nonce: str,
               resource: Optional[str], not_after: int = FAR_FUTURE,
-              policy_hash: Optional[str] = None) -> List[Dict[str, Any]]:
+              policy_hash: Optional[str] = None,
+              tenant_id: Optional[str] = GATEWAY_TENANT_ID) -> List[Dict[str, Any]]:
         canonical = self.profiles.for_action(action).canonical_payload(dict(payload))
         return [issue_vote(e, evaluator_id=e.kid, verdict="ALLOW", action=action,
                            payload=canonical, actor=actor, not_before=0,
                            not_after=not_after, resource=resource,
-                           policy_hash=policy_hash or self.policy_hash, nonce=nonce)
+                           policy_hash=policy_hash or self.policy_hash, nonce=nonce,
+                           tenant_id=tenant_id)
                 for e in self.evaluators]
 
     def close(self) -> None:
@@ -261,9 +293,13 @@ class AdapterEvidence:
             s.status == "PASS" for s in self.scenarios)
 
 
-def _client(base_url: str):
+def _client(base_url: str, principal_id: Optional[str] = None):
+    """F1: a client presenting ``principal_id``'s OWN credential (the
+    proposal's actor). Without a principal: the shared tenant key, which
+    is good only for the read-only /verify route."""
     from mcc_client import MCCClient
-    return MCCClient(base_url, api_key=API_KEY, operator_key=OPERATOR_KEY, timeout=15.0)
+    key = SharedGovernedGateway.agent_key(principal_id) if principal_id else API_KEY
+    return MCCClient(base_url, api_key=key, operator_key=OPERATOR_KEY, timeout=15.0)
 
 
 def _consensus(client, decision, gw: SharedGovernedGateway, *, not_after: int = FAR_FUTURE,
@@ -307,7 +343,7 @@ def run_common_scenarios(proof: AdapterProof, gw: SharedGovernedGateway) -> Adap
     # 1. ALLOW — executes only after a verified decision passes the gate.
     reset_receipts()
     prop = proof.proposal_for("ALLOW")
-    c = _client(gw.base_url)
+    c = _client(gw.base_url, prop.actor_id)
     d = c.evaluate(actor_id=prop.actor_id, action=prop.action, resource=prop.resource,
                    payload=prop.payload, idempotency_key=prop.idempotency_key)
     before = len(recorded_receipts())
@@ -320,7 +356,7 @@ def run_common_scenarios(proof: AdapterProof, gw: SharedGovernedGateway) -> Adap
     # 2. DENY — policy rejects; the governed operation is never invoked.
     reset_receipts()
     prop = proof.proposal_for("DENY")
-    c = _client(gw.base_url)
+    c = _client(gw.base_url, prop.actor_id)
     denied = False
     verdict = None
     try:
@@ -340,7 +376,7 @@ def run_common_scenarios(proof: AdapterProof, gw: SharedGovernedGateway) -> Adap
     # 3. REPLAY — the same challenge/votes cannot execute twice.
     reset_receipts()
     prop = proof.proposal_for("REPLAY")
-    c = _client(gw.base_url)
+    c = _client(gw.base_url, prop.actor_id)
     d = c.evaluate(actor_id=prop.actor_id, action=prop.action, resource=prop.resource,
                    payload=prop.payload, idempotency_key=prop.idempotency_key)
     material = _consensus(c, d, gw)
@@ -358,7 +394,7 @@ def run_common_scenarios(proof: AdapterProof, gw: SharedGovernedGateway) -> Adap
     # 4. MISMATCH — votes bound to a mutated actor/resource/payload are rejected.
     reset_receipts()
     prop = proof.proposal_for("MISMATCH")
-    c = _client(gw.base_url)
+    c = _client(gw.base_url, prop.actor_id)
     d = c.evaluate(actor_id=prop.actor_id, action=prop.action, resource=prop.resource,
                    payload=prop.payload, idempotency_key=prop.idempotency_key)
     rejected = False
@@ -372,7 +408,7 @@ def run_common_scenarios(proof: AdapterProof, gw: SharedGovernedGateway) -> Adap
     # 5. AUDIT — decision + enforcement recorded; the shared chain verifies.
     reset_receipts()
     prop = proof.proposal_for("AUDIT")
-    c = _client(gw.base_url)
+    c = _client(gw.base_url, prop.actor_id)
     d = c.evaluate(actor_id=prop.actor_id, action=prop.action, resource=prop.resource,
                    payload=prop.payload, idempotency_key=prop.idempotency_key)
     r = c.execute(d, _consensus(c, d, gw))
@@ -384,7 +420,8 @@ def run_common_scenarios(proof: AdapterProof, gw: SharedGovernedGateway) -> Adap
     # 6. GATEWAY UNAVAILABLE — the adapter fails closed, no local fallback.
     reset_receipts()
     prop = proof.proposal_for("GATEWAY_UNAVAILABLE")
-    dead = MCCClient("http://127.0.0.1:9", api_key=API_KEY, timeout=2.0)
+    dead = MCCClient("http://127.0.0.1:9", api_key=SharedGovernedGateway.agent_key(prop.actor_id),
+                     timeout=2.0)
     failed_closed = False
     try:
         dead.evaluate(actor_id=prop.actor_id, action=prop.action,
@@ -398,7 +435,7 @@ def run_common_scenarios(proof: AdapterProof, gw: SharedGovernedGateway) -> Adap
     # 7. INVALID OR EXPIRED — expired authorization material is rejected.
     reset_receipts()
     prop = proof.proposal_for("INVALID_OR_EXPIRED")
-    c = _client(gw.base_url)
+    c = _client(gw.base_url, prop.actor_id)
     d = c.evaluate(actor_id=prop.actor_id, action=prop.action, resource=prop.resource,
                    payload=prop.payload, idempotency_key=prop.idempotency_key)
     rejected = False

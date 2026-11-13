@@ -50,14 +50,24 @@ def issue_vote(
     resource: Optional[str] = None,
     policy_hash: Optional[str] = None,
     nonce: Optional[str] = None,
+    tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Sign one evaluator's vote, bound to the exact operation. The evaluator's
     ``signing_key`` kid is what the verifier must trust.
 
-    ``resource``, ``policy_hash``, and ``nonce`` are optional extra binding
-    dimensions (added to the signed claims only when provided). The mandatory
-    execution path binds all of them — the ``nonce`` (one-time) makes the
-    evidence itself non-replayable."""
+    ``resource``, ``policy_hash``, ``nonce`` and ``tenant_id`` are optional
+    extra binding dimensions (added to the signed claims only when provided).
+    The mandatory execution path binds all of them — the ``nonce`` (one-time)
+    makes the evidence itself non-replayable.
+
+    F1: ``actor`` is the vote's principal binding. On the gateway's consensus
+    routes the gateway refuses any request whose ``actor`` is not the
+    individually authenticated agent, so a counted vote's ``actor`` always
+    equals the authenticated principal. ``tenant_id`` binds the vote to that
+    agent's tenant; the gateway requires it to equal the server-resolved
+    tenant. An evaluator should take both from the gateway-issued challenge
+    (which records the authenticated tenant and principal), never from a
+    caller's claim."""
     iat = int(issued_at if issued_at is not None else time.time())
     claims = {
         "vote_id": f"vote-{uuid.uuid4().hex}",
@@ -77,6 +87,8 @@ def issue_vote(
         claims["policy_hash"] = policy_hash
     if nonce is not None:
         claims["nonce"] = nonce
+    if tenant_id is not None:
+        claims["tenant_id"] = tenant_id
     return signing_key.sign_token(claims)
 
 
@@ -133,20 +145,25 @@ class ConsensusVerifier:
         self, votes: Any, *, action: str, payload: Dict[str, Any], actor: str,
         resource: Optional[str] = None, policy_hash: Optional[str] = None,
         nonce: Optional[str] = None, now: Optional[int] = None,
+        tenant_id: Optional[str] = None,
     ) -> ConsensusResult:
         """Verify N-of-M consensus bound to the operation. ``resource``,
         ``policy_hash``, and ``nonce``, when provided, are *required* to match
         on every counted vote — a vote that lacks or mismatches a required
         dimension is rejected. The one-time ``nonce`` makes the evidence
-        non-replayable across operations."""
+        non-replayable across operations. ``tenant_id`` (F1), when provided,
+        is likewise required on every counted vote: a vote signed for another
+        tenant, or for no tenant, is rejected."""
         try:
             return self._verify(votes, action=action, payload=payload, actor=actor,
-                                 resource=resource, policy_hash=policy_hash, nonce=nonce, now=now)
+                                 resource=resource, policy_hash=policy_hash, nonce=nonce, now=now,
+                                 tenant_id=tenant_id)
         except Exception:
             return ConsensusResult(Verdict.DENY, "CONSENSUS_ERROR: fail-closed",
                                    self.policy.threshold, 0)
 
-    def _verify(self, votes, *, action, payload, actor, resource, policy_hash, nonce, now) -> ConsensusResult:
+    def _verify(self, votes, *, action, payload, actor, resource, policy_hash, nonce, now,
+                tenant_id=None) -> ConsensusResult:
         ts = int(now if now is not None else time.time())
         expected_action = hash_action(action)
         expected_payload = hash_payload(payload)
@@ -184,7 +201,8 @@ class ConsensusVerifier:
             # them: resource, policy version, and the one-time nonce.
             if (resource is not None and vote.get("resource") != resource) \
                     or (policy_hash is not None and vote.get("policy_hash") != policy_hash) \
-                    or (nonce is not None and vote.get("nonce") != nonce):
+                    or (nonce is not None and vote.get("nonce") != nonce) \
+                    or (tenant_id is not None and vote.get("tenant_id") != tenant_id):
                 rejected += 1
                 continue
             nbf, exp = vote.get("nbf"), vote.get("exp")
@@ -209,10 +227,12 @@ class ConsensusVerifier:
 
         allow_ids = sorted(allow)
         deny_ids = sorted(deny)
-        consensus_hash = sha256_hex(canonical_bytes(
-            {"action_hash": expected_action, "payload_hash": expected_payload,
-             "actor": actor, "resource": resource, "policy_hash": policy_hash,
-             "nonce": nonce, "evaluators": allow_ids}))
+        hashed = {"action_hash": expected_action, "payload_hash": expected_payload,
+                  "actor": actor, "resource": resource, "policy_hash": policy_hash,
+                  "nonce": nonce, "evaluators": allow_ids}
+        if tenant_id is not None:      # unchanged hash for tenant-unscoped callers
+            hashed["tenant_id"] = tenant_id
+        consensus_hash = sha256_hex(canonical_bytes(hashed))
 
         if self.policy.veto_on_deny and deny_ids:
             return ConsensusResult(Verdict.DENY, f"VETO: {deny_ids[0]} voted DENY",

@@ -28,7 +28,13 @@ from pilot_notify import receipt_verifying_upstream  # noqa: E402
 from pilot_notify.governed_upstream import payload_sha256  # noqa: E402
 
 from integrations.voltagent.mcc_side.evaluator_quorum import QuorumSettings, build_quorum_app  # noqa: E402
-from tests._notify_harness import API_KEY, OPERATOR_KEY, NotifyPilotHarness, _free_port  # noqa: E402
+from tests._notify_harness import (  # noqa: E402
+    API_KEY,
+    OPERATOR_KEY,
+    NotifyPilotHarness,
+    _free_port,
+    agent_key,
+)
 
 ACTOR = "agent/axflow-clinic"
 CLINIC = "clinic-1"
@@ -46,18 +52,22 @@ class ClinicStack:
         self.clinic_base = f"http://127.0.0.1:{self.cport}"
         self.harness = NotifyPilotHarness(
             upstream=upstream or receipt_verifying_upstream(self.clinic_base))
+        # F1: the quorum authenticates the requesting agent (same hash-only
+        # registry as the gateway) and votes only for that agent.
         qs = QuorumSettings({"MCC_QUORUM_GATEWAY_URL": self.harness.base_url,
-                             "MCC_GATEWAY_API_KEY": API_KEY})
+                             "MCC_GATEWAY_API_KEY": API_KEY,
+                             "MCC_AGENT_CREDENTIALS_CONFIG": self.harness.agent_registry_path})
         self.q_app = build_quorum_app(self.harness.evaluators, qs)
         self.qport = _free_port()
         self.qsrv = DemoServer(self.q_app, self.qport)
         self.qsrv.start()
         self.quorum_url = f"http://127.0.0.1:{self.qport}"
-        self.client = MCCGatewayClient(self.harness.base_url, api_key=API_KEY,
+        # V05 (part 2): the clinic agent presents its OWN registered credential.
+        self.client = MCCGatewayClient(self.harness.base_url, api_key=agent_key(ACTOR),
                                        operator_key=OPERATOR_KEY)
 
     def votes(self, *, action, context, nonce, votes_count=None):
-        r = httpx.post(f"{self.quorum_url}/vote", headers={"x-api-key": API_KEY},
+        r = httpx.post(f"{self.quorum_url}/vote", headers={"x-api-key": agent_key(ACTOR)},
                        json={"actor": ACTOR, "action": action, "resource": CLINIC,
                              "context": context, "nonce": nonce}, timeout=10)
         r.raise_for_status()

@@ -18,7 +18,7 @@ remote agent does not hold; those flows are proven in the deterministic tests. T
 agent here reports them BLOCKED for lack of authorization — never a bypass.)
 
 Authority principal separation: this process holds ONLY
-``MCC_GATEWAY_API_KEY``. It never holds, reads, or derives
+its OWN provisioned per-agent credential (V05 part 2). It never holds, reads, or derives
 ``MCC_GATEWAY_OPERATOR_API_KEY`` -- the ``reference-agent-operator`` service
 (``gateway_approval_operator.py``) is a separate process, in a separate
 container, that holds it. The DENY scenario never involves an operator at
@@ -60,11 +60,26 @@ from examples.reference_governed_agent import (  # noqa: E402
 )
 from examples.reference_governed_agent.models import AgentRunResult  # noqa: E402
 
+from gateway.agent_provisioning import (  # noqa: E402
+    AgentCredentialFileError,
+    agent_credential_from_env,
+)
+
 GATEWAY = os.environ.get("MCC_GATEWAY_URL", "http://mcc-gateway:8001")
-API_KEY = os.environ.get("MCC_GATEWAY_API_KEY", "demo-key")
 STATE_DIR = Path(os.environ.get("MCC_PILOT_STATE_DIR", "/pilot-state"))
 APPROVAL_WAIT_TIMEOUT_S = float(os.environ.get("MCC_APPROVAL_WAIT_TIMEOUT_S", "60.0"))
 APPROVAL_POLL_INTERVAL_S = float(os.environ.get("MCC_APPROVAL_POLL_INTERVAL_S", "1.0"))
+
+
+def _agent_client():
+    """V05 (part 2): this process is ONE agent principal -- the single
+    credential its container was provisioned with (MCC_AGENT_CREDENTIAL_FILE).
+    Missing or ambiguous identity fails closed here."""
+    try:
+        cred = agent_credential_from_env()
+    except AgentCredentialFileError as exc:
+        raise SystemExit(f"FAILED: {exc} (fail-closed)") from None
+    return cred.principal_id, MCCClient(GATEWAY, api_key=cred.api_key, timeout=15.0)
 
 REQUEST = "Notify customer-123 that the appointment is confirmed"
 
@@ -232,14 +247,38 @@ def _escalate_with_separated_operator(client: MCCClient, request: str) -> AgentR
 
 
 def main() -> int:
-    client = MCCClient(GATEWAY, api_key=API_KEY, timeout=15.0)
+    principal, client = _agent_client()
     _wait_ready(client)
     failures: list[str] = []
 
     print("\n" + "=" * 66)
-    print("MCC-Core Framework-Neutral Reference Governed Agent (Docker E2E)")
+    print(f"MCC-Core Framework-Neutral Reference Governed Agent (Docker E2E) as {principal}")
     print("=" * 66)
 
+    # One container per principal (V05 part 2): agent/notify-bot runs DENY,
+    # agent/unknown runs ESCALATE -- each with its OWN credential only.
+    if principal == "agent/notify-bot":
+        role = "DENY blocked"
+        _run_deny(client, failures)
+    elif principal == "agent/unknown":
+        role = ("ESCALATE approved -> governed execution -> verified receipt -> "
+                "EXECUTED + audit verified")
+        _run_escalate(client, failures)
+    else:
+        print(f"REFERENCE AGENT PILOT FAILED: no scenario for principal {principal} (fail-closed)")
+        return 1
+
+    print("\n" + "=" * 66)
+    if failures:
+        print("REFERENCE AGENT PILOT FAILED:", "; ".join(failures))
+        return 1
+    print(f"REFERENCE AGENT PILOT PASSED ({principal}): {role}.")
+    print("The model proposes. MCC-Core decides. The gate enforces. "
+          "The audit chain records.")
+    return 0
+
+
+def _run_deny(client: MCCClient, failures: list) -> None:
     # --- DENY: a disallowed channel is blocked; the service is never called. ---
     print("\n--- Scenario: DENY (disallowed channel) ---")
     deny_agent = ReferenceGovernedAgent(
@@ -251,6 +290,9 @@ def main() -> int:
     if deny.verdict != "DENY" or deny.executed:
         failures.append(f"DENY: verdict={deny.verdict} executed={deny.executed}")
 
+
+
+def _run_escalate(client: MCCClient, failures: list) -> None:
     # --- ESCALATE: operator approval -> governed execution -> confirmed receipt. ---
     print("\n--- Scenario: ESCALATE (operator authorization) ---")
     esc = _escalate_with_separated_operator(client, REQUEST)
@@ -265,16 +307,6 @@ def main() -> int:
         failures.append("ESCALATE: external receipt was not verified")
     if esc.audit_valid is not True:
         failures.append("ESCALATE: audit chain did not verify")
-
-    print("\n" + "=" * 66)
-    if failures:
-        print("REFERENCE AGENT PILOT FAILED:", "; ".join(failures))
-        return 1
-    print("REFERENCE AGENT PILOT PASSED: DENY blocked + ESCALATE approved -> "
-          "governed execution -> verified receipt -> EXECUTED + audit verified.")
-    print("The model proposes. MCC-Core decides. The gate enforces. "
-          "The audit chain records.")
-    return 0
 
 
 if __name__ == "__main__":

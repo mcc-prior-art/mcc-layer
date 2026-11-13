@@ -1,5 +1,7 @@
 # Pilot-local material — generated, never committed.
 secrets/
+# Per-agent raw credentials (agent side only; the gateway gets hashes).
+agent-credentials/
 .env
 # Real credential config (only the .example is committed).
 credentials.json

@@ -44,6 +44,14 @@ from mcc_core import (  # noqa: E402
 
 from gateway.governance_service import GovernanceService  # noqa: E402
 from gateway.trust import TrustSet  # noqa: E402
+# V05 (part 2): this in-process caller IS the authenticating boundary for its
+# own fixed agent (library trust boundary; see docs/AGENT_IDENTITY.md).
+from gateway.agent_identity import AuthenticatedAgent  # noqa: E402
+
+
+def _agent(tenant_id, principal_id):
+    return AuthenticatedAgent(tenant_id, principal_id, 'smoke:in-process')
+
 
 URL = os.environ.get("MCC_REDIS_URL", "redis://127.0.0.1:6379/0")
 POLICY = "sha256:p"
@@ -94,10 +102,10 @@ async def main() -> int:
                       revocation_required=True, mandate_id=f"mdt-{run_id}",
                       tenant_id="redis-smoke-tenant")  # V05: strict tenant mode
     ok = await a.execute_with_mandate(mandate=m, actor="agent/x", action="generic_op",
-                                      resource="res-1", context=ctx, idempotency_key=f"i-{run_id}-1", tenant_id="redis-smoke-tenant")
+                                      resource="res-1", context=ctx, idempotency_key=f"i-{run_id}-1", tenant_id="redis-smoke-tenant", agent=_agent("redis-smoke-tenant", "agent/x"))
     await rev_a.revoke(m["mandate_id"])
     blocked = await b.execute_with_mandate(mandate=m, actor="agent/x", action="generic_op",
-                                           resource="res-1", context=ctx, idempotency_key=f"i-{run_id}-2", tenant_id="redis-smoke-tenant")
+                                           resource="res-1", context=ctx, idempotency_key=f"i-{run_id}-2", tenant_id="redis-smoke-tenant", agent=_agent("redis-smoke-tenant", "agent/x"))
     print(f"mandate: A execute={ok.status}  B after revoke={blocked.status}")
     if ok.status != "EXECUTED":
         failures.append("instance A execute should succeed")
@@ -107,14 +115,14 @@ async def main() -> int:
     # --- cross-instance single-use approval ---
     rid = await a.create_approval(actor="agent/x", action="generic_op", resource="res-1",
                                   transaction_id=f"t-{run_id}", policy_hash=POLICY,
-                                  payload=ctx, tenant_id="redis-smoke-tenant")  # V05
+                                  payload=ctx, tenant_id="redis-smoke-tenant", agent=_agent("redis-smoke-tenant", "agent/x"))  # V05
     mandate = await a.approve(rid["request_id"])
     first = await a.execute_with_approval(mandate=mandate, actor="agent/x", action="generic_op",
                                           resource="res-1", context=ctx, transaction_id=f"t-{run_id}",
-                                          idempotency_key=f"a-{run_id}-1", tenant_id="redis-smoke-tenant")
+                                          idempotency_key=f"a-{run_id}-1", tenant_id="redis-smoke-tenant", agent=_agent("redis-smoke-tenant", "agent/x"))
     second = await b.execute_with_approval(mandate=mandate, actor="agent/x", action="generic_op",
                                            resource="res-1", context=ctx, transaction_id=f"t-{run_id}",
-                                           idempotency_key=f"a-{run_id}-2", tenant_id="redis-smoke-tenant")
+                                           idempotency_key=f"a-{run_id}-2", tenant_id="redis-smoke-tenant", agent=_agent("redis-smoke-tenant", "agent/x"))
     print(f"approval: A execute={first.status}  B replay={second.status}")
     if first.status != "EXECUTED":
         failures.append("instance A approval execute should succeed")

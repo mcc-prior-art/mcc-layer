@@ -33,6 +33,7 @@ in-process ``upstream`` app already use.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -58,6 +59,9 @@ EVALUATOR_COUNT = 3
 CONSENSUS_THRESHOLD = 3
 # Non-destructive, informative default TTL for gateway-issued decision tokens.
 TOKEN_TTL_SECONDS = "60"
+# Demo agents that act on identity routes (V05 part 2) -- incl. consensus
+# execution and /evaluate as themselves (F1): each gets its OWN credential.
+DEMO_AGENT_PRINCIPALS = ("agent/nobody", "agent/payments-bot", "agent/control-room-demo")
 
 
 def _build_upstream_app(seen: List[Dict[str, Any]]) -> FastAPI:
@@ -98,6 +102,9 @@ class DemoRuntime:
     api_key: str
     operator_key: str
     evaluator_keys: List[SigningKey]
+    # V05 part 2: each demo agent's OWN per-agent credential ({principal: key});
+    # the gateway's registry holds only their SHA-256 hashes.
+    agent_keys: Dict[str, str]
     state_dir: Path
     audit_log_path: str
     upstream_seen: List[Dict[str, Any]]
@@ -144,6 +151,16 @@ def start_demo_runtime() -> DemoRuntime:
 
     api_key = secrets.token_urlsafe(24)
     operator_key = secrets.token_urlsafe(24)
+    # V05 part 2: the shared tenant key above cannot act as an agent on
+    # /mandates/execute, /approvals or /approvals/{id}/execute; the ESCALATE
+    # scenario's agent presents its own registered credential instead.
+    agent_keys = {principal: secrets.token_urlsafe(24) for principal in DEMO_AGENT_PRINCIPALS}
+    agent_credentials_path = state_dir / "agent_credentials.json"
+    agent_credentials_path.write_text(json.dumps({"agents": [
+        {"credential_id": f"control-room-{i + 1}", "tenant_id": "pilot", "principal_id": principal,
+         "key_sha256": hashlib.sha256(key.encode("utf-8")).hexdigest(), "status": "active"}
+        for i, (principal, key) in enumerate(sorted(agent_keys.items()))]}, indent=2),
+        encoding="utf-8")
     audit_log_path = str(state_dir / "audit.jsonl")
 
     # Every one of these is a genuine, already-documented gateway setting
@@ -155,6 +172,7 @@ def start_demo_runtime() -> DemoRuntime:
         "MCC_GATEWAY_MODE": "inline",
         "MCC_GATEWAY_API_KEY": api_key,
         "MCC_GATEWAY_OPERATOR_API_KEY": operator_key,
+        "MCC_AGENT_CREDENTIALS_CONFIG": str(agent_credentials_path),
         "MCC_GATEWAY_AUDIT_LOG_PATH": audit_log_path,
         "MCC_GATEWAY_TOKEN_TTL_SECONDS": TOKEN_TTL_SECONDS,
         "MCC_UPSTREAM_BASE": f"http://127.0.0.1:{upstream_port}",
@@ -199,6 +217,7 @@ def start_demo_runtime() -> DemoRuntime:
         api_key=api_key,
         operator_key=operator_key,
         evaluator_keys=evaluator_keys,
+        agent_keys=agent_keys,
         state_dir=state_dir,
         audit_log_path=audit_log_path,
         upstream_seen=upstream_seen,

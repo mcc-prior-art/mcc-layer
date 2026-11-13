@@ -100,7 +100,18 @@ def test_verify_chain():
 
 
 def test_request_approval_creates_pending():
-    c = _sdk(gw.app)
+    # V05 (part 2): POST /approvals requires the requesting agent's OWN
+    # registered credential. The module-level gateway.app has no registered
+    # agents (none configured in this test env), so mount the same governance
+    # service's approval routes with an explicit credential for agent/nobody.
+    from gateway.governance_api import mount_approval_routes
+    from tests._agent_credentials import registry
+    app = FastAPI()
+    mount_approval_routes(app, gw.governance, api_key="demo-key", operator_key=None,
+                          tenant_id=gw.settings.tenant_id,
+                          agent_credentials=registry(gw.settings.tenant_id,
+                                                     {"agent/nobody": "nobody-agent-key"}))
+    c = _sdk(app, api_key="nobody-agent-key")
     out = c.request_approval(actor="agent/nobody", action="send_payment",
                              resource="acct-1", payload_hash="sha256:deadbeef")
     assert out["state"] == "PENDING" and out["request_id"]
@@ -187,15 +198,21 @@ def _consensus_app(threshold=3):
                             approvals=coord.approvals, upstream=upstream, policy_hash="sha256:p",
                             consensus_verifier=verifier, challenge_service=challenges)
     app = FastAPI()
-    mount_consensus_routes(app, svc, api_key="agent-key", operator_key="op-key")
+    # F1: /consensus/* are identity routes -- "agent-key" is agent/x's OWN
+    # registered credential; the mount's shared tenant key is a separate value.
+    from tests._agent_credentials import registry as agent_registry, shared_tenant_key
+    mount_consensus_routes(app, svc, api_key=shared_tenant_key("agent-key"), operator_key="op-key",
+                           tenant_id="pilot",
+                           agent_credentials=agent_registry("pilot", {"agent/x": "agent-key"}))
     return evals, app, calls
 
 
 def _votes(evals, *, action, payload, actor, nonce, policy_hash="sha256:p",
-           verdicts=("ALLOW", "ALLOW", "ALLOW")):
+           verdicts=("ALLOW", "ALLOW", "ALLOW"), tenant_id="pilot"):
     return [issue_vote(evals[i], evaluator_id=f"eval-{i}", verdict=verdicts[i], action=action,
                        payload=payload, actor=actor, not_before=0, not_after=FAR_FUTURE,
-                       policy_hash=policy_hash, nonce=nonce) for i in range(len(verdicts))]
+                       policy_hash=policy_hash, nonce=nonce, tenant_id=tenant_id)
+            for i in range(len(verdicts))]
 
 
 def test_consensus_execute_through_sdk_reaches_upstream():

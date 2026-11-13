@@ -19,6 +19,8 @@ configured from environment variables written by the harness:
     MCC_TRUST_CONFIG             optional signed-mandate issuer trust set (PR #71
                                   Workstream C mandate-forgery-containment tests;
                                   absent by default -- see mandate/trust.py)
+    MCC_AGENT_CREDENTIALS_CONFIG / MCC_AGENT_IDENTITY_MODE
+                                 V05 per-agent identity (registry written by the harness)
     MCC_ATTESTATION_REQUIREMENTS_CONFIG / MCC_ATTESTATION_TRUST_CONFIG
                                   optional PR-2 Pre-Execution Attestation Control
                                   (PR-5 Workstream attestation-chain tests; absent by
@@ -42,6 +44,8 @@ from gateway.governance_api import (
     build_governance_service,
     mount_approval_routes,
     mount_consensus_routes,
+    enforce_evaluate_identity,
+    evaluate_caller_dep,
     mount_mandate_routes,
 )
 
@@ -69,6 +73,10 @@ def build_app() -> FastAPI:
         env["MCC_ATTESTATION_REQUIREMENTS_CONFIG"] = os.environ["MCC_ATTESTATION_REQUIREMENTS_CONFIG"]
     if "MCC_ATTESTATION_TRUST_CONFIG" in os.environ:
         env["MCC_ATTESTATION_TRUST_CONFIG"] = os.environ["MCC_ATTESTATION_TRUST_CONFIG"]
+    # V05 (part 2): per-agent credential registry + identity mode (server-side).
+    for name in ("MCC_AGENT_CREDENTIALS_CONFIG", "MCC_AGENT_IDENTITY_MODE"):
+        if name in os.environ:
+            env[name] = os.environ[name]
     service = build_governance_service(
         engine=gw.engine, signing_key=gw.signing_key, audit=gw.audit,
         policy_hash=gw.policy_hash, token_audience=gwmod.settings.token_audience,
@@ -77,12 +85,21 @@ def build_app() -> FastAPI:
     app = FastAPI(title="MCC-Core Interop Gateway")
 
     def require_api_key(x_api_key: str = Header(...)) -> str:
-        if x_api_key != API_KEY:
+        # Read-only /verify: the shared tenant key or any registered agent
+        # credential of this tenant (as gateway/app.py get_caller).
+        reg = service.agent_credentials
+        if x_api_key != API_KEY and (reg is None or reg.resolve(x_api_key, tenant_id="pilot").agent is None):
             raise HTTPException(status_code=401, detail="INVALID_API_KEY")
         return "interop"
 
+    # F1: the SAME /evaluate identity binding as gateway/app.py.
+    evaluate_caller = evaluate_caller_dep(API_KEY, "pilot", service.agent_credentials)
+
     @app.post("/evaluate", response_model=gwmod.EvaluateResponse)
-    def evaluate(req: gwmod.EvaluateRequest, _=Depends(require_api_key)):
+    def evaluate(req: gwmod.EvaluateRequest, caller=Depends(evaluate_caller)):
+        enforce_evaluate_identity(caller, identity=req.identity, actor_id=req.actor_id,
+                                  mode=service.agent_identity_mode,
+                                  agent_credentials=service.agent_credentials)
         return gw.evaluate(req)
 
     @app.get("/verify")

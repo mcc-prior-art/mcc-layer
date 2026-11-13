@@ -146,7 +146,7 @@ make clinic-pilot-allow      # book a normal appointment -> governed exec -> ver
 make clinic-pilot-deny       # medical-advice request    -> blocked; clinic service never called
 make clinic-pilot-constrain  # 90% discount -> clamped to 20% -> only the clamped payload executes
 make clinic-pilot-escalate   # refund request -> PENDING_APPROVAL (no execution yet)
-make clinic-pilot-approve    # clinic operator approval -> governed execution -> EXECUTED
+make clinic-pilot-approve    # clinic operator approves -> the agent executes (own credential) -> EXECUTED
 ```
 
 Or run the whole sequence: `make clinic-pilot-demo`.
@@ -188,11 +188,14 @@ original 90% is never transmitted; the receipt's `payload_sha256` binds the
 `refund_request` requires `clinic.refund`, which the agent does **not** hold, so
 MCC-Core returns **ESCALATE**. **Nothing executes.** The pending state (request id,
 correlation id, actor, resource, action, original payload) is written to the
-`clinic-state` volume. `make clinic-pilot-approve` runs in the **gateway container**
-(which holds the operator key — never the agent): the clinic operator grants a
-**single-use** approval mandate and the governed executor continues the *original*
-proposed action. A replayed, mismatched, expired, or forged approval is rejected,
-and the state file is consumed so an approval cannot be replayed.
+`clinic-state` volume. `make clinic-pilot-approve` first runs the operator step in
+the **gateway container** (which holds the operator key — never the agent): the
+clinic operator **only approves**, minting a **single-use** approval mandate that
+is handed back on the state volume. Then the clinic agent executes the *original*
+proposed action **from its own container with its own provisioned credential**
+(`clinic-cli execute-approved`; V05 part 2 — the operator never holds or presents
+an agent credential). A replayed, mismatched, expired, or forged approval is
+rejected, and the state files are consumed.
 
 ## Trust boundaries & no-bypass
 

@@ -41,6 +41,8 @@ from gateway.governance_api import (  # noqa: E402
     build_governance_service,
     mount_approval_routes,
     mount_consensus_routes,
+    enforce_evaluate_identity,
+    evaluate_caller_dep,
     mount_mandate_routes,
 )
 
@@ -59,17 +61,45 @@ from integrations.voltagent.mcc_side.generate_config import generate  # noqa: E4
 API_KEY = os.environ.get("MCC_GATEWAY_API_KEY", "demo-key")
 OPERATOR_KEY = os.environ.get("MCC_GATEWAY_OPERATOR_API_KEY", "op-key")
 
+# V05 (part 2) + F1: per-agent identity. API_KEY stays the tenant's SHARED
+# key (read-only /verify; /evaluate only for non-agent identities). On the
+# identity routes (/mandates/execute, /approvals, /approvals/{id}/execute,
+# /consensus/*) and for /evaluate as an agent, each principal presents its
+# OWN registered credential, agent_key(principal) -- mirrored by agentKey()
+# in integrations/voltagent/tests/_config.ts.
+TENANT_ID = "pilot"
+AGENT_PRINCIPALS = ("agent/notify-bot", "agent/unknown", "agent/axflow-clinic")
+
+
+def agent_key(principal_id: str) -> str:
+    return f"{API_KEY}::agent::{principal_id}"
+
+
+def _agent_registry():
+    from gateway.agent_identity import AgentCredentialRegistry, hash_agent_key
+    return AgentCredentialRegistry.from_config({"agents": [
+        {"credential_id": f"cred-{p}", "tenant_id": TENANT_ID, "principal_id": p,
+         "key_sha256": hash_agent_key(agent_key(p)), "status": "active"}
+        for p in AGENT_PRINCIPALS]})
+
 
 def _build_gateway_app(gw: "gwmod.Gateway", service, audit_path: str) -> FastAPI:
     app = FastAPI(title="MCC Gateway (voltagent test)")
+    registry = _agent_registry()
 
     def require_api_key(x_api_key: str = Header(...)) -> str:
-        if x_api_key != API_KEY:
+        # The shared tenant key, or any registered agent credential of this tenant.
+        if x_api_key != API_KEY and registry.resolve(x_api_key, tenant_id=TENANT_ID).agent is None:
             raise HTTPException(status_code=401, detail="INVALID_API_KEY")
         return "agent"
 
+    # F1: the SAME /evaluate identity binding as gateway/app.py.
+    evaluate_caller = evaluate_caller_dep(API_KEY, TENANT_ID, registry)
+
     @app.post("/evaluate", response_model=gwmod.EvaluateResponse)
-    def evaluate(req: gwmod.EvaluateRequest, _=Depends(require_api_key)):
+    def evaluate(req: gwmod.EvaluateRequest, caller=Depends(evaluate_caller)):
+        enforce_evaluate_identity(caller, identity=req.identity, actor_id=req.actor_id,
+                                  mode=service.agent_identity_mode, agent_credentials=registry)
         return gw.evaluate(req)
 
     @app.get("/health")
@@ -84,9 +114,12 @@ def _build_gateway_app(gw: "gwmod.Gateway", service, audit_path: str) -> FastAPI
     def verify(_=Depends(require_api_key)):
         return {"valid": AuditLog.verify_chain(gw.audit.path)}
 
-    mount_mandate_routes(app, service, api_key=API_KEY, operator_key=OPERATOR_KEY)
-    mount_approval_routes(app, service, api_key=API_KEY, operator_key=OPERATOR_KEY)
-    mount_consensus_routes(app, service, api_key=API_KEY, operator_key=OPERATOR_KEY)
+    mount_mandate_routes(app, service, api_key=API_KEY, operator_key=OPERATOR_KEY,
+                     tenant_id=TENANT_ID, agent_credentials=registry)
+    mount_approval_routes(app, service, api_key=API_KEY, operator_key=OPERATOR_KEY,
+                     tenant_id=TENANT_ID, agent_credentials=registry)
+    mount_consensus_routes(app, service, api_key=API_KEY, operator_key=OPERATOR_KEY,
+                     tenant_id=TENANT_ID, agent_credentials=registry)
     return app
 
 
@@ -116,9 +149,19 @@ def main() -> int:
     gateway_app = _build_gateway_app(gw, service, str(gw.audit.path))
 
     # 3. Independent evaluator quorum (holds the private keys).
+    # F1: the quorum votes only for an individually authenticated agent, so it
+    # reads the SAME hash-only credential registry as the gateway.
+    creds_path = workdir / "agent_credentials.json"
+    from gateway.agent_identity import hash_agent_key
+    creds_path.write_text(json.dumps({"agents": [
+        {"credential_id": f"cred-{p}", "tenant_id": TENANT_ID, "principal_id": p,
+         "key_sha256": hash_agent_key(agent_key(p)), "status": "active"}
+        for p in AGENT_PRINCIPALS]}))
     q_settings = QuorumSettings({
         "MCC_QUORUM_GATEWAY_URL": f"http://127.0.0.1:{gw_port}",
-        "MCC_GATEWAY_API_KEY": API_KEY})
+        "MCC_GATEWAY_API_KEY": API_KEY,
+        "MCC_GATEWAY_TENANT_ID": TENANT_ID,
+        "MCC_AGENT_CREDENTIALS_CONFIG": str(creds_path)})
     quorum_app = build_quorum_app(load_evaluator_keys(str(keys_dir)), q_settings)
 
     servers = [

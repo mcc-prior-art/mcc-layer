@@ -12,13 +12,17 @@
  * The agent never holds the operator key and never contacts the external service;
  * everything flows agent → MCC SDK → gateway → governed executor. For ESCALATE it
  * only PROPOSES (no execution) and records the pending-approval state to a shared
- * file; a separate operator step (operator_cli.py) approves and continues.
+ * file; the operator step (operator_cli.py) only APPROVES, and then
+ * `pilot-cli execute-approved`, run in the escalating agent's own container with
+ * its own credential, executes the approved operation (V05 part 2).
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { agentEnv, buildGovernedAgentFromEnv } from "./agent.js";
+import { executeApprovedFromState } from "./approved-continuation.js";
 import { type GovernedOutcome, MccClient } from "./mcc-client.js";
+import { ACTION } from "./schemas.js";
 
 interface Scenario {
   actor: string;
@@ -72,16 +76,32 @@ function printOutcome(name: string, o: GovernedOutcome): void {
 
 async function main(): Promise<number> {
   const name = (process.argv[2] ?? "").trim().toLowerCase();
+  if (name === "execute-approved") return executeApproved();
   const scenario = SCENARIOS[name];
   if (!scenario) {
-    console.error(`usage: pilot-cli <${Object.keys(SCENARIOS).join("|")}>`);
+    console.error(`usage: pilot-cli <${Object.keys(SCENARIOS).join("|")}|execute-approved>`);
     return 2;
   }
 
-  const env: NodeJS.ProcessEnv = { ...process.env, MCC_VOLTAGENT_ACTOR: scenario.actor };
+  // V05 (part 2): a provisioned agent container acts ONLY as its own principal
+  // (from its credential file). A scenario for another principal must run in
+  // that principal's container. Without a credential file (local development
+  // only) the scenario's actor is used with the tenant's shared key, which the
+  // gateway refuses on its identity routes.
+  const provisioned = (process.env.MCC_AGENT_CREDENTIAL_FILE ?? "").trim() !== "";
+  const env: NodeJS.ProcessEnv = provisioned
+    ? { ...process.env }
+    : { ...process.env, MCC_VOLTAGENT_ACTOR: scenario.actor };
   // Readiness gate — a reachable process is not ready. All networking (including
   // the /ready probe) lives in the MCC client; the agent submits nothing before.
   const cfg = agentEnv(env);
+  if (cfg.identity.actor !== scenario.actor) {
+    console.error(
+      `scenario '${name}' acts as ${scenario.actor}, but this container is provisioned as ` +
+        `${cfg.identity.actor}; run it in ${scenario.actor}'s own container (fail-closed).`,
+    );
+    return 2;
+  }
   const readinessClient = new MccClient({
     gatewayUrl: cfg.gatewayUrl,
     quorumUrl: cfg.quorumUrl,
@@ -105,6 +125,8 @@ async function main(): Promise<number> {
   if (name === "escalate" && outcome.approvalRequestId) {
     const stateDir = env.MCC_PILOT_STATE_DIR ?? "/pilot-state";
     mkdirSync(stateDir, { recursive: true });
+    // A new escalation invalidates any stale approval hand-off.
+    rmSync(join(stateDir, "approval.json"), { force: true });
     writeFileSync(
       join(stateDir, "escalation.json"),
       JSON.stringify(
@@ -113,6 +135,7 @@ async function main(): Promise<number> {
           correlationId: outcome.correlationId,
           actor: scenario.actor,
           resource: env.MCC_VOLTAGENT_RESOURCE ?? "crm",
+          action: ACTION,
           context: outcome.finalPayload,
         },
         null,
@@ -140,6 +163,23 @@ async function main(): Promise<number> {
   }
   console.log(`\nSCENARIO OK: ${name} behaved as governed.`);
   return 0;
+}
+
+/** ESCALATE continuation: this agent executes its OWN approved operation. */
+async function executeApproved(): Promise<number> {
+  const cfg = agentEnv(process.env);
+  const client = new MccClient({
+    gatewayUrl: cfg.gatewayUrl,
+    quorumUrl: cfg.quorumUrl,
+    apiKey: cfg.apiKey,
+  });
+  await client.waitUntilReady();
+  const { code } = await executeApprovedFromState({
+    stateDir: process.env.MCC_PILOT_STATE_DIR ?? "/pilot-state",
+    client,
+    principal: cfg.identity.actor,
+  });
+  return code;
 }
 
 main()

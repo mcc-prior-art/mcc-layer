@@ -39,7 +39,13 @@ sys.path.insert(0, str(ROOT / "sdk" / "python" / "src"))
 from pilot.client import MCCGatewayClient  # noqa: E402
 from pilot_notify import recorded_receipts, reset_receipts  # noqa: E402
 
-from tests._notify_harness import API_KEY, OPERATOR_KEY, NotifyPilotHarness, _free_port  # noqa: E402
+from tests._notify_harness import (  # noqa: E402
+    API_KEY,
+    OPERATOR_KEY,
+    NotifyPilotHarness,
+    _free_port,
+    agent_key,
+)
 from integrations.voltagent.mcc_side.evaluator_quorum import QuorumSettings, build_quorum_app  # noqa: E402
 from examples._demo_server import DemoServer  # noqa: E402
 
@@ -59,12 +65,17 @@ ENV_EXAMPLE = ROOT / ".env.pilot.example"
 def stack():
     reset_receipts()
     hz = NotifyPilotHarness()
-    q_settings = QuorumSettings({"MCC_QUORUM_GATEWAY_URL": hz.base_url, "MCC_GATEWAY_API_KEY": API_KEY})
+    # F1: the quorum authenticates agents with the gateway's hash-only registry.
+    q_settings = QuorumSettings({"MCC_QUORUM_GATEWAY_URL": hz.base_url, "MCC_GATEWAY_API_KEY": API_KEY,
+                                 "MCC_AGENT_CREDENTIALS_CONFIG": hz.agent_registry_path})
     q_app = build_quorum_app(hz.evaluators, q_settings)
     q_port = _free_port()
     q_server = DemoServer(q_app, q_port)
     q_server.start()
-    client = MCCGatewayClient(hz.base_url, api_key=API_KEY, operator_key=OPERATOR_KEY)
+    # F1: agent/notify-bot presents its OWN credential (evaluate + consensus),
+    # so each fail-closed case below reaches the vote/challenge check itself.
+    client = MCCGatewayClient(hz.base_url, api_key=agent_key("agent/notify-bot"),
+                              operator_key=OPERATOR_KEY)
     try:
         yield hz, client, f"http://127.0.0.1:{q_port}"
     finally:
@@ -108,7 +119,11 @@ def test_consensus_with_forged_votes_fails_closed(stack):
 
 
 def test_forged_approval_mandate_fails_closed(stack):
-    hz, client, _ = stack
+    hz, _, _ = stack
+    # V05 (part 2): agent/unknown presents its OWN credential, so the forged
+    # mandate -- not the per-agent identity check -- is what blocks execution.
+    client = MCCGatewayClient(hz.base_url, api_key=agent_key("agent/unknown"),
+                              operator_key=OPERATOR_KEY)
     d = client.propose(identity="agent/unknown", action="send_notification", resource_id="crm",
                        actor_id="agent/unknown", context=_ctx("corr-escf"))
     assert d.decision.value == "ESCALATE"
@@ -125,7 +140,11 @@ def test_forged_approval_mandate_fails_closed(stack):
 def test_untrusted_external_mandate_rejected(stack):
     """The pilot has no MCC_TRUST_CONFIG, so the external-mandate path trusts no
     issuer: any presented mandate is rejected (strictly fail-closed)."""
-    hz, client, _ = stack
+    hz, _, _ = stack
+    # V05 (part 2): presented with agent/notify-bot's OWN credential, so the
+    # untrusted issuer -- not the per-agent identity check -- blocks it.
+    client = MCCGatewayClient(hz.base_url, api_key=agent_key("agent/notify-bot"),
+                              operator_key=OPERATOR_KEY)
     out = client.execute_with_mandate(
         mandate={"issuer": "whoever", "subject": "agent/notify-bot", "sig": "x"},
         actor="agent/notify-bot", action="send_notification", resource="crm",

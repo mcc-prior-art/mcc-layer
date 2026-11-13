@@ -151,6 +151,17 @@ export class MccClient {
     if (resp.status === 401) {
       throw new MccError(`unauthorized calling ${method} ${url}`);
     }
+    if (resp.status === 403) {
+      // V05/F1: an identity refusal (e.g. AGENT_PRINCIPAL_MISMATCH -- this
+      // credential may act only as its own principal). Fail closed.
+      let detail = "";
+      try {
+        detail = String(((await resp.json()) as Record<string, unknown>).detail ?? "");
+      } catch {
+        detail = "";
+      }
+      throw new MccError(`forbidden calling ${method} ${url}: ${detail}`);
+    }
     let data: Record<string, unknown>;
     try {
       data = (await resp.json()) as Record<string, unknown>;

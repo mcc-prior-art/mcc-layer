@@ -30,9 +30,12 @@ from mcc_core import (
 from gateway.governance_api import mount_consensus_routes
 from gateway.governance_service import GovernanceService
 from gateway.trust import TrustSet
+from tests._agent_credentials import registry as agent_registry, shared_tenant_key
 
 FUTURE = 4_000_000_000
+# F1: /consensus/* are identity routes; "agent-key" is agent/x's OWN credential.
 AGENT = {"x-api-key": "agent-key"}
+TENANT = "pilot"
 ACTION = "generic_op"
 CTX = {"value": 1}
 
@@ -63,17 +66,19 @@ def build(threshold=3):
                             approvals=coord.approvals, upstream=upstream, policy_hash="sha256:p",
                             consensus_verifier=verifier)
     app = FastAPI()
-    mount_consensus_routes(app, svc, api_key="agent-key", operator_key="op-key")
+    mount_consensus_routes(app, svc, api_key=shared_tenant_key("agent-key"), operator_key="op-key",
+                           tenant_id=TENANT,
+                           agent_credentials=agent_registry(TENANT, {"agent/x": "agent-key"}))
     return evals, TestClient(app), calls
 
 
 def votes_for(evals, *, actor="agent/x", verdicts=("ALLOW", "ALLOW", "ALLOW"),
-              policy_hash="sha256:p", nonce=None):
+              policy_hash="sha256:p", nonce=None, tenant_id=TENANT):
     # Votes are bound to the gateway's policy hash (and, on the execute path,
     # the one-time nonce); the service requires both to match.
     return [issue_vote(evals[i], evaluator_id=f"eval-{i}", verdict=verdicts[i], action=ACTION,
                        payload=CTX, actor=actor, not_before=0, not_after=FUTURE,
-                       policy_hash=policy_hash, nonce=nonce)
+                       policy_hash=policy_hash, nonce=nonce, tenant_id=tenant_id)
             for i in range(len(verdicts))]
 
 
@@ -116,7 +121,8 @@ def test_forged_vote_ignored_blocks():
     rogue = SigningKey.generate("rogue")
     votes = votes_for(evals)[:2] + [
         issue_vote(rogue, evaluator_id="eval-2", verdict="ALLOW", action=ACTION,
-                   payload=CTX, actor="agent/x", not_before=0, not_after=FUTURE)]
+                   payload=CTX, actor="agent/x", not_before=0, not_after=FUTURE,
+                   tenant_id=TENANT)]
     r = client.post("/consensus/execute", headers=AGENT, json={
         "votes": votes, "actor": "agent/x", "action": ACTION, "context": CTX})
     assert r.json()["status"] == "BLOCKED"  # only 2 trusted ALLOW

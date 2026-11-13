@@ -31,6 +31,8 @@ def test_driver_consensus_execute_reaches_upstream():
 def test_driver_sign_votes_bind_to_nonce_and_policy():
     evals, _, _ = _consensus_app()
     votes = driver.sign_votes(evals, action="generic_op", payload={"value": 1},
-                              actor="agent/x", policy_hash="sha256:p", nonce="n-123")
+                              actor="agent/x", policy_hash="sha256:p", nonce="n-123",
+                              tenant_id="pilot")
     assert len(votes) == 3
     assert all(v["evaluator_id"] in {"eval-0", "eval-1", "eval-2"} for v in votes)
+    assert all(v["tenant_id"] == "pilot" for v in votes)     # F1: tenant-bound

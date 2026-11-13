@@ -30,7 +30,7 @@ def gateway():
 
 def _router_into(gw):
     def router(proposal: mp.CanonicalProposal) -> mp.Decision:
-        client = _client(gw.base_url)
+        client = _client(gw.base_url, proposal.actor)   # F1: the actor's own key
         return client.evaluate(actor_id=proposal.actor, action=proposal.action,
                                resource=proposal.resource, payload=proposal.payload)
     return router

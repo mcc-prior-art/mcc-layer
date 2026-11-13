@@ -11,6 +11,7 @@
  */
 
 import { Agent } from "@voltagent/core";
+import { resolveAgentIdentity } from "./agent-credential.js";
 import { MccClient } from "./mcc-client.js";
 import type { GovernedOutcome } from "./mcc-client.js";
 import { resolveModel } from "./model.js";
@@ -58,12 +59,15 @@ export interface AgentIdentityEnv {
 
 /** Read the agent's (non-operator) MCC configuration from the environment. */
 export function agentEnv(env: NodeJS.ProcessEnv = process.env): AgentIdentityEnv {
+  // V05 (part 2): the actor is this agent's provisioned principal; its key is
+  // the ONE credential this container was given (see agent-credential.ts).
+  const { actor, apiKey } = resolveAgentIdentity(env, env.MCC_VOLTAGENT_ACTOR, "agent/notify-bot");
   return {
     gatewayUrl: env.MCC_GATEWAY_URL ?? "http://mcc-gateway:8001",
     quorumUrl: env.MCC_QUORUM_URL ?? "http://mcc-evaluator-quorum:8080",
-    apiKey: env.MCC_GATEWAY_API_KEY ?? "demo-key",
+    apiKey,
     identity: {
-      actor: env.MCC_VOLTAGENT_ACTOR ?? "agent/notify-bot",
+      actor,
       resource: env.MCC_VOLTAGENT_RESOURCE ?? "crm",
     },
   };

@@ -23,6 +23,7 @@ from examples.reference_governed_agent._localstack import (
     API_KEY,
     OPERATOR_KEY,
     LocalGovernedStack,
+    agent_key,
 )
 from examples.reference_governed_agent.authorizers import FAR_FUTURE
 from examples.reference_governed_agent.operator import ProgrammaticOperator
@@ -78,7 +79,9 @@ class _ScenarioAuthorizer:
         votes = [
             issue_vote(e, evaluator_id=e.kid, verdict="ALLOW", action=decision.action,
                        payload=canonical, actor=actor, not_before=0, not_after=not_after,
-                       resource=resource, policy_hash=policy_hash, nonce=ch["nonce"])
+                       resource=resource, policy_hash=policy_hash, nonce=ch["nonce"],
+                       # F1: the tenant the gateway recorded on the challenge.
+                       tenant_id=ch.get("tenant_id"))
             for e in self._stack.evaluators
         ]
         if self._mode == "signature":
@@ -110,8 +113,13 @@ class ComplianceStack:
     def __exit__(self, *exc: object) -> None:
         self.close()
 
-    def client(self) -> MCCClient:
-        return MCCClient(self.stack.base_url, api_key=API_KEY, operator_key=OPERATOR_KEY,
+    def client(self, actor_id: Optional[str] = None) -> MCCClient:
+        # V05 (part 2): an agent acting as ``actor_id`` presents its OWN
+        # registered credential (required on /approvals + the execute routes);
+        # without an actor, the tenant's shared key (read-only routes only;
+        # F1: /evaluate-as-an-agent and /consensus/* need the agent's own key).
+        key = agent_key(actor_id) if actor_id else API_KEY
+        return MCCClient(self.stack.base_url, api_key=key, operator_key=OPERATOR_KEY,
                          timeout=15.0)
 
     def reset_ground_truth(self) -> None:
@@ -139,7 +147,8 @@ class ComplianceStack:
             authorizer = _ScenarioAuthorizer(self.stack, mode, capture=capture)
 
         ctx = AdapterContext(
-            request=request, client=self.client(), provider_config=provider_config,
+            request=request, client=self.client(provider_config["actor_id"]),
+            provider_config=provider_config,
             operator=operator, authorizer=authorizer)
         return ctx, authorizer
 

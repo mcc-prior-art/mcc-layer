@@ -44,6 +44,12 @@ from gateway.governance_api import mount_consensus_routes, mount_mandate_routes
 from gateway.governance_service import GovernanceService
 from gateway.trust import TrustSet
 
+# V05 (part 2): "agent-key" is agent/x's registered per-agent credential in the
+# mount's default "pilot" tenant; the shared tenant key is a separate, unused value.
+from tests._agent_credentials import registry as _agent_registry  # noqa: E402
+from tests._agent_credentials import shared_tenant_key  # noqa: E402
+_AGENT_CREDS = _agent_registry("pilot", {"agent/x": "agent-key"})
+
 FUTURE = 4_000_000_000
 AGENT = {"x-api-key": "agent-key"}
 ACTION = "generic_op"
@@ -79,17 +85,21 @@ def build(threshold=3):
                             approvals=coord.approvals, upstream=upstream, policy_hash=POLICY_HASH,
                             consensus_verifier=verifier)
     app = FastAPI()
-    mount_consensus_routes(app, svc, api_key="agent-key", operator_key="op-key")
-    mount_mandate_routes(app, svc, api_key="agent-key", operator_key="op-key")
+    mount_consensus_routes(app, svc, api_key=shared_tenant_key("agent-key"), operator_key="op-key",
+                       agent_credentials=_AGENT_CREDS)
+    mount_mandate_routes(app, svc, api_key=shared_tenant_key("agent-key"), operator_key="op-key",
+                     agent_credentials=_AGENT_CREDS)
     return evals, TestClient(app), calls
 
 
 def votes_for(evals, *, actor="agent/x", verdicts=("ALLOW", "ALLOW", "ALLOW"),
               payload=CTX, action=ACTION, resource="res-1", policy_hash=POLICY_HASH,
-              nonce="nonce-1"):
+              nonce="nonce-1", tenant_id="pilot"):
+    # F1: votes are signed for the mount's server-resolved tenant.
     return [issue_vote(evals[i], evaluator_id=f"eval-{i}", verdict=verdicts[i], action=action,
                        payload=payload, actor=actor, not_before=0, not_after=FUTURE,
-                       resource=resource, policy_hash=policy_hash, nonce=nonce)
+                       resource=resource, policy_hash=policy_hash, nonce=nonce,
+                       tenant_id=tenant_id)
             for i in range(len(verdicts))]
 
 
@@ -142,7 +152,7 @@ def test_untrusted_evaluator_denied(tmp_path):
     votes = votes_for(evals)[:2] + [
         issue_vote(rogue, evaluator_id="eval-2", verdict="ALLOW", action=ACTION, payload=CTX,
                    actor="agent/x", not_before=0, not_after=FUTURE, resource="res-1",
-                   policy_hash=POLICY_HASH, nonce="nonce-1")]
+                   policy_hash=POLICY_HASH, nonce="nonce-1", tenant_id="pilot")]
     r = execute(client, votes)
     assert r.json()["status"] == "BLOCKED" and calls == []
 
@@ -160,7 +170,8 @@ def test_expired_vote_denied(tmp_path):
     votes = votes_for(evals)
     votes[2] = issue_vote(evals[2], evaluator_id="eval-2", verdict="ALLOW", action=ACTION,
                           payload=CTX, actor="agent/x", not_before=0, not_after=1, issued_at=0,
-                          resource="res-1", policy_hash=POLICY_HASH, nonce="nonce-1")
+                          resource="res-1", policy_hash=POLICY_HASH, nonce="nonce-1",
+                          tenant_id="pilot")
     r = execute(client, votes)
     assert r.json()["status"] == "BLOCKED" and calls == []
 
@@ -199,6 +210,17 @@ def test_policy_hash_mismatch_denied(tmp_path):
     votes = votes_for(evals, policy_hash="sha256:other")
     r = execute(client, votes)
     assert r.json()["status"] == "BLOCKED" and calls == []
+
+
+def test_tenant_mismatch_denied(tmp_path):
+    """F1: votes signed for another tenant, or for none, are not counted."""
+    evals, client, calls = build()
+    assert execute(client, votes_for(evals, tenant_id="other")).json()["status"] == "BLOCKED"
+    assert execute(client, votes_for(evals, tenant_id=None), idem="op-1b").json()["status"] == "BLOCKED"
+    assert calls == []
+    # Positive control: tenant-bound votes for the same operation execute.
+    assert execute(client, votes_for(evals), idem="op-1c").json()["status"] == "EXECUTED"
+    assert len(calls) == 1
 
 
 def test_nonce_mismatch_denied(tmp_path):

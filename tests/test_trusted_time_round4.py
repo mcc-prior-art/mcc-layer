@@ -41,6 +41,9 @@ from mcc_core import (
     issue_vote,
 )
 from mcc_core.trusted_time import TimeTrustError, TrustedTimeSource
+# V05 (part 2): direct library callers pass the trusted authenticated agent
+# explicitly (library trust boundary; see docs/AGENT_IDENTITY.md).
+from tests._agent_credentials import agent as _agent  # noqa: E402
 
 run = asyncio.run
 ACTION = "generic_op"
@@ -440,7 +443,7 @@ def test_pre_execution_control_untrusted_clock_blocks_full_execution_with_zero_a
                 "evidence_type": "risk_assessment", "attester_id": "attester.payment-risk.v1",
                 "claims": {"risk_class": "low"}, "nonce": "att-nonce-2",
             },
-            idempotency_key="op-round5-pec-untrusted", tenant_id="tenant-round5-pec",
+            idempotency_key="op-round5-pec-untrusted", tenant_id="tenant-round5-pec", agent=_agent("tenant-round5-pec", "agent/payments-bot")
         )
 
         assert out.status == "BLOCKED"
@@ -484,8 +487,11 @@ def test_governance_service_verify_consensus_fails_closed_when_time_source_untru
             time_source=_AlwaysUntrusted(),
         )
         votes = _votes(keys, not_before=0, not_after=10_000_000_000, issued_at=0)
+        # F1: the caller is the authenticated agent, so this reaches the
+        # trusted-time check itself (not an identity refusal).
         result = await svc.verify_consensus(votes=votes, action=ACTION, context=PAYLOAD, actor=ACTOR,
-                                            resource=RESOURCE)
+                                            resource=RESOURCE, tenant_id="tenant-1",
+                                            agent=_agent("tenant-1", ACTOR))
         assert result["verdict"] == "DENY"
         assert "CLOCK_UNTRUSTED" in result["reason"]
 

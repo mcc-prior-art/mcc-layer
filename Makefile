@@ -13,15 +13,24 @@
 #   make pilot-down      # stop (KEEPS volumes -> audit persists)
 #   make pilot-clean     # stop + remove volumes (wipes audit)
 #
-# The VoltAgent agent never holds the operator key and has no network route to
-# the external service. See docs/PILOT_VOLTAGENT_DEPLOYMENT.md.
+# The VoltAgent agents never hold the operator key, the shared tenant key or
+# each other's credentials, and have no network route to the external service.
+# See docs/PILOT_VOLTAGENT_DEPLOYMENT.md and docs/AGENT_IDENTITY.md.
 
 COMPOSE ?= docker compose -f docker-compose.pilot-voltagent.yml --env-file .env.pilot
-AGENT   := $(COMPOSE) exec -T voltagent-agent
-GATEWAY := $(COMPOSE) exec -T mcc-gateway
+# V05 (part 2): one container per agent principal, each holding ONLY its own
+# provisioned credential. agent/notify-bot runs allow/deny/constrain;
+# agent/unknown (a different principal, no notify.send mandate) runs ESCALATE.
+AGENT         := $(COMPOSE) exec -T voltagent-agent
+AGENT_UNKNOWN := $(COMPOSE) exec -T voltagent-agent-unknown
+GATEWAY       := $(COMPOSE) exec -T mcc-gateway
+# The provisioner's own arguments (kept in sync with docker-compose.pilot-voltagent.yml).
+PILOT_PROVISION_ARGS := python -m gateway.agent_provisioning \
+	--registry /config/agent_credentials.json --tenant-id pilot --owner 1000:1000 \
+	--agent agent/notify-bot=/creds/notify-bot --agent agent/unknown=/creds/unknown
 
 .PHONY: pilot-config pilot-up pilot-ready pilot-allow pilot-deny pilot-constrain \
-        pilot-escalate pilot-approve pilot-audit-verify pilot-restart-check \
+        pilot-escalate pilot-approve pilot-rotate-agent pilot-audit-verify pilot-restart-check \
         pilot-demo pilot-down pilot-clean pilot-logs pilot-ps
 
 pilot-config: ## Create .env.pilot from the template if missing
@@ -49,11 +58,17 @@ pilot-deny: ## DENY: a prohibited request -> blocked, external service never cal
 pilot-constrain: ## CONSTRAIN: an excessive request -> only the clamped payload executes
 	$(AGENT) npx tsx src/pilot-cli.ts constrain
 
-pilot-escalate: ## ESCALATE: a high-risk request -> PENDING_APPROVAL (no execution yet)
-	$(AGENT) npx tsx src/pilot-cli.ts escalate
+pilot-escalate: ## ESCALATE: agent/unknown's request -> PENDING_APPROVAL (no execution yet)
+	$(AGENT_UNKNOWN) npx tsx src/pilot-cli.ts escalate
 
-pilot-approve: ## Operator approves the pending escalation -> EXECUTED (operator key)
+pilot-approve: ## Operator APPROVES (operator key); then agent/unknown executes with ITS OWN credential -> EXECUTED
 	$(GATEWAY) python -m integrations.voltagent.mcc_side.operator_cli
+	$(AGENT_UNKNOWN) npx tsx src/pilot-cli.ts execute-approved
+
+pilot-rotate-agent: ## Rotate one agent's credential: make pilot-rotate-agent PRINCIPAL=agent/notify-bot
+	@test -n "$(PRINCIPAL)" || (echo "usage: make pilot-rotate-agent PRINCIPAL=agent/..."; exit 2)
+	$(COMPOSE) run --rm agent-credentials-init $(PILOT_PROVISION_ARGS) --rotate "$(PRINCIPAL)"
+	$(COMPOSE) restart mcc-gateway evaluator-quorum
 
 pilot-audit-verify: ## Verify the persisted cryptographic audit chain
 	$(GATEWAY) python -c "import sys; sys.path.insert(0,'/app/src'); from mcc_core import AuditLog; ok=AuditLog.verify_chain('/data/audit.jsonl'); print('audit chain valid=%s' % ok); sys.exit(0 if ok else 1)"
@@ -149,8 +164,9 @@ clinic-pilot-constrain: ## CONSTRAIN: an excessive discount -> only the clamped 
 clinic-pilot-escalate: ## ESCALATE: a refund request -> PENDING_APPROVAL (no execution yet)
 	$(CLINIC_AGENT) npx tsx src/clinic-cli.ts escalate
 
-clinic-pilot-approve: ## Clinic operator approves the pending refund -> EXECUTED (operator key)
+clinic-pilot-approve: ## Clinic operator APPROVES (operator key); then the clinic agent executes with ITS OWN credential -> EXECUTED
 	$(CLINIC_GATEWAY) python -m integrations.voltagent.mcc_side.operator_cli
+	$(CLINIC_AGENT) npx tsx src/clinic-cli.ts execute-approved
 
 clinic-pilot-audit-verify: ## Verify the persisted cryptographic audit chain
 	$(CLINIC_GATEWAY) python -c "import sys; sys.path.insert(0,'/app/src'); from mcc_core import AuditLog; ok=AuditLog.verify_chain('/data/audit.jsonl'); print('audit chain valid=%s' % ok); sys.exit(0 if ok else 1)"

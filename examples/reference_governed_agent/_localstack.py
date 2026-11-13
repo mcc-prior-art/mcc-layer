@@ -27,6 +27,8 @@ from gateway.governance_api import (
     build_governance_service,
     mount_approval_routes,
     mount_consensus_routes,
+    enforce_evaluate_identity,
+    evaluate_caller_dep,
     mount_mandate_routes,
 )
 
@@ -39,6 +41,29 @@ from .authorizers import ConsensusAuthorizer
 
 API_KEY = "demo-key"
 OPERATOR_KEY = "op-key"
+
+# V05 (part 2) + F1: per-agent identity. API_KEY stays the tenant's SHARED
+# key (accepted on /verify, /mandates/verify, GET /approvals/{id}, and on
+# /evaluate only for non-agent identities); it grants NO agent identity on
+# the identity routes (/mandates/execute, /approvals, /approvals/{id}/execute,
+# /consensus/*). There -- and to evaluate as an agent -- each principal below
+# presents its OWN registered credential, agent_key(principal).
+TENANT_ID = "pilot"
+AGENT_PRINCIPALS = ("agent/notify-bot", "agent/unknown", "agent/other-unknown",
+                    "agent/axflow-clinic", "agent/ATTACKER")
+
+
+def agent_key(principal_id: str) -> str:
+    """The per-agent credential ``principal_id`` presents as X-API-Key."""
+    return f"{API_KEY}::agent::{principal_id}"
+
+
+def _agent_registry():
+    from gateway.agent_identity import AgentCredentialRegistry, hash_agent_key
+    return AgentCredentialRegistry.from_config({"agents": [
+        {"credential_id": f"cred-{p}", "tenant_id": TENANT_ID, "principal_id": p,
+         "key_sha256": hash_agent_key(agent_key(p)), "status": "active"}
+        for p in AGENT_PRINCIPALS]})
 
 
 def _free_port() -> int:
@@ -98,14 +123,23 @@ class LocalGovernedStack:
 
     def _build_app(self) -> FastAPI:
         app = FastAPI()
+        registry = _agent_registry()
 
         def require_api_key(x_api_key: str = Header(...)) -> str:
-            if x_api_key != API_KEY:
+            # The shared tenant key, or any registered agent credential of
+            # this tenant (an agent needs only its own key).
+            if x_api_key != API_KEY and registry.resolve(x_api_key, tenant_id=TENANT_ID).agent is None:
                 raise HTTPException(status_code=401, detail="INVALID_API_KEY")
             return "agent"
 
+        # F1: the SAME /evaluate identity binding as gateway/app.py.
+        evaluate_caller = evaluate_caller_dep(API_KEY, TENANT_ID, registry)
+
         @app.post("/evaluate", response_model=gwmod.EvaluateResponse)
-        def evaluate(req: gwmod.EvaluateRequest, _=Depends(require_api_key)):
+        def evaluate(req: gwmod.EvaluateRequest, caller=Depends(evaluate_caller)):
+            enforce_evaluate_identity(caller, identity=req.identity, actor_id=req.actor_id,
+                                      mode=self.service.agent_identity_mode,
+                                      agent_credentials=registry)
             return self.gateway.evaluate(req)
 
         @app.get("/verify")
@@ -116,9 +150,12 @@ class LocalGovernedStack:
         def ready():
             return {"ready": True}
 
-        mount_mandate_routes(app, self.service, api_key=API_KEY, operator_key=OPERATOR_KEY)
-        mount_approval_routes(app, self.service, api_key=API_KEY, operator_key=OPERATOR_KEY)
-        mount_consensus_routes(app, self.service, api_key=API_KEY, operator_key=OPERATOR_KEY)
+        mount_mandate_routes(app, self.service, api_key=API_KEY, operator_key=OPERATOR_KEY,
+                         tenant_id=TENANT_ID, agent_credentials=registry)
+        mount_approval_routes(app, self.service, api_key=API_KEY, operator_key=OPERATOR_KEY,
+                         tenant_id=TENANT_ID, agent_credentials=registry)
+        mount_consensus_routes(app, self.service, api_key=API_KEY, operator_key=OPERATOR_KEY,
+                         tenant_id=TENANT_ID, agent_credentials=registry)
         return app
 
     def authorizer(self) -> ConsensusAuthorizer:

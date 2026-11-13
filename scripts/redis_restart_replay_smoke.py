@@ -77,6 +77,14 @@ from mcc_core import (  # noqa: E402
     SigningKey,
     issue_mandate,
 )
+# V05 (part 2): this in-process caller IS the authenticating boundary for its
+# own fixed agent (library trust boundary; see docs/AGENT_IDENTITY.md).
+from gateway.agent_identity import AuthenticatedAgent  # noqa: E402
+
+
+def _agent(tenant_id, principal_id):
+    return AuthenticatedAgent(tenant_id, principal_id, 'smoke:in-process')
+
 
 run = asyncio.run
 
@@ -196,7 +204,7 @@ async def main() -> int:
     first = await service_a.execute_with_mandate(
         mandate=mandate, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=context, attestation=raw_attestation, idempotency_key="op-restart-replay-smoke",
-        tenant_id="redis-restart-smoke-tenant",
+        tenant_id="redis-restart-smoke-tenant", agent=_agent("redis-restart-smoke-tenant", "agent/payments-bot"),
     )
 
     # ---- Simulated restart: destroy every instance-A Python object. ----
@@ -213,7 +221,7 @@ async def main() -> int:
     replay = await service_b.execute_with_mandate(
         mandate=mandate, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=context, attestation=raw_attestation, idempotency_key="op-restart-replay-smoke",
-        tenant_id="redis-restart-smoke-tenant",
+        tenant_id="redis-restart-smoke-tenant", agent=_agent("redis-restart-smoke-tenant", "agent/payments-bot"),
     )
 
     print(f"instance A first use:      status={first.status}  decision={first.decision}  ({first.reason})")

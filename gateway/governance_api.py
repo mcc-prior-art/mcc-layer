@@ -15,11 +15,21 @@ Mandate routes are mounted here; approval routes are added by
 from __future__ import annotations
 
 import os
+import secrets
 from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from .agent_identity import (
+    AGENT_IDENTITY_LEGACY,
+    AGENT_IDENTITY_STRICT,
+    AgentCredentialConfigError,
+    AgentCredentialRegistry,
+    AgentIdentityError,
+    agent_identity_mode_from_env,
+    evaluate_identity_error,
+)
 from .governance_service import GovernanceService
 
 
@@ -180,15 +190,24 @@ class ChallengeCreateResponse(_Strict):
     resource: Optional[str] = None
     payload_hash: str
     policy_hash: Optional[str] = None
+    # F1: the server-resolved tenant and authenticated principal the challenge
+    # is bound to; evaluators sign votes for exactly this tenant.
+    tenant_id: Optional[str] = None
+    principal_id: Optional[str] = None
     issued_at: int
     expires_at: int
 
 
 # ---------- auth boundaries ----------
 
-def _auth_deps(api_key: str, operator_key: Optional[str], tenant_id: str):
+def _auth_deps(api_key: str, operator_key: Optional[str], tenant_id: str, agent_credentials=None):
     def require_agent(x_api_key: str = Header(...)) -> str:
-        if x_api_key != api_key:
+        # Non-identity agent routes: the mount's shared tenant key, or any
+        # registered, active per-agent credential OF THIS TENANT (V05).
+        if agent_credentials is not None and agent_credentials.resolve(
+                x_api_key, tenant_id=tenant_id).agent is not None:
+            return tenant_id
+        if not secrets.compare_digest(str(x_api_key), str(api_key)):
             raise HTTPException(status_code=401, detail="INVALID_API_KEY")
         # PR #105: the trusted tenant/security-domain identity for THIS
         # gateway instance's agent credential -- resolved server-side at
@@ -208,9 +227,88 @@ def _auth_deps(api_key: str, operator_key: Optional[str], tenant_id: str):
     return require_agent, require_operator
 
 
+def _identity_dep(api_key: str, tenant_id: str, agent_credentials, mode: str):
+    """V05 (part 2): authentication for IDENTITY routes (mandate execution,
+    approval creation, approval execution). Returns ``(tenant_id, agent)``,
+    where ``agent`` is the trusted AuthenticatedAgent resolved from a
+    registered credential -- never from the body, a mandate, or any header
+    other than X-API-Key. Fail closed:
+
+    * registered + active + this tenant  -> the agent
+    * registered but revoked             -> 403 AGENT_CREDENTIAL_REVOKED
+    * registered for another tenant      -> 403 AGENT_CREDENTIAL_WRONG_TENANT
+    * the mount's shared tenant key      -> 403 AGENT_IDENTITY_REQUIRED
+      (strict); ``(tenant, None)`` only in explicit legacy-shared-key mode
+    * anything else                      -> 401 INVALID_API_KEY
+    """
+    def require_identity(x_api_key: str = Header(...)):
+        if agent_credentials is not None:
+            res = agent_credentials.resolve(x_api_key, tenant_id=tenant_id)
+            if res.agent is not None:
+                return tenant_id, res.agent
+            if res.error in ("AGENT_CREDENTIAL_REVOKED", "AGENT_CREDENTIAL_WRONG_TENANT"):
+                raise HTTPException(status_code=403, detail=res.error)
+        if secrets.compare_digest(str(x_api_key), str(api_key)):
+            if mode == AGENT_IDENTITY_LEGACY:
+                return tenant_id, None
+            raise HTTPException(status_code=403, detail=(
+                "AGENT_IDENTITY_REQUIRED: the shared tenant credential cannot assert an "
+                "agent identity; use a registered per-agent credential"))
+        raise HTTPException(status_code=401, detail="INVALID_API_KEY")
+
+    return require_identity
+
+
+def evaluate_caller_dep(api_key: str, tenant_id: str, agent_credentials):
+    """F1: authentication for decision routes (``POST /evaluate``). Returns
+    ``(tenant_id, agent)``: the trusted AuthenticatedAgent for a registered,
+    active credential of this tenant, or ``(tenant_id, None)`` for the
+    mount's shared tenant (service) key. A revoked / other-tenant credential
+    is 403; anything else 401. Pair with :func:`enforce_evaluate_identity`."""
+    def evaluate_caller(x_api_key: str = Header(...)):
+        if agent_credentials is not None:
+            res = agent_credentials.resolve(x_api_key, tenant_id=tenant_id)
+            if res.agent is not None:
+                return tenant_id, res.agent
+            if res.error in ("AGENT_CREDENTIAL_REVOKED", "AGENT_CREDENTIAL_WRONG_TENANT"):
+                raise HTTPException(status_code=403, detail=res.error)
+        if secrets.compare_digest(str(x_api_key), str(api_key)):
+            return tenant_id, None
+        raise HTTPException(status_code=401, detail="INVALID_API_KEY")
+
+    return evaluate_caller
+
+
+def enforce_evaluate_identity(caller, *, identity, actor_id, mode, agent_credentials) -> None:
+    """F1: refuse (403) a decision request naming an identity the caller may
+    not evaluate as -- BEFORE any authority evaluation, audit record or token
+    (see :func:`gateway.agent_identity.evaluate_identity_error`)."""
+    tenant, agent = caller
+    err = evaluate_identity_error(agent, tenant_id=tenant, identities=(identity, actor_id),
+                                  mode=mode, registry=agent_credentials)
+    if err is not None:
+        raise HTTPException(status_code=403, detail=err)
+
+
+def _mount_identity(service, api_key, tenant_id, agent_credentials):
+    registry = agent_credentials if agent_credentials is not None else getattr(
+        service, "agent_credentials", None)
+    mode = getattr(service, "agent_identity_mode", AGENT_IDENTITY_STRICT)
+    if registry is not None and registry.resolve(api_key, tenant_id=tenant_id).error \
+            != "AGENT_CREDENTIAL_UNKNOWN":
+        # V05: one secret must not mean both "any agent of this tenant" and
+        # "this particular agent". Ambiguous configuration fails closed.
+        raise AgentCredentialConfigError(
+            "the mount's shared tenant key is also registered as a per-agent credential; "
+            "give each agent its own key")
+    return registry, _identity_dep(api_key, tenant_id, registry, mode)
+
+
 def mount_mandate_routes(app: FastAPI, service: GovernanceService, *, api_key: str,
-                         operator_key: Optional[str], tenant_id: str = "pilot") -> None:
-    require_agent, require_operator = _auth_deps(api_key, operator_key, tenant_id)
+                         operator_key: Optional[str], tenant_id: str = "pilot",
+                         agent_credentials=None) -> None:
+    registry, require_identity = _mount_identity(service, api_key, tenant_id, agent_credentials)
+    require_agent, require_operator = _auth_deps(api_key, operator_key, tenant_id, registry)
 
     @app.post("/mandates/verify", response_model=MandateVerifyResponse)
     async def verify_mandate(req: MandateVerifyRequest, _=Depends(require_agent)):
@@ -223,11 +321,13 @@ def mount_mandate_routes(app: FastAPI, service: GovernanceService, *, api_key: s
                                      constraints=out.constraints)
 
     @app.post("/mandates/execute", response_model=ExecuteResponse)
-    async def execute_with_mandate(req: MandateExecuteRequest, tenant: str = Depends(require_agent)):
+    async def execute_with_mandate(req: MandateExecuteRequest, ident=Depends(require_identity)):
+        tenant, agent = ident
         out = await service.execute_with_mandate(
             mandate=req.mandate, actor=req.actor, action=req.action, resource=req.resource,
             context=req.context, transaction_id=req.transaction_id,
             idempotency_key=req.idempotency_key, tenant_id=tenant, attestation=req.attestation,
+            agent=agent,
         )
         return ExecuteResponse(status=out.status, reason=out.reason, decision=out.decision,
                                audit_ref=out.audit_ref, execution=out.execution)
@@ -257,14 +357,17 @@ def mount_mandate_routes(app: FastAPI, service: GovernanceService, *, api_key: s
 
 
 def mount_approval_routes(app: FastAPI, service: GovernanceService, *, api_key: str,
-                          operator_key: Optional[str], tenant_id: str = "pilot") -> None:
+                          operator_key: Optional[str], tenant_id: str = "pilot",
+                          agent_credentials=None) -> None:
     """ESCALATE approval endpoints. Operators approve/deny/invalidate; agents
     create requests and execute the approved single-use mandate. Human approval
     never executes — it only mints bounded authority."""
-    require_agent, require_operator = _auth_deps(api_key, operator_key, tenant_id)
+    registry, require_identity = _mount_identity(service, api_key, tenant_id, agent_credentials)
+    require_agent, require_operator = _auth_deps(api_key, operator_key, tenant_id, registry)
 
     @app.post("/approvals", response_model=ApprovalCreateResponse)
-    async def create_approval(req: ApprovalCreateRequest, tenant: str = Depends(require_agent)):
+    async def create_approval(req: ApprovalCreateRequest, ident=Depends(require_identity)):
+        tenant, agent = ident
         from mcc_core.authority import constraint_errors
         bad = constraint_errors(req.constraints)
         if bad:
@@ -275,18 +378,24 @@ def mount_approval_routes(app: FastAPI, service: GovernanceService, *, api_key: 
         if bad_action:
             # R4: a controlled rejection before any record exists.
             raise HTTPException(status_code=422, detail="INVALID_ACTION_NAME: " + bad_action)
-        out = await service.create_approval(
-            actor=req.actor, action=req.action, resource=req.resource,
-            transaction_id=req.transaction_id, policy_hash=req.policy_hash,
-            payload_hash=req.payload_hash, constraints=req.constraints,
-            ttl_seconds=req.ttl_seconds,
-            # The trusted, server-resolved tenant identity (never a request
-            # field -- see require_agent) and the exact requested payload,
-            # stored verbatim so a configured independent AuthorityPolicy can
-            # evaluate the real operation at approve()-time rather than
-            # trusting anything supplied there.
-            tenant_id=tenant, payload=req.payload,
-        )
+        try:
+            out = await service.create_approval(
+                actor=req.actor, action=req.action, resource=req.resource,
+                transaction_id=req.transaction_id, policy_hash=req.policy_hash,
+                payload_hash=req.payload_hash, constraints=req.constraints,
+                ttl_seconds=req.ttl_seconds,
+                # The trusted, server-resolved tenant identity (never a request
+                # field -- see require_agent) and the exact requested payload,
+                # stored verbatim so a configured independent AuthorityPolicy can
+                # evaluate the real operation at approve()-time rather than
+                # trusting anything supplied there.
+                tenant_id=tenant, payload=req.payload,
+                # V05: the trusted, individually authenticated agent. It may only
+                # request approval for itself.
+                agent=agent,
+            )
+        except AgentIdentityError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
         return ApprovalCreateResponse(**out)
 
     @app.get("/approvals/{request_id}", response_model=ApprovalStatusResponse)
@@ -319,7 +428,8 @@ def mount_approval_routes(app: FastAPI, service: GovernanceService, *, api_key: 
 
     @app.post("/approvals/{request_id}/execute", response_model=ExecuteResponse)
     async def execute_with_approval(request_id: str, req: ApprovalExecuteRequest,
-                                    tenant: str = Depends(require_agent)):
+                                    ident=Depends(require_identity)):
+        tenant, agent = ident
         # R1 defense-in-depth: the path names the approval being exercised;
         # the presented mandate must be the one minted for exactly it. (The
         # authoritative binding is enforced in GovernanceService /
@@ -335,41 +445,57 @@ def mount_approval_routes(app: FastAPI, service: GovernanceService, *, api_key: 
             mandate=req.mandate, actor=req.actor, action=req.action, resource=req.resource,
             context=req.context, transaction_id=req.transaction_id,
             idempotency_key=req.idempotency_key, tenant_id=tenant, attestation=req.attestation,
+            agent=agent,
         )
         return ExecuteResponse(status=out.status, reason=out.reason, decision=out.decision,
                                audit_ref=out.audit_ref, execution=out.execution)
 
 
 def mount_consensus_routes(app: FastAPI, service: GovernanceService, *, api_key: str,
-                           operator_key: Optional[str], tenant_id: str = "pilot") -> None:
+                           operator_key: Optional[str], tenant_id: str = "pilot",
+                           agent_credentials=None) -> None:
     """Multi-Context Consensus endpoints: N-of-M independent signed evaluators
     must agree before a token is issued. /verify is a pure check; /execute runs
-    the one coordinator path only on consensus."""
-    require_agent, _ = _auth_deps(api_key, operator_key, tenant_id)
+    the one coordinator path only on consensus.
+
+    F1: all three are IDENTITY routes (like /mandates/execute). Each requires
+    a registered per-agent credential of this tenant whose principal equals
+    the requested ``actor``; the mount's shared tenant key grants no agent
+    identity here (403 AGENT_IDENTITY_REQUIRED in strict mode). Before F1 any
+    tenant key could name any ``actor`` and execute under consensus as that
+    agent (verified on PR #135 head 2761f4f)."""
+    _registry, require_identity = _mount_identity(service, api_key, tenant_id, agent_credentials)
 
     @app.post("/consensus/challenge", response_model=ChallengeCreateResponse)
-    async def create_challenge(req: ChallengeCreateRequest, _=Depends(require_agent)):
+    async def create_challenge(req: ChallengeCreateRequest, ident=Depends(require_identity)):
+        tenant, agent = ident
         out = await service.issue_challenge(
             action=req.action, actor=req.actor, resource=req.resource,
-            context=req.context, ttl_seconds=req.ttl_seconds)
+            context=req.context, ttl_seconds=req.ttl_seconds, tenant_id=tenant, agent=agent)
         if "error" in out:
-            raise HTTPException(status_code=409, detail=out["error"])
+            raise HTTPException(status_code=403 if out.get("identity_error") else 409,
+                                detail=out["error"])
         return ChallengeCreateResponse(**out)
 
     @app.post("/consensus/verify", response_model=ConsensusVerifyResponse)
-    async def verify_consensus(req: ConsensusVerifyRequest, _=Depends(require_agent)):
+    async def verify_consensus(req: ConsensusVerifyRequest, ident=Depends(require_identity)):
+        tenant, agent = ident
         out = await service.verify_consensus(votes=req.votes, action=req.action,
                                              context=req.context, actor=req.actor,
-                                             resource=req.resource, nonce=req.nonce)
+                                             resource=req.resource, nonce=req.nonce,
+                                             tenant_id=tenant, agent=agent)
+        if out.pop("identity_error", False):
+            raise HTTPException(status_code=403, detail=out["reason"])
         return ConsensusVerifyResponse(**out)
 
     @app.post("/consensus/execute", response_model=ExecuteResponse)
-    async def execute_with_consensus(req: ConsensusExecuteRequest, tenant: str = Depends(require_agent)):
+    async def execute_with_consensus(req: ConsensusExecuteRequest, ident=Depends(require_identity)):
+        tenant, agent = ident
         out = await service.execute_with_consensus(
             votes=req.votes, actor=req.actor, action=req.action, resource=req.resource,
             context=req.context, transaction_id=req.transaction_id,
             idempotency_key=req.idempotency_key, tenant_id=tenant, nonce=req.nonce,
-            challenge_id=req.challenge_id, attestation=req.attestation)
+            challenge_id=req.challenge_id, attestation=req.attestation, agent=agent)
         return ExecuteResponse(status=out.status, reason=out.reason, decision=out.decision,
                                audit_ref=out.audit_ref, execution=out.execution)
 
@@ -526,6 +652,8 @@ def build_governance_service(
         challenges=challenge_service, require_challenge=require_challenge,
         time_source=time_source,
         max_dispatch_staleness_seconds=_max_dispatch_staleness_from_env(env),
+        # F1: votes + challenges re-checked against the token's signed tenant.
+        bind_consensus_tenant=True,
     )
 
     if upstream is None:
@@ -539,7 +667,7 @@ def build_governance_service(
         else:
             upstream = _httpx_upstream(base) if base else None
 
-    return GovernanceService(
+    service = GovernanceService(
         engine=engine, coordinator=coordinator, trust_set=trust_set,
         revocation_registry=revocation, approvals=approvals,
         profiles=ProfileRegistry.default_pilot(), upstream=upstream, policy_hash=policy_hash,
@@ -547,7 +675,16 @@ def build_governance_service(
         pre_execution_control=pre_execution_control, time_source=time_source,
         delegation_verifier=delegation_verifier,
         mandate_tenant_mode=_mandate_tenant_mode_from_env(env),
+        agent_identity_mode=agent_identity_mode_from_env(env),
     )
+    # V05 (part 2): the per-agent credential registry (server-side only).
+    # A malformed or ambiguous file refuses startup. Unset -> no registered
+    # agents: in strict mode every identity route then fails closed (403),
+    # while non-identity routes keep working with the shared tenant key.
+    creds_path = env.get("MCC_AGENT_CREDENTIALS_CONFIG", "").strip()
+    service.agent_credentials = (AgentCredentialRegistry.from_file(creds_path)
+                                 if creds_path else AgentCredentialRegistry())
+    return service
 
 
 def _mandate_tenant_mode_from_env(env) -> str:

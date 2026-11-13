@@ -93,6 +93,7 @@ class EnforcementCoordinator:
         require_challenge: bool = False,
         time_source: Optional[TrustedTimeSource] = None,
         max_dispatch_staleness_seconds: Optional[float] = None,
+        bind_consensus_tenant: bool = False,
     ) -> None:
         self.gate = gate
         self.idempotency = idempotency
@@ -164,6 +165,12 @@ class EnforcementCoordinator:
         # expired, reused, or mismatched challenges fail closed before execution.
         self.challenges = challenges
         self.require_challenge = require_challenge
+        # F1: a tenant-bound coordinator (the gateway's) re-verifies consensus
+        # votes against the token's signed tenant_id and consumes a challenge
+        # only if it was issued for that tenant. Unscoped embedders (egress
+        # proxy runtime, MVP interceptor, main.py) keep the previous binding;
+        # a tenant-scoped challenge is never consumable by them.
+        self.bind_consensus_tenant = bind_consensus_tenant
         # Optional actuation-time revocation re-check: a mandate revoked between
         # decision and execution must still block. When configured, a token that
         # names a mandate_id is checked here; REVOKED or an unconfirmable status
@@ -280,7 +287,9 @@ class EnforcementCoordinator:
                 result = self.consensus_verifier.verify(
                     consensus_votes, action=action, payload=payload,
                     actor=token.get("actor_id"), resource=token.get("resource_id"),
-                    policy_hash=token.get("policy_hash"), nonce=token.get("nonce"), now=trusted_now)
+                    policy_hash=token.get("policy_hash"), nonce=token.get("nonce"), now=trusted_now,
+                    **({"tenant_id": token.get("tenant_id") or ""}
+                       if self.bind_consensus_tenant else {}))
             if result is None or result.verdict != Verdict.ALLOW:
                 reason = ("consensus required: " +
                           (result.reason if result is not None else
@@ -310,6 +319,7 @@ class EnforcementCoordinator:
                 policy_hash=token.get("policy_hash"),
                 nonce=token.get("nonce"),
                 now=trusted_now,
+                **({"tenant_id": token.get("tenant_id")} if self.bind_consensus_tenant else {}),
             )
             if not consumed.ok:
                 reason = f"challenge {challenge_id} not consumable: {consumed.reason}"

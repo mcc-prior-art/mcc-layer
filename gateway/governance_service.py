@@ -42,9 +42,17 @@ from mcc_core import (
     hash_payload,
 )
 from mcc_core.action_name import action_name_error, validate_action_name
+from mcc_core.challenge import challenge_identity_error
 from mcc_core.mandate import MANDATE_TENANT_MODES, MANDATE_TENANT_STRICT, mandate_tenant_error
 from mcc_core.trusted_time import LocalTimeSource, TimeTrustError, TrustedTimeSource
 
+from .agent_identity import (
+    AGENT_IDENTITY_MODES,
+    AGENT_IDENTITY_STRICT,
+    AgentIdentityError,
+    AuthenticatedAgent,
+    agent_identity_error,
+)
 from .pre_execution_control import PreExecutionControl
 
 
@@ -127,6 +135,7 @@ class GovernanceService:
         time_source: Optional[TrustedTimeSource] = None,
         delegation_verifier: Optional[DelegationVerifier] = None,
         mandate_tenant_mode: Optional[str] = None,
+        agent_identity_mode: Optional[str] = None,
     ) -> None:
         # V05: tenant isolation for signed mandates is the default. Legacy
         # (unscoped) acceptance of mandates without a tenant_id claim is an
@@ -143,6 +152,27 @@ class GovernanceService:
                 f"mandate_tenant_mode must be one of {MANDATE_TENANT_MODES}, "
                 f"got {mandate_tenant_mode!r}")
         self.mandate_tenant_mode = mandate_tenant_mode
+        # V05 (part 2): per-agent identity. Strict by default: every
+        # mandate-consuming execution and approval creation needs the
+        # TRUSTED AuthenticatedAgent the HTTP layer resolved from a
+        # registered credential, and that principal must equal ``actor``
+        # and the signed mandate subject. An omitted agent is REFUSED -- it
+        # never falls back to trusting ``actor``. ``legacy-shared-key`` is
+        # an explicit server-side choice only (this argument, or
+        # MCC_AGENT_IDENTITY_MODE when omitted); it provides no protection
+        # against within-tenant impersonation.
+        if agent_identity_mode is None:
+            import os
+            agent_identity_mode = (os.environ.get("MCC_AGENT_IDENTITY_MODE", "").strip()
+                                   or AGENT_IDENTITY_STRICT)
+        if agent_identity_mode not in AGENT_IDENTITY_MODES:
+            raise ValueError(
+                f"agent_identity_mode must be one of {AGENT_IDENTITY_MODES}, "
+                f"got {agent_identity_mode!r}")
+        self.agent_identity_mode = agent_identity_mode
+        # The HTTP mounts read the credential registry from here when none is
+        # passed explicitly (build_governance_service sets it).
+        self.agent_credentials = None
         self.engine = engine
         self.coordinator = coordinator
         # Clock-skew hardening (PR #122 round 3): the SINGLE source of
@@ -160,6 +190,11 @@ class GovernanceService:
         # Optional consensus-challenge service: the gateway issues the one-time
         # nonce (None = disabled; clients would supply their own nonce instead).
         self.challenge_service = challenge_service
+        # F1: this service issues tenant-scoped challenges and verifies
+        # tenant-bound votes, so ITS coordinator must re-check both against
+        # the token's signed tenant (never weaker than the service).
+        if hasattr(coordinator, "bind_consensus_tenant"):
+            coordinator.bind_consensus_tenant = True
         self.trust_set = trust_set
         self.revocation_registry = revocation_registry
         self.approvals = approvals
@@ -278,10 +313,19 @@ class GovernanceService:
         headers: Optional[Dict[str, str]] = None,
         extra_auth_claims: Optional[Dict[str, Any]] = None,
         attestation: Optional[Dict[str, Any]] = None,
+        agent: Optional[AuthenticatedAgent] = None,
     ) -> ExecOutcome:
         rejected = _invalid_action(action)
         if rejected is not None:
             return rejected
+        # V05 (part 2): the authenticated principal must BE the actor -- in
+        # this tenant -- before anything else happens: no authority
+        # evaluation, token, approval consumption, reservation, audit record
+        # or actuator call.
+        identity_error = agent_identity_error(agent, tenant_id=tenant_id, actor=actor,
+                                              mode=self.agent_identity_mode)
+        if identity_error is not None:
+            return ExecOutcome("BLOCKED", identity_error, decision="DENY")
         try:
             now = await self._now()
         except TimeTrustError as exc:
@@ -318,6 +362,15 @@ class GovernanceService:
                                             mode=self.mandate_tenant_mode)
         if tenant_error is not None:
             return ExecOutcome("BLOCKED", tenant_error, decision="DENY")
+
+        # V05 (part 2): and the SIGNED subject -- issuer-asserted, read only
+        # after the signature verified -- must be that same authenticated
+        # principal. (authorize() already compared subject with actor; this
+        # binds the mandate to the authenticated agent directly.)
+        if agent is not None and (not isinstance(mandate, dict)
+                                  or mandate.get("subject") != agent.principal_id):
+            return ExecOutcome("BLOCKED", "AGENT_SUBJECT_MISMATCH: mandate not issued to "
+                               "the authenticated agent", decision="DENY")
 
         # The EXACT final payload that would be executable -- after any
         # mandate CONSTRAIN rewrite. This, not the pre-constraint proposal, is
@@ -582,10 +635,19 @@ class GovernanceService:
         payload_hash: Optional[str] = None, constraints: Optional[Dict[str, Any]] = None,
         ttl_seconds: Optional[int] = None, tenant_id: Optional[str] = None,
         payload: Optional[Dict[str, Any]] = None,
+        agent: Optional[AuthenticatedAgent] = None,
     ) -> Dict[str, Any]:
         # R4: an approval for an unusable action name is refused up front
         # (ActionNameError, a ValueError) -- it could never execute.
         validate_action_name(action)
+        # V05 (part 2): an agent may only request approval for ITSELF. The
+        # approval mandate is minted for the request's actor, so letting a
+        # caller name another agent here would let it obtain authority in
+        # that agent's name upstream of execution. Refused before any record.
+        identity_error = agent_identity_error(agent, tenant_id=tenant_id, actor=actor,
+                                              mode=self.agent_identity_mode)
+        if identity_error is not None:
+            raise AgentIdentityError(identity_error)
         request_id = await self.approvals.request(
             actor=actor, action=action, resource=resource, transaction_id=transaction_id,
             policy_hash=policy_hash, payload_hash=payload_hash, constraints=constraints,
@@ -622,6 +684,7 @@ class GovernanceService:
         context: Dict[str, Any], transaction_id: Optional[str] = None,
         idempotency_key: Optional[str] = None, tenant_id: Optional[str] = None,
         attestation: Optional[Dict[str, Any]] = None,
+        agent: Optional[AuthenticatedAgent] = None,
     ) -> ExecOutcome:
         """Re-evaluate against the approval mandate and execute through the one
         coordinator path. The token carries the approval_id, so the coordinator
@@ -637,7 +700,7 @@ class GovernanceService:
             context=context, transaction_id=transaction_id, idempotency_key=idempotency_key,
             tenant_id=tenant_id,
             extra_auth_claims={"approval_id": approval_id} if approval_id else None,
-            attestation=attestation,
+            attestation=attestation, agent=agent,
         )
 
     # ---- consensus challenge (gateway-issued one-time nonce) ----
@@ -645,10 +708,24 @@ class GovernanceService:
     async def issue_challenge(
         self, *, action: str, actor: str, resource: Optional[str],
         context: Dict[str, Any], ttl_seconds: Optional[int] = None,
+        tenant_id: Optional[str] = None, agent: Optional[AuthenticatedAgent] = None,
     ) -> Dict[str, Any]:
         """Mint a single-use consensus challenge bound to the canonical payload.
         The gateway owns the nonce; the client receives it (plus the binding) to
-        gather evaluator votes. Fail-closed if no challenge service / profile."""
+        gather evaluator votes. Fail-closed if no challenge service / profile.
+
+        F1: the authenticated agent must BE ``actor`` in ``tenant_id`` (strict
+        mode refuses an omitted agent). The challenge records the
+        server-resolved tenant and the authenticated principal, so it cannot
+        later be used by, or on behalf of, anyone else. Refused before any
+        challenge is created (``{"error", "identity_error": True}``)."""
+        identity_error = agent_identity_error(agent, tenant_id=tenant_id, actor=actor,
+                                              mode=self.agent_identity_mode)
+        if identity_error is not None:
+            return {"error": identity_error, "identity_error": True}
+        if _missing_tenant_id(tenant_id):
+            return {"error": "MISSING_TENANT_IDENTITY: a valid, non-empty tenant_id is "
+                             "required to issue a consensus challenge; fail-closed"}
         if self.challenge_service is None:
             return {"error": "challenge service not configured; fail-closed"}
         profile = self.profiles.for_action(action)          # may raise ProfileError
@@ -656,22 +733,35 @@ class GovernanceService:
         rec = await self.challenge_service.issue(
             action=action, actor=actor, resource=resource,
             payload_hash=hash_payload(canonical), policy_hash=self.policy_hash,
-            ttl_seconds=ttl_seconds,
+            ttl_seconds=ttl_seconds, tenant_id=tenant_id,
+            principal_id=agent.principal_id if agent is not None else None,
         )
         return rec.public_view()
 
     # ---- multi-context consensus (pre-token authority step) ----
 
-    def _consensus(self, votes, action, context, actor, resource=None, nonce=None, now=None):
+    def _consensus(self, votes, action, context, actor, resource=None, nonce=None, now=None,
+                   tenant_id=None):
         profile = self.profiles.for_action(action)
         canonical = profile.canonical_payload(context)  # may raise ProfileError
+        # F1: every counted vote must be signed for this server-resolved
+        # tenant ("" when absent -> no vote can match; fail-closed).
         result = self.consensus_verifier.verify(
             votes, action=action, payload=canonical, actor=actor,
-            resource=resource, policy_hash=self.policy_hash, nonce=nonce, now=now)
+            resource=resource, policy_hash=self.policy_hash, nonce=nonce, now=now,
+            tenant_id=tenant_id or "")
         return profile, canonical, result
 
     async def verify_consensus(self, *, votes, action, context, actor,
-                               resource=None, nonce=None) -> Dict[str, Any]:
+                               resource=None, nonce=None, tenant_id: Optional[str] = None,
+                               agent: Optional[AuthenticatedAgent] = None) -> Dict[str, Any]:
+        # F1: a consensus check FOR ``actor`` is an identity-bound request.
+        identity_error = agent_identity_error(agent, tenant_id=tenant_id, actor=actor,
+                                              mode=self.agent_identity_mode)
+        if identity_error is not None:
+            return {"verdict": "DENY", "reason": identity_error, "agreement": 0,
+                    "threshold": 0, "evaluators": [], "rejected_votes": 0,
+                    "identity_error": True}
         if self.consensus_verifier is None:
             return {"verdict": "DENY", "reason": "consensus not configured; fail-closed",
                     "agreement": 0, "threshold": 0, "evaluators": [], "rejected_votes": 0}
@@ -681,7 +771,8 @@ class GovernanceService:
             return {"verdict": "DENY", "reason": f"{exc.reason}: {exc.detail}", "agreement": 0,
                     "threshold": 0, "evaluators": [], "rejected_votes": 0}
         try:
-            _, _, result = self._consensus(votes, action, context, actor, resource, nonce, now)
+            _, _, result = self._consensus(votes, action, context, actor, resource, nonce, now,
+                                           tenant_id=tenant_id)
         except ProfileError as exc:
             return {"verdict": "DENY", "reason": f"PROFILE_ERROR: {exc}", "agreement": 0,
                     "threshold": 0, "evaluators": [], "rejected_votes": 0}
@@ -695,6 +786,7 @@ class GovernanceService:
         idempotency_key: Optional[str] = None, tenant_id: Optional[str] = None,
         nonce: Optional[str] = None,
         challenge_id: Optional[str] = None, attestation: Optional[Dict[str, Any]] = None,
+        agent: Optional[AuthenticatedAgent] = None,
     ) -> ExecOutcome:
         """Require N-of-M independent signed evaluators to agree — bound to the
         exact action/actor/payload/resource/policy/nonce — then issue the token
@@ -705,10 +797,20 @@ class GovernanceService:
         When ``challenge_id`` is supplied, the gateway-issued challenge is the
         authority for the nonce: it is resolved and re-bound here (unknown or
         expired -> fail closed), its nonce is used to verify the votes and issue
-        the token, and the coordinator consumes it single-use before actuation."""
+        the token, and the coordinator consumes it single-use before actuation.
+
+        F1: the authenticated agent must BE ``actor`` in ``tenant_id`` (strict
+        mode refuses an omitted agent); the challenge must have been issued for
+        this tenant and principal; every counted vote must be signed for this
+        tenant. All refused before any token, challenge consumption,
+        reservation, audit record or actuator call."""
         rejected = _invalid_action(action)
         if rejected is not None:
             return rejected
+        identity_error = agent_identity_error(agent, tenant_id=tenant_id, actor=actor,
+                                              mode=self.agent_identity_mode)
+        if identity_error is not None:
+            return ExecOutcome("BLOCKED", identity_error, decision="DENY")
         try:
             now = await self._now()
         except TimeTrustError as exc:
@@ -727,12 +829,22 @@ class GovernanceService:
             if rec.state != "ISSUED":
                 return ExecOutcome("BLOCKED", f"CHALLENGE_NOT_OPEN: state {rec.state}",
                                    decision="DENY")
+            # F1: only the tenant + principal the challenge was issued to.
+            binding_error = challenge_identity_error(
+                rec, tenant_id=tenant_id, actor=actor,
+                principal_id=agent.principal_id if agent is not None else None)
+            if binding_error is None and agent is not None and rec.principal_id is None:
+                binding_error = ("CHALLENGE_PRINCIPAL_MISMATCH: challenge was not issued to an "
+                                 "individually authenticated agent")
+            if binding_error is not None:
+                return ExecOutcome("BLOCKED", binding_error, decision="DENY")
             # The gateway-issued nonce is authoritative; ignore any client nonce.
             nonce = rec.nonce
             auth_claims_extra["challenge_id"] = challenge_id
 
         try:
-            profile, canonical, result = self._consensus(votes, action, context, actor, resource, nonce, now)
+            profile, canonical, result = self._consensus(votes, action, context, actor, resource,
+                                                         nonce, now, tenant_id=tenant_id)
         except ProfileError as exc:
             return ExecOutcome("BLOCKED", f"PROFILE_ERROR: {exc}", decision="DENY")
         if not result.ok:

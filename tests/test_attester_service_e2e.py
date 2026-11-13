@@ -59,6 +59,9 @@ from mcc_core import (
     SigningKey,
     issue_mandate,
 )
+# V05 (part 2): direct library callers pass the trusted authenticated agent
+# explicitly (library trust boundary; see docs/AGENT_IDENTITY.md).
+from tests._agent_credentials import agent as _agent  # noqa: E402
 
 run = asyncio.run
 
@@ -200,7 +203,7 @@ def test_i_e2e_independent_attester_through_real_governance_to_execution():
     out = run(service.execute_with_mandate(
         mandate=_mandate(mandate_key), actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=context, attestation=raw_attestation, idempotency_key="op-i-e2e-1",
-        tenant_id="tenant-attester-e2e",
+        tenant_id="tenant-attester-e2e", agent=_agent("tenant-attester-e2e", "agent/payments-bot")
     ))
     assert out.status == "EXECUTED", out.reason
     assert out.decision == "ALLOW"
@@ -223,7 +226,7 @@ def test_i_e2e_audit_pre_actuation_record_carries_the_evidence_digest():
     out = run(service.execute_with_mandate(
         mandate=_mandate(mandate_key), actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=context, attestation=raw_attestation, idempotency_key="op-i-e2e-2",
-        tenant_id="tenant-attester-e2e",
+        tenant_id="tenant-attester-e2e", agent=_agent("tenant-attester-e2e", "agent/payments-bot")
     ))
     assert out.status == "EXECUTED"
 
@@ -248,7 +251,7 @@ def test_i_e2e_missing_required_attestation_still_blocks():
     out = run(service.execute_with_mandate(
         mandate=_mandate(mandate_key), actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=_raw_context(), attestation=None,
-        tenant_id="tenant-attester-e2e",
+        tenant_id="tenant-attester-e2e", agent=_agent("tenant-attester-e2e", "agent/payments-bot")
     ))
     assert out.status == "BLOCKED"
 
@@ -398,7 +401,7 @@ def test_r5_restart_replay_rejected_after_full_object_teardown_and_rebuild():
     first = run(service_a.execute_with_mandate(
         mandate=mandate, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=context, attestation=raw_attestation, idempotency_key="op-r5-restart",
-        tenant_id="tenant-attester-e2e",
+        tenant_id="tenant-attester-e2e", agent=_agent("tenant-attester-e2e", "agent/payments-bot")
     ))
     assert first.status == "EXECUTED", first.reason
 
@@ -410,7 +413,7 @@ def test_r5_restart_replay_rejected_after_full_object_teardown_and_rebuild():
     replay = run(service_b.execute_with_mandate(
         mandate=mandate, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         context=context, attestation=raw_attestation, idempotency_key="op-r5-restart",
-        tenant_id="tenant-attester-e2e",
+        tenant_id="tenant-attester-e2e", agent=_agent("tenant-attester-e2e", "agent/payments-bot")
     ))
     assert replay.status != "EXECUTED", "replay was EXECUTED after simulated restart"
     assert replay.status == "BLOCKED"

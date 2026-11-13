@@ -22,6 +22,10 @@ Key invariants (all fail closed):
   at issuance; execution must match all of them and the nonce.
 * A challenge is single-use: consumed atomically exactly once. Unknown, expired,
   reused, or mismatched challenges are rejected.
+* F1: a challenge issued by the gateway records the server-resolved
+  ``tenant_id`` and the individually authenticated ``principal_id``. A
+  tenant-scoped challenge is consumable only by a consumer bound to the same
+  tenant (never by an unscoped one), and only for the recorded principal.
 * The store enforces the TTL (Redis key expiry; in-memory logical expiry).
 
 State machine::
@@ -70,6 +74,11 @@ class ChallengeRecord:
     state: str
     issued_at: int
     expires_at: int
+    # F1: server-resolved tenant + authenticated principal (None only for
+    # unscoped library callers; the gateway always sets the tenant, and the
+    # principal whenever the request was individually authenticated).
+    tenant_id: Optional[str] = None
+    principal_id: Optional[str] = None
 
     def is_expired(self, now: int) -> bool:
         return now >= self.expires_at
@@ -86,6 +95,8 @@ class ChallengeRecord:
             "resource": self.resource,
             "payload_hash": self.payload_hash,
             "policy_hash": self.policy_hash,
+            "tenant_id": self.tenant_id,
+            "principal_id": self.principal_id,
             "issued_at": self.issued_at,
             "expires_at": self.expires_at,
         }
@@ -217,6 +228,35 @@ class RedisChallengeRegistry:
         return ConsumeResult(True, "consumed", rec.state)
 
 
+_UNSCOPED = object()
+
+
+def challenge_identity_error(rec: Any, *, tenant_id: Any = _UNSCOPED,
+                             actor: Any = None, principal_id: Any = None) -> Optional[str]:
+    """F1: why ``rec`` may NOT be used by this consumer, or ``None``. Pure and
+    total (never raises).
+
+    * ``tenant_id`` passed -> must equal the recorded tenant (a record without
+      a tenant does not match a tenant-bound consumer).
+    * ``tenant_id`` not passed (unscoped consumer) -> the record must not be
+      tenant-scoped.
+    * a recorded principal must equal ``actor`` (when given) and
+      ``principal_id`` (when given)."""
+    rec_tenant = getattr(rec, "tenant_id", None)
+    rec_principal = getattr(rec, "principal_id", None)
+    if tenant_id is _UNSCOPED:
+        if rec_tenant is not None:
+            return "CHALLENGE_TENANT_MISMATCH: tenant-scoped challenge; unscoped consumer"
+    elif rec_tenant != tenant_id:
+        return "CHALLENGE_TENANT_MISMATCH: challenge not issued for this tenant"
+    if rec_principal is not None:
+        if actor is not None and rec_principal != actor:
+            return "CHALLENGE_PRINCIPAL_MISMATCH: challenge not issued for this principal"
+        if principal_id is not None and rec_principal != principal_id:
+            return "CHALLENGE_PRINCIPAL_MISMATCH: challenge not issued for this principal"
+    return None
+
+
 class ChallengeConfigError(Exception):
     """Raised when the challenge backend is misconfigured (fail-closed start)."""
 
@@ -270,7 +310,8 @@ class ChallengeService:
     async def issue(
         self, *, action: str, actor: str, resource: Optional[str], payload_hash: str,
         policy_hash: Optional[str] = None, ttl_seconds: Optional[int] = None,
-        now: Optional[int] = None,
+        now: Optional[int] = None, tenant_id: Optional[str] = None,
+        principal_id: Optional[str] = None,
     ) -> ChallengeRecord:
         # Fail closed on untrusted time: this challenge's own issued_at/
         # expires_at window is the foundation every later expiry check
@@ -283,6 +324,7 @@ class ChallengeService:
             action=action, action_hash=hash_action(action), actor=actor, resource=resource,
             payload_hash=payload_hash, policy_hash=policy_hash,
             state=ChallengeState.ISSUED.value, issued_at=now, expires_at=now + ttl,
+            tenant_id=tenant_id, principal_id=principal_id,
         )
         if not await self.registry.create(rec):
             raise RuntimeError("could not create consensus challenge")
@@ -302,12 +344,19 @@ class ChallengeService:
     async def consume(
         self, challenge_id: str, *, action: str, actor: str, resource: Optional[str],
         payload_hash: str, policy_hash: Optional[str], nonce: str, now: Optional[int] = None,
+        tenant_id: Any = _UNSCOPED,
     ) -> ConsumeResult:
         """Atomically consume the challenge, binding to the exact operation.
         Unknown, expired, reused, or any mismatched dimension fails closed
         *before* the single-use consume is attempted -- as does an
         untrusted clock: this is the exact boundary at which the
-        challenge's one-time nonce is spent."""
+        challenge's one-time nonce is spent.
+
+        F1: ``tenant_id``, when passed (a tenant-bound consumer such as the
+        gateway's coordinator), must equal the challenge's recorded tenant.
+        A challenge that records a tenant is never consumable by an unscoped
+        consumer (``tenant_id`` not passed). A recorded ``principal_id`` must
+        equal ``actor``."""
         try:
             now = await self._resolve_now(now)
         except TimeTrustError as exc:
@@ -328,4 +377,7 @@ class ChallengeService:
             return ConsumeResult(False, "POLICY_MISMATCH: challenge not for this policy")
         if rec.nonce != nonce:
             return ConsumeResult(False, "NONCE_MISMATCH: challenge nonce does not match")
+        binding_error = challenge_identity_error(rec, tenant_id=tenant_id, actor=actor)
+        if binding_error is not None:
+            return ConsumeResult(False, binding_error)
         return await self.registry.consume(challenge_id, now=now)

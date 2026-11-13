@@ -118,11 +118,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0 if result.execution_status != "ERROR" else 1
 
     # Self-contained in-process governed stack (default).
-    from ._localstack import API_KEY, OPERATOR_KEY, LocalGovernedStack
+    from ._localstack import OPERATOR_KEY, LocalGovernedStack, agent_key
     stack = LocalGovernedStack()
     try:
+        # V05/F1: the agent presents its OWN credential (the scenario actor's).
         result = _run_against(
-            stack.base_url, API_KEY, OPERATOR_KEY, authorizer=stack.authorizer(),
+            stack.base_url, agent_key(_SCENARIOS[args.scenario]["actor_id"]), OPERATOR_KEY,
+            authorizer=stack.authorizer(),
             scenario=args.scenario, request=args.request, operator_kind=args.operator)
     finally:
         stack.close()

@@ -58,7 +58,7 @@ def _load_adapter(name: str):
 
 def _challenge(sut, proposal) -> Dict[str, Any]:
     r = httpx.post(
-        f"{sut.gateway_url}/consensus/challenge", headers={"x-api-key": sut.api_key},
+        f"{sut.gateway_url}/consensus/challenge", headers={"x-api-key": sut.agent_key(proposal.actor_id)},
         json={"actor": proposal.actor_id, "action": proposal.action, "resource": proposal.resource,
               "context": proposal.payload}, timeout=10.0,
     )
@@ -68,7 +68,7 @@ def _challenge(sut, proposal) -> Dict[str, Any]:
 
 def _execute(sut, proposal, challenge: Dict[str, Any], votes) -> Dict[str, Any]:
     r = httpx.post(
-        f"{sut.gateway_url}/consensus/execute", headers={"x-api-key": sut.api_key},
+        f"{sut.gateway_url}/consensus/execute", headers={"x-api-key": sut.agent_key(proposal.actor_id)},
         json={"votes": votes, "actor": proposal.actor_id, "action": proposal.action,
               "resource": proposal.resource, "context": proposal.payload,
               "challenge_id": challenge["challenge_id"], "nonce": challenge["nonce"],

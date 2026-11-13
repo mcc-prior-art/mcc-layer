@@ -64,7 +64,7 @@ def _router_into(gateway):
     public mcc_client boundary and returns the canonical Decision. No governance is
     performed here — the gateway decides."""
     def router(proposal: mp.CanonicalProposal):
-        client = _client(gateway.base_url)
+        client = _client(gateway.base_url, proposal.actor)   # F1: the actor's own key
         return client.evaluate(actor_id=proposal.actor, action=proposal.action,
                                resource=proposal.resource, payload=proposal.payload)
     return router

@@ -63,9 +63,41 @@ upstream is never reached.
   enforced the same way on `/approvals/{id}/execute`.
 - **Legacy:** `MCC_MANDATE_TENANT_MODE=legacy-unscoped` (server-side only)
   accepts claimless mandates and provides no tenant isolation for them.
-- **Limit:** within one tenant, the agent API key authenticates the tenant, not
-  an individual agent. `actor` is still a caller-supplied value checked
-  against the mandate's `subject`.
+- **Per-agent identity (V05 part 2):** see *Agent identity* below. Within a
+  tenant, `actor` must equal the agent authenticated by its own credential,
+  and the signed `subject` must equal that agent.
+
+**Agent identity (V05 part 2 remediation; `docs/AGENT_IDENTITY.md`).**
+- **Identity routes:** `POST /mandates/execute`, `POST /approvals`,
+  `POST /approvals/{id}/execute`. `X-API-Key` must be a registered, active
+  per-agent credential of this tenant (`MCC_AGENT_CREDENTIALS_CONFIG`); it
+  resolves server-side to `(tenant_id, principal_id)`.
+- **Refusals before any token, reservation, approval consumption, audit
+  `pre_actuation` or upstream call:**
+  - unknown, missing or empty key → `401 INVALID_API_KEY`;
+  - revoked credential → `403 AGENT_CREDENTIAL_REVOKED`;
+  - another tenant's credential → `403 AGENT_CREDENTIAL_WRONG_TENANT`;
+  - the mount's shared tenant key → `403 AGENT_IDENTITY_REQUIRED`;
+  - `actor` ≠ authenticated principal → `BLOCKED AGENT_PRINCIPAL_MISMATCH`;
+  - signed `subject` ≠ authenticated principal → `BLOCKED SUBJECT_MISMATCH`
+    (or `AGENT_SUBJECT_MISMATCH`);
+  - `POST /approvals` for another actor → `403`, no record created.
+- **Consensus routes (F1)** — `/consensus/challenge`, `/consensus/verify`,
+  `/consensus/execute` — are identity routes with the same codes as above
+  (`actor` must be the authenticated principal). The challenge records the
+  tenant + principal; votes must carry the tenant. See
+  `docs/AGENT_IDENTITY.md`, "F1".
+- **`/evaluate` (F1):** an agent credential evaluates only as its own
+  principal (`403 AGENT_PRINCIPAL_MISMATCH`); the shared key may not evaluate
+  as a registered agent (`403 AGENT_IDENTITY_REQUIRED`, strict).
+- **Other agent routes** (`/mandates/verify`, `GET /approvals/{id}`,
+  `GET /verify`) accept the shared key or a registered credential; they
+  assert no agent identity.
+- **Legacy:** `MCC_AGENT_IDENTITY_MODE=legacy-shared-key` (server-side only)
+  accepts the shared key on identity routes with a caller-asserted `actor`.
+  It provides **no protection against within-tenant impersonation**.
+- **Limit:** a credential authenticates whoever presents it. Theft of an
+  agent's own key is not prevented (no proof of possession); rotate/revoke.
 
 **Action names (R4 remediation).** The shipped governed upstreams POST to
 `{base}/{action}`, so `action` must follow the action-name contract in
