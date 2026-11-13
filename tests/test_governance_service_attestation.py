@@ -195,6 +195,7 @@ def _mandate(mandate_key: SigningKey, *, constraints=None):
         action_scope=[ACTION], resource_scope=[RESOURCE],
         constraints=constraints or {}, not_before=now - 10, not_after=now + 3600,
         issued_at=now,
+        tenant_id="tenant-gsa-1",  # V05: strict tenant mode
     )
 
 
@@ -353,6 +354,7 @@ def test_24_unrelated_action_unaffected_by_attestation_requirement():
         mandate_key, issuer="axlogiq/pilot", subject="agent/payments-bot",
         action_scope=["check_balance"], resource_scope=[RESOURCE], constraints={},
         not_before=now - 10, not_after=now + 3600, issued_at=now,
+        tenant_id="tenant-gsa-1",  # V05: strict tenant mode
     )
     out = run(service.execute_with_mandate(
         mandate=mandate, actor="agent/payments-bot", action="check_balance", resource=RESOURCE,
@@ -532,6 +534,7 @@ def test_15_approval_path_delegation_retains_evidence_binding():
     request_id = run(service.create_approval(
         actor="agent/payments-bot", action=ACTION, resource=RESOURCE,
         payload_hash=hash_payload(canonical), payload=canonical,
+        tenant_id="tenant-gsa-1",  # V05: requested in the tenant it executes in
     ))["request_id"]
     approved_mandate = run(service.approve(request_id))
     assert approved_mandate is not None
@@ -645,6 +648,7 @@ def test_action_with_no_requirement_issues_a_token_with_no_evidence_digest():
         mandate_key, issuer="axlogiq/pilot", subject="agent/payments-bot",
         action_scope=["check_balance"], resource_scope=[RESOURCE], constraints={},
         not_before=now - 10, not_after=now + 3600, issued_at=now,
+        tenant_id="tenant-gsa-1",  # V05: strict tenant mode
     )
     out = run(service.execute_with_mandate(
         mandate=mandate, actor="agent/payments-bot", action="check_balance", resource=RESOURCE,

@@ -79,6 +79,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--mandate-subject", default="pilot-demo-partner")
+    # V05: a strict-tenant gateway (the default) only accepts a mandate whose
+    # signed tenant_id equals its own MCC_GATEWAY_TENANT_ID ("pilot" unless set).
+    ap.add_argument("--tenant-id", default="pilot",
+                    help="the pilot gateway's MCC_GATEWAY_TENANT_ID (default: pilot)")
     args = ap.parse_args()
 
     SECRETS.mkdir(parents=True, exist_ok=True)
@@ -121,6 +125,7 @@ def main() -> int:
         mandate_issuer_key, issuer=DEMO_MANDATE_ISSUER_ID, subject=args.mandate_subject,
         action_scope=[DEMO_ACTION], resource_scope=[DEMO_RESOURCE],
         not_before=now, not_after=now + 30 * 24 * 3600,
+        tenant_id=args.tenant_id,
     )
     (SECRETS / "demo_mandate.json").write_text(json.dumps(demo_mandate, indent=2) + "\n")
 

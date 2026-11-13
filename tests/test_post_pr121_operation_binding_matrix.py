@@ -203,7 +203,9 @@ def test_legacy_record_with_null_payload_hash_fails_closed_through_full_http_pat
         action_hash=__import__("mcc_core").hash_action("generic_op"), resource="res-1",
         transaction_id="txn-1", policy_hash=POLICY, payload_hash=None, constraints={},
         state=ApprovalState.PENDING.value, created_at=0, expires_at=10_000_000_000,
-        tenant_id=None, payload={"amount": 100},
+        # V05: in the mount's (default) tenant, so the null payload_hash -- not a
+        # missing tenant binding -- is the defect this test exercises.
+        tenant_id="pilot", payload={"amount": 100},
     )
     asyncio.run(svc.approvals.registry.create(bypassing))
     mandate = approve(client, "req-legacy-1")

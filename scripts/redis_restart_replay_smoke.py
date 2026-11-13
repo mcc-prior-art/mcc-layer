@@ -183,6 +183,7 @@ async def main() -> int:
         mandate_key, issuer="axlogiq/restart-smoke", subject="agent/payments-bot",
         action_scope=[ACTION], resource_scope=[RESOURCE], constraints={},
         not_before=_now() - 10, not_after=_now() + 3600, issued_at=_now(),
+        tenant_id="redis-restart-smoke-tenant",  # V05: the tenant both instances execute in
     )
 
     # ---- Instance A: first, legitimate use. ----

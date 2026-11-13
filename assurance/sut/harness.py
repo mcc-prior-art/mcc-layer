@@ -32,6 +32,11 @@ import httpx
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FAR_FUTURE = 4_000_000_000
+# V05: the trusted, server-side tenant of the SUT gateway (set explicitly on
+# its process below). Genuine mandates are issued for exactly this tenant,
+# because a strict-tenant gateway refuses any mandate without a matching
+# signed tenant_id.
+SUT_TENANT_ID = "pilot"
 #: The actuator's body.amount CONSTRAIN cap (Workstream F needs a genuine
 #: clampable constraint to attack; the actuator ships with none by default).
 DEFAULT_MAX_AMOUNT = 1000
@@ -183,6 +188,7 @@ class SystemUnderTest:
             action_scope=action_scope, resource_scope=resource_scope,
             constraints=constraints, not_before=not_before, not_after=not_after,
             revocation_required=revocation_required, mandate_id=mandate_id,
+            tenant_id=SUT_TENANT_ID,
         )
 
     def forge_mandate(self, *, subject: str, action_scope: List[str], resource_scope: List[str],
@@ -202,6 +208,8 @@ class SystemUnderTest:
             forger, issuer=issuer_id, subject=subject, action_scope=action_scope,
             resource_scope=resource_scope, constraints=constraints,
             not_before=not_before, not_after=not_after,
+            # Correct tenant, so the ONLY defect is the untrusted signer.
+            tenant_id=SUT_TENANT_ID,
         )
 
     @staticmethod
@@ -618,7 +626,8 @@ def build_system_under_test(*, n_evaluators: int = 3, threshold: int = 3,
                       "not_after": None}],
         }]}, f)
 
-    gateway_extra_env = {"MCC_TRUST_CONFIG": mandate_trust_path}
+    gateway_extra_env = {"MCC_TRUST_CONFIG": mandate_trust_path,
+                         "MCC_GATEWAY_TENANT_ID": SUT_TENANT_ID}
     if not require_consensus:
         # A mandate-authority-only deployment topology (see the
         # require_consensus docstring above): the coordinator's mandatory

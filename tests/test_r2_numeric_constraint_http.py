@@ -155,7 +155,9 @@ class GovGateway:
                              action_scope=[action], resource_scope=list(resource_scope),
                              constraints={"max_amount": 5000} if constraints is None else constraints,
                              not_before=now - 10, not_after=now + 3600, issued_at=now - 10,
-                             policy_hash=POLICY)
+                             policy_hash=POLICY,
+                             # V05: bound to this gateway's mounted tenant (strict tenant mode).
+                             tenant_id="tenant-1")
 
     def mandate_execute(self, context, *, action="send_payment", resource=RESOURCE, mandate=None):
         r = post_json(self.client, "/mandates/execute", AGENT, {

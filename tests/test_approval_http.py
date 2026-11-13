@@ -202,7 +202,11 @@ def test_concurrent_execute_single_winner():
         return await asyncio.gather(*[
             svc.execute_with_approval(mandate=mandate, actor="agent/x", action="generic_op",
                                       resource="res-1", context=CTX, transaction_id="txn-1",
-                                      idempotency_key=f"op-{i}", tenant_id="tenant-1")
+                                      # The approval was created over HTTP under the
+                                      # mount's default tenant "pilot"; V05 binds
+                                      # consumption to that tenant (AX-approved setup
+                                      # change; assertions unchanged).
+                                      idempotency_key=f"op-{i}", tenant_id="pilot")
             for i in range(8)])
 
     outcomes = asyncio.run(race())
@@ -251,7 +255,11 @@ def test_backend_unavailable_blocks_execution():
                             mandate_id="apr-req-x",
                             extra={"approval_id": "req-x", "action_hash": "h",
                                    "transaction_id": "txn-1", "payload_hash": None,
-                                   "single_use": True})
+                                   "single_use": True},
+                            # V05: same tenant as the execution below, so the
+                            # down approval backend -- not a tenant mismatch --
+                            # is what blocks it.
+                            tenant_id="tenant-1")
     svc = GovernanceService(engine=engine, coordinator=coord, trust_set=trust,
                             revocation_registry=InMemoryRevocationRegistry(),
                             approvals=down_approvals, upstream=upstream, policy_hash=POLICY)

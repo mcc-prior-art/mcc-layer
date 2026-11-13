@@ -91,7 +91,8 @@ async def main() -> int:
     # --- cross-instance revocation ---
     m = issue_mandate(DK, issuer="mcc/issuers", subject="agent/x", action_scope=["generic_op"],
                       resource_scope=["res-1"], constraints={}, not_before=1, not_after=FUTURE,
-                      revocation_required=True, mandate_id=f"mdt-{run_id}")
+                      revocation_required=True, mandate_id=f"mdt-{run_id}",
+                      tenant_id="redis-smoke-tenant")  # V05: strict tenant mode
     ok = await a.execute_with_mandate(mandate=m, actor="agent/x", action="generic_op",
                                       resource="res-1", context=ctx, idempotency_key=f"i-{run_id}-1", tenant_id="redis-smoke-tenant")
     await rev_a.revoke(m["mandate_id"])
@@ -106,7 +107,7 @@ async def main() -> int:
     # --- cross-instance single-use approval ---
     rid = await a.create_approval(actor="agent/x", action="generic_op", resource="res-1",
                                   transaction_id=f"t-{run_id}", policy_hash=POLICY,
-                                  payload=ctx)
+                                  payload=ctx, tenant_id="redis-smoke-tenant")  # V05
     mandate = await a.approve(rid["request_id"])
     first = await a.execute_with_approval(mandate=mandate, actor="agent/x", action="generic_op",
                                           resource="res-1", context=ctx, transaction_id=f"t-{run_id}",

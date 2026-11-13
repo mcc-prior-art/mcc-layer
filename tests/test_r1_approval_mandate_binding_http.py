@@ -163,7 +163,9 @@ class Gateway:
         kw = dict(issuer="issuer/treasury", subject=ACTOR, action_scope=[ACTION],
                   resource_scope=[RESOURCE], constraints={"max_amount": 5000},
                   not_before=now - 10, not_after=now + 3600, issued_at=now - 10,
-                  policy_hash=POLICY)
+                  policy_hash=POLICY,
+                  # V05: bound to this gateway's mounted tenant (strict tenant mode).
+                  tenant_id="tenant-1")
         kw.update(overrides)
         return issue_mandate(self.issuer, **kw)
 
@@ -345,7 +347,7 @@ def test_partially_bound_mandate_from_trusted_key_fails_closed(route, drop):
     m = issue_mandate(gw.approver, issuer="mcc/approvals", subject=ACTOR, action_scope=[ACTION],
                       resource_scope=[RESOURCE], not_before=real["nbf"], not_after=real["exp"],
                       issued_at=real["iat"], policy_hash=POLICY, mandate_id=real["mandate_id"],
-                      extra=extra)
+                      extra=extra, tenant_id=real["tenant_id"])  # V05: same tenant as the real one
     out = run_route(gw, route, rid, m)
     assert out["status"] == "BLOCKED", out
     assert gw.calls == []
@@ -359,7 +361,8 @@ def test_mandate_verify_reports_malformed_approval_binding():
     forged_extra = {k: real[k] for k in ("approval_id", "payload_hash", "action_hash", "transaction_id")}
     m = issue_mandate(gw.approver, issuer="mcc/approvals", subject=ACTOR, action_scope=[ACTION],
                       resource_scope=[RESOURCE], not_before=real["nbf"], not_after=real["exp"],
-                      policy_hash=POLICY, extra=forged_extra)
+                      policy_hash=POLICY, extra=forged_extra,
+                      tenant_id=real["tenant_id"])  # V05: same tenant as the real one
     r = gw.client.post("/mandates/verify", headers=AGENT, json={
         "mandate": m, "subject": ACTOR, "action": ACTION, "resource": RESOURCE})
     assert r.status_code == 200 and r.json()["verified"] is False

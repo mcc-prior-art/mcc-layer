@@ -192,6 +192,10 @@ def run_negative_control_scenario() -> Dict[str, Any]:
             mandate_key, issuer="negative-control/mandates", subject="agent/negative-control-bot",
             action_scope=[action], resource_scope=[resource], constraints={},
             not_before=now - 10, not_after=now + 3600, issued_at=now,
+            # V05: bound to the tenant both stacks execute in (below), so the
+            # forged attestation -- not a tenant mismatch -- is what each
+            # stack is tested on.
+            tenant_id="negative-control-tenant",
         )
         return service, mandate, actuation_count
 

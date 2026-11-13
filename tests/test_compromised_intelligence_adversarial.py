@@ -148,6 +148,7 @@ def _mandate(mandate_key: SigningKey):
         mandate_key, issuer="axlogiq/pilot", subject="agent/payments-bot",
         action_scope=[ACTION], resource_scope=[RESOURCE], constraints={},
         not_before=now - 10, not_after=now + 3600, issued_at=now,
+        tenant_id="tenant-adv-1",  # V05: strict tenant mode
     )
 
 
@@ -414,6 +415,7 @@ def test_scenario_12_genuine_attestation_without_valid_mandate_is_blocked():
         other_issuer_key, issuer="axlogiq/pilot", subject="agent/payments-bot",
         action_scope=[ACTION], resource_scope=[RESOURCE], constraints={},
         not_before=_now() - 10, not_after=_now() + 3600, issued_at=_now(),
+        tenant_id="tenant-adv-1",  # V05: strict tenant mode
     )
     out = run(service.execute_with_mandate(
         mandate=forged_mandate, actor="agent/payments-bot", action=ACTION, resource=RESOURCE,

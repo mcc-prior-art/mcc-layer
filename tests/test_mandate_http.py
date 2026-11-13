@@ -73,7 +73,8 @@ def build(upstream_ok=True):
 def mandate(issuer_key, **over):
     kw = dict(issuer="axlogiq", subject="agent/x", action_scope=["generic_op"],
               resource_scope=["res-1"], constraints={}, not_before=PAST,
-              not_after=FUTURE, revocation_required=False)
+              not_after=FUTURE, revocation_required=False,
+              tenant_id="pilot")  # V05: the mount's (default) tenant, strict tenant mode
     kw.update(over)
     return issue_mandate(issuer_key, **kw)
 

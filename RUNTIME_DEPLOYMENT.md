@@ -71,6 +71,7 @@ absent from a gate's trust set is effectively revoked (UNTRUSTED_KEY → deny).
 | `MCC_TRUST_CONFIG` | *(unset)* | path to the multi-issuer trust JSON (public keys only); required in pilot |
 | `MCC_DEPLOYMENT_MODE` | `reference` | `reference`/`enforcement`; `enforcement` refuses `MCC_NONCE_BACKEND=memory`, refuses `MCC_REVOCATION_BACKEND=memory`, and refuses the Attester's `DeterministicTestProvider` — a separate, minimal switch from `MCC_ENV` (see `docs/EXECUTION_AUTHORITY_BOUNDARY.md`'s "Production Trust Hardening Phase 1") |
 | `MCC_ATTESTER_PROVIDER_CLASS` | *(unset)* | dotted import path to the operator's trusted `AssessmentProvider` subclass; required by `python -m mcc_attester_service` when `MCC_DEPLOYMENT_MODE=enforcement` |
+| `MCC_MANDATE_TENANT_MODE` | `strict` | V05: `strict` requires every signed mandate to carry a `tenant_id` equal to `MCC_GATEWAY_TENANT_ID` (missing/empty/malformed/mismatched → BLOCKED). `legacy-unscoped` accepts claimless mandates in any tenant and **provides no tenant isolation** for them (migration only). Any other value refuses startup. See `docs/SIGNED_MANDATES.md` → *Tenant binding* |
 | `MCC_APPROVER_SIGNING_KEY_PATH` | *(empty)* | PEM for the approval signer; empty = ephemeral dev approver key |
 | `MCC_APPROVER_KEY_ID` | `mcc-approver-1` | kid for the approver key |
 | `MCC_UPSTREAM_BASE` | *(unset)* | upstream base URL governed execution forwards to (via the coordinator only) |

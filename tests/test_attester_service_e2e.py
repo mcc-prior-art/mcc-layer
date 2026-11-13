@@ -176,6 +176,7 @@ def _mandate(mandate_key: SigningKey, *, constraints=None):
         action_scope=[ACTION], resource_scope=[RESOURCE],
         constraints=constraints or {}, not_before=now - 10, not_after=now + 3600,
         issued_at=now,
+        tenant_id="tenant-attester-e2e",  # V05: strict tenant mode
     )
 
 
