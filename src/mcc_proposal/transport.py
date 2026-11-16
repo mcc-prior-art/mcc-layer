@@ -86,28 +86,51 @@ class HttpProposalBackend:
 
 class InProcessProposalBackend:
     """Local-development / conformance-suite backend: calls an in-process
-    ``MCCProposalService`` directly, resolving ``credential`` to a tenant via
-    a small map (mirrors ``gateway.proposal_api.tenants_from_env``)."""
+    ``MCCProposalService`` directly. F1b: ``credential`` resolves through
+    the hash-only per-agent registry (``agent_credentials``) to (tenant,
+    principal), exactly as ``gateway.proposal_api.get_principal_dependency``
+    does; the proposal is bound to that principal and its ``actor`` must
+    equal it. A key only in the legacy ``tenants`` map (a shared tenant
+    key) is refused unless ``identity_mode`` is explicitly
+    ``legacy-shared-key``."""
 
-    def __init__(self, *, service: Any, tenants: Dict[str, str]) -> None:
+    def __init__(self, *, service: Any, tenants: Optional[Dict[str, str]] = None,
+                 agent_credentials: Any = None, identity_mode: Optional[str] = None) -> None:
+        import os
+
+        from mcc_core.agent_identity import agent_identity_mode_from_env
         self._service = service
-        self._tenants = tenants
+        self._tenants = dict(tenants or {})
+        self._registry = agent_credentials
+        self._mode = identity_mode or agent_identity_mode_from_env(os.environ)
 
-    def _tenant(self, credential: str) -> str:
+    def _identity(self, credential: str):
+        from mcc_core.agent_identity import AGENT_IDENTITY_LEGACY
+        if self._registry is not None and credential:
+            res = self._registry.authenticate(credential)
+            if res.agent is not None:
+                return res.agent.tenant_id, res.agent.principal_id
+            if res.error == "AGENT_CREDENTIAL_REVOKED":
+                raise ProposalBackendError(res.error)
         tenant = self._tenants.get(credential)
         if not tenant:
             raise ProposalBackendError("INVALID_API_KEY")
-        return tenant
+        if self._mode != AGENT_IDENTITY_LEGACY:
+            raise ProposalBackendError("AGENT_IDENTITY_REQUIRED")
+        return tenant, None
 
     async def submit_proposal(self, *, credential: str, request: Dict[str, Any]) -> Dict[str, Any]:
-        tenant = self._tenant(credential)
-        receipt = await self._service.submit_proposal(tenant_id=tenant, request=request)
+        tenant, principal = self._identity(credential)
+        if principal is not None and isinstance(request, dict) and request.get("actor") != principal:
+            raise ProposalBackendError("AGENT_PRINCIPAL_MISMATCH")
+        receipt = await self._service.submit_proposal(tenant_id=tenant, request=request,
+                                                      principal_id=principal)
         return receipt.to_dict()
 
     async def get_operation_status(self, *, credential: str, logical_operation_id: str) -> Dict[str, Any]:
-        tenant = self._tenant(credential)
+        tenant, principal = self._identity(credential)
         status = await self._service.get_operation_status(
-            tenant_id=tenant, logical_operation_id=logical_operation_id,
+            tenant_id=tenant, logical_operation_id=logical_operation_id, principal_id=principal,
         )
         return status.to_dict()
 

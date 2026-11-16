@@ -33,6 +33,7 @@ from examples.gpt6_astra_reference.mock_github_service import (
 )
 from examples.phase2_live_sandbox.actuator import GitHubSandboxUpstream
 from examples.universal_execution_proof import build_universal_proof_stack
+from tests._agent_credentials import tenant_key_registry as _tenant_key_registry
 from examples.universal_execution_proof.astra_upstream import (
     AstraUpstreamError,
     astra_proposal_to_http_request,
@@ -65,6 +66,9 @@ def _github_stack(mock_github: str, repo: str = "sandbox-owner/sandbox-repo"):
         proposals=proposals, idempotency=idem, nonces=nonces,
         tenants_credentials=CREDS, tenants_authority={"tenant-a": {}},
         upstream=upstream, action=GITHUB_ISSUE_ACTION, audit_log_path=audit_path,
+        # F1b: each key is the Astra reference producer's OWN credential (its
+        # default actor label), not a shared tenant key.
+        agent_credentials=_tenant_key_registry(CREDS, "gpt-6-astra-reference/v1"),
     )
     return SimpleNamespace(proof=proof, client=TestClient(proof.app), repo=repo)
 

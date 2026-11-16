@@ -174,6 +174,7 @@ class EgressRuntime:
             consensus_threshold=settings.consensus_threshold,
             trusted_evaluators=trusted_evaluators,
             authority_policy=authority_policy,
+            tenant_id=settings.tenant_id,
         )
         # The operator-approve/deny capability is a SEPARATE object from
         # ``self.client`` (the proposer-facing surface: evaluate/request_approval/

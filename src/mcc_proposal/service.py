@@ -94,12 +94,26 @@ class MCCProposalService:
 
     # -- submission ---------------------------------------------------- #
 
-    async def submit_proposal(self, *, tenant_id: str, request: Dict[str, Any]) -> ProposalReceiptV1:
+    async def submit_proposal(self, *, tenant_id: str, request: Dict[str, Any],
+                              principal_id: Optional[str] = None) -> ProposalReceiptV1:
         """Register a proposal. Never calls the Gate, the coordinator, the
         signing key, or any actuator/upstream -- this either writes one
-        PROPOSED record or reports why it did not."""
+        PROPOSED record or reports why it did not.
+
+        F1b: ``principal_id`` is the individually authenticated submitter
+        (server-resolved from its credential). When given, the request's
+        ``actor`` must equal it (never proof by itself) and the record is
+        bound to it; only that principal may later execute or read it."""
         if not isinstance(tenant_id, str) or not tenant_id.strip():
             raise ValueError("tenant_id must be a non-empty authenticated identity")
+        if principal_id is not None and (not isinstance(principal_id, str) or not principal_id.strip()):
+            raise ValueError("principal_id must be a non-empty authenticated identity")
+        if principal_id is not None and isinstance(request, dict) and request.get("actor") != principal_id:
+            return ProposalReceiptV1.rejected(
+                logical_operation_id=(request.get("logical_operation_id")
+                                      if isinstance(request.get("logical_operation_id"), str) else "") or "",
+                reason="AGENT_PRINCIPAL_MISMATCH: actor is not the authenticated principal",
+            )
 
         try:
             proposal = ProposalRequestV1.from_dict(request)
@@ -135,7 +149,7 @@ class MCCProposalService:
             result = await self._proposals.register(
                 tenant_id=tenant_id, logical_operation_id=proposal.logical_operation_id,
                 binding=binding, action=proposal.action, resource=proposal.resource,
-                payload=canonical_payload,
+                payload=canonical_payload, principal_id=principal_id,
             )
         except ProposalBackendUnavailable as exc:
             return ProposalReceiptV1.unavailable(
@@ -157,7 +171,8 @@ class MCCProposalService:
 
     # -- status ---------------------------------------------------------- #
 
-    async def get_operation_status(self, *, tenant_id: str, logical_operation_id: str) -> OperationStatusV1:
+    async def get_operation_status(self, *, tenant_id: str, logical_operation_id: str,
+                                   principal_id: Optional[str] = None) -> OperationStatusV1:
         """Read-only. Performs zero state writes and calls no actuator.
 
         Ownership-gated, tenant-scoped precedence (PR #105 -- durable
@@ -211,6 +226,10 @@ class MCCProposalService:
                 detail=f"proposal backend unavailable: {exc}",
             )
         if record is None:
+            return OperationStatusV1.of(logical_operation_id=logical_operation_id, status=OperationStatusValue.NOT_FOUND)
+        if principal_id is not None and getattr(record, "principal_id", None) != principal_id:
+            # F1b: another principal's (or a pre-F1b) operation is
+            # indistinguishable from an absent one -- never disclosed.
             return OperationStatusV1.of(logical_operation_id=logical_operation_id, status=OperationStatusValue.NOT_FOUND)
 
         # 3-5. Ownership established -- the durable execution registry (if

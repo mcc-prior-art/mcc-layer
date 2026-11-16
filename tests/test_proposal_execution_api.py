@@ -89,8 +89,12 @@ def _build_stack(
 def _build_app(*, credential_tenants: Dict[str, str], **stack_kwargs):
     built = _build_stack(**stack_kwargs)
     app = FastAPI()
-    mount_proposal_routes(app, built.svc, tenants=credential_tenants)
-    mount_proposal_execution_routes(app, built.stack.service, tenants=credential_tenants)
+    # F1b: each key is ONE registered principal's own credential (agent/x,
+    # the actor these tests submit as), never a shared tenant key.
+    from tests._agent_credentials import tenant_key_registry
+    creds = tenant_key_registry(credential_tenants, "agent/x")
+    mount_proposal_routes(app, built.svc, agent_credentials=creds)
+    mount_proposal_execution_routes(app, built.stack.service, agent_credentials=creds)
     return SimpleNamespace(app=app, client=TestClient(app), **vars(built))
 
 
@@ -436,7 +440,11 @@ def test_mount_proposal_execution_routes_accepts_no_reconciliation_parameters():
     from gateway.proposal_execution_api import mount_proposal_execution_routes
 
     sig = inspect.signature(mount_proposal_execution_routes)
-    assert set(sig.parameters) == {"app", "service", "tenants"}
+    # F1b added exactly the two identity parameters (per-principal
+    # credentials + mode); still nowhere to put a reconciliation input.
+    assert set(sig.parameters) == {"app", "service", "tenants", "agent_credentials", "identity_mode"}
+    assert not set(sig.parameters) & {"proposals", "idempotency", "authority",
+                                      "verify_external_evidence"}
 
 
 def test_no_reconcile_handler_reachable_through_any_route():

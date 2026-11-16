@@ -20,13 +20,15 @@ from integrations.mcp import (
 from integrations.mcp.http_app import build_mcp_http_app
 from mcc_proposal import InMemoryProposalRegistry, MCCProposalService
 
+from tests._agent_credentials import tenant_key_registry  # noqa: E402  (F1b: per-principal keys)
+
 run = asyncio.run
 
 
 @pytest.fixture()
 def mcp():
     service = MCCProposalService(proposals=InMemoryProposalRegistry())
-    backend = InProcessProposalBackend(service=service, tenants={"k": "tenant-mcp"})
+    backend = InProcessProposalBackend(service=service, agent_credentials=tenant_key_registry({"k": "tenant-mcp"}, "a"))
     return McpProposalServer(backend)
 
 
@@ -129,7 +131,7 @@ def test_invalid_params_missing_logical_operation_id_for_status(mcp):
 
 def test_http_transport_no_credential_header_is_application_error():
     service = MCCProposalService(proposals=InMemoryProposalRegistry())
-    backend = InProcessProposalBackend(service=service, tenants={"k": "t"})
+    backend = InProcessProposalBackend(service=service, agent_credentials=tenant_key_registry({"k": "t"}, "a"))
     client = TestClient(build_mcp_http_app(backend))
     r = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     assert r.json()["result"]["tools"]  # tools/list needs no credential
@@ -143,7 +145,7 @@ def test_http_transport_no_credential_header_is_application_error():
 
 def test_http_transport_health():
     service = MCCProposalService(proposals=InMemoryProposalRegistry())
-    backend = InProcessProposalBackend(service=service, tenants={"k": "t"})
+    backend = InProcessProposalBackend(service=service, agent_credentials=tenant_key_registry({"k": "t"}, "a"))
     client = TestClient(build_mcp_http_app(backend))
     r = client.get("/health")
     assert r.status_code == 200
@@ -163,7 +165,7 @@ def test_http_proposal_backend_real_socket_round_trip():
 
     app = FastAPI()
     service = MCCProposalService(proposals=InMemoryProposalRegistry())
-    mount_proposal_routes(app, service, tenants={"real-key": "tenant-real"})
+    mount_proposal_routes(app, service, agent_credentials=tenant_key_registry({"real-key": "tenant-real"}, "a"))
 
     port = free_port()
     server = DemoServer(app, port)

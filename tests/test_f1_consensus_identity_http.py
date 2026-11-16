@@ -354,7 +354,7 @@ def test_identity_fields_in_body_are_rejected_by_strict_schema(hz, field, value)
     assert _receipts() == 0
 
 
-def test_shared_key_evaluates_only_non_agent_identities(hz):
+def test_shared_key_evaluates_no_identity_in_strict_mode(hz):
     # A registered agent identity: refused for the shared key.
     r = _post(hz, "/evaluate", API_KEY, {"identity": A, "action": ACTION, "context": _payload(_corr())})
     assert r.status_code == 403 and "AGENT_IDENTITY_REQUIRED" in r.json()["detail"]
@@ -365,10 +365,12 @@ def test_shared_key_evaluates_only_non_agent_identities(hz):
     r = _post(hz, "/evaluate", API_KEY, {"identity": "agent/other-unknown-revoked",
                                          "action": ACTION, "context": _payload(_corr())})
     assert r.status_code == 403
-    # Not a registered agent: the tenant service credential still evaluates.
-    ok = _post(hz, "/evaluate", API_KEY, {"identity": "svc/billing", "action": ACTION,
-                                          "context": _payload(_corr())})
-    assert ok.status_code == 200
+    # F1b (AX decision 1): the F1 exception for non-agent identities is
+    # closed -- in strict mode the shared tenant/service credential obtains
+    # NO decision for any identity, registered or not. (F1 asserted 200 here.)
+    r = _post(hz, "/evaluate", API_KEY, {"identity": "svc/billing", "action": ACTION,
+                                         "context": _payload(_corr())})
+    assert r.status_code == 403 and "AGENT_IDENTITY_REQUIRED" in r.json()["detail"]
 
 
 # --------------------------------------------------- the real evaluator quorum
@@ -513,8 +515,10 @@ def test_evaluate_identity_error_is_total():
                                                           identities=(A,), mode=S, registry=reg)
     assert evaluate_identity_error(None, tenant_id=TENANT_ID, identities=(A,),
                                    mode=AGENT_IDENTITY_LEGACY, registry=reg) is None
-    assert evaluate_identity_error(None, tenant_id=TENANT_ID, identities=("svc/x",), mode=S,
-                                   registry=reg) is None
+    # F1b (AX decision 1): strict mode refuses the shared key for an
+    # unregistered identity too (F1 returned None here).
+    assert "IDENTITY_REQUIRED" in evaluate_identity_error(None, tenant_id=TENANT_ID,
+                                                          identities=("svc/x",), mode=S, registry=reg)
     assert "INVALID" in evaluate_identity_error("forged", tenant_id=TENANT_ID, identities=(A,), mode=S)
     assert "MODE" in evaluate_identity_error(me, tenant_id=TENANT_ID, identities=(A,), mode="off")
     assert "INVALID" in evaluate_identity_error(None, tenant_id=TENANT_ID, identities=5, mode=S,
@@ -523,8 +527,10 @@ def test_evaluate_identity_error_is_total():
     class Broken:
         def is_registered_principal(self, *a, **k):
             raise RuntimeError("boom")
-    assert "INVALID" in evaluate_identity_error(None, tenant_id=TENANT_ID, identities=(A,), mode=S,
-                                                registry=Broken())
+    # F1b: the registry is no longer consulted for the shared key -- refused
+    # regardless (F1 answered INVALID via the broken lookup; still not None).
+    assert evaluate_identity_error(None, tenant_id=TENANT_ID, identities=(A,), mode=S,
+                                   registry=Broken()) is not None
 
 
 def test_library_strict_mode_refuses_an_omitted_agent(hz):

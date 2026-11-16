@@ -615,7 +615,7 @@ class ApprovalService:
     async def consume(
         self, request_id: str, *, action_hash: str, transaction_id: Optional[str],
         payload_hash: Optional[str], now: Optional[int] = None,
-        tenant_id: Optional[str] = None,
+        tenant_id: Optional[str] = None, actor_id: Optional[str] = None,
     ) -> ConsumeResult:
         """Atomically consume an APPROVED request, binding to the exact
         operation. Mismatched action/transaction/payload, replay, or a non-
@@ -644,6 +644,15 @@ class ApprovalService:
         # (never the HTTP route), keep their pre-existing behavior.
         if rec.tenant_id is not None and tenant_id is not None and rec.tenant_id != tenant_id:
             return ConsumeResult(False, "TENANT_MISMATCH: approval not for this tenant")
+        # F1b: actor binding. An approval was requested FOR ``rec.actor``; it
+        # is exercised only by a token signed for that same actor (the
+        # coordinator passes the gate-verified token's actor_id). Found by
+        # F1b on the egress runtime: a principal with no mandate executed
+        # under another principal's approved request (same transaction and
+        # payload). Checked before any state change -- the approval stays
+        # usable by its own actor.
+        if actor_id is not None and rec.actor != actor_id:
+            return ConsumeResult(False, "ACTOR_MISMATCH: approval not for this actor")
         # Bind to the exact operation before consuming (approval substitution).
         if rec.action_hash != action_hash:
             return ConsumeResult(False, "ACTION_HASH_MISMATCH: approval not for this action")

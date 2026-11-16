@@ -24,6 +24,7 @@ from typing import Any
 from mcc_sdk import (
     EvaluateRequest,
     EvaluateResponse,
+    MCCConfigurationError,
     MCCContractError,
     MCCGatewayError,
     MCCSDKError,
@@ -62,9 +63,11 @@ class PilotIntegration:
     ) -> None:
         self.config = config
         self._owns_client = client is None
+        self._injected_client = client is not None
         self.client = client or MCCClient(
             base_url=config.gateway_url, timeout=config.timeout_seconds, api_key=config.api_key,
         )
+        self._agent_clients: dict[str, MCCClient] = {}
         self.actuator = actuator or SimulatedActuator()
         self.evidence = evidence or PilotEvidenceCollector(config=config)
 
@@ -89,7 +92,7 @@ class PilotIntegration:
         )
 
         try:
-            decision = self.client.evaluate(request)
+            decision = self._client_for(identity).evaluate(request)
         except MCCTimeoutError:
             self.evidence.record_timeout()
             raise
@@ -130,11 +133,30 @@ class PilotIntegration:
 
         return PilotOutcome(decision=decision, receipt=None, actuated=False)
 
+    def _client_for(self, identity: str) -> MCCClient:
+        """F1b: the client that authenticates AS ``identity``. With
+        ``agent_keys`` configured, each identity uses its own registered
+        credential; an identity without one fails closed (never the shared
+        ``api_key``)."""
+        keys = self.config.agent_keys
+        if self._injected_client or keys is None:
+            return self.client
+        key = keys.get(identity)
+        if key is None:
+            raise MCCConfigurationError(f"no credential configured for identity {identity!r}")
+        if identity not in self._agent_clients:
+            self._agent_clients[identity] = MCCClient(
+                base_url=self.config.gateway_url, timeout=self.config.timeout_seconds, api_key=key)
+        return self._agent_clients[identity]
+
     # -- lifecycle --
 
     def close(self) -> None:
         if self._owns_client:
             self.client.close()
+            for c in self._agent_clients.values():
+                c.close()
+            self._agent_clients.clear()
 
     def __enter__(self) -> PilotIntegration:  # noqa: PYI034 -- avoid a typing_extensions dep for py3.9
         return self

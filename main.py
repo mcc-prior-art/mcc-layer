@@ -225,10 +225,65 @@ class PolicyDecision(BaseModel):
 
 # ---------- Auth ----------
 
-def get_tenant(x_api_key: str = Header(...)) -> Dict[str, str]:
-    if x_api_key != settings.api_key:
-        raise HTTPException(status_code=401, detail="INVALID_API_KEY")
-    return {"tenant": "demo"}
+# F1b: per-principal identity. The tenant AND the principal come from the
+# presented credential (MCC_AGENT_CREDENTIALS_CONFIG, SHA-256 hashes only),
+# never from session_id/body. In strict mode (MCC_AGENT_IDENTITY_MODE, the
+# default) the single MCC_API_KEY is refused (403 AGENT_IDENTITY_REQUIRED):
+# a shared tenant key cannot choose whose decision token is minted. Without
+# a registry, strict mode serves no decisions at all (fail closed). Before
+# F1b any MCC_API_KEY holder chose the token subject via session_id and
+# could read another caller's cached response by reusing its
+# idempotency_key (reproduced on 0315574).
+from mcc_core.agent_identity import (  # noqa: E402
+    AGENT_IDENTITY_LEGACY,
+    agent_identity_mode_from_env,
+    agent_registry_from_env,
+)
+
+IDENTITY_MODE = agent_identity_mode_from_env(os.environ)
+AGENT_CREDENTIALS = agent_registry_from_env(os.environ)   # malformed file -> refuse to start
+if AGENT_CREDENTIALS is not None and AGENT_CREDENTIALS.principals_in_multiple_tenants():
+    # The governance pipeline binds challenges and votes to the actor (the
+    # authenticated principal), not to the tenant; a principal id shared by
+    # two tenants would make that binding ambiguous. Refuse (fail closed).
+    raise RuntimeError("MCC_AGENT_CREDENTIALS_CONFIG registers a principal in more than one "
+                       "tenant; principal ids must be unique for main.py")
+
+
+def get_tenant(x_api_key: str = Header(...)) -> Dict[str, Optional[str]]:
+    """``{"tenant", "principal"}`` of the authenticated caller. ``principal``
+    is ``None`` only for the shared key in explicit legacy mode."""
+    if AGENT_CREDENTIALS is not None:
+        res = AGENT_CREDENTIALS.authenticate(x_api_key)
+        if res.agent is not None:
+            return {"tenant": res.agent.tenant_id, "principal": res.agent.principal_id}
+        if res.error == "AGENT_CREDENTIAL_REVOKED":
+            raise HTTPException(status_code=403, detail=res.error)
+    if x_api_key == settings.api_key:
+        if IDENTITY_MODE == AGENT_IDENTITY_LEGACY:
+            return {"tenant": "demo", "principal": None}
+        raise HTTPException(status_code=403, detail=(
+            "AGENT_IDENTITY_REQUIRED: the shared tenant key cannot obtain decisions; "
+            "authenticate as an individually registered principal"))
+    raise HTTPException(status_code=401, detail="INVALID_API_KEY")
+
+
+def _actor_for(tenant_ctx: Dict[str, Optional[str]], session_id: str) -> str:
+    """F1b: the token subject/actor IS the authenticated principal. The
+    caller's session_id must name that same principal (``agent/<session_id>``)
+    -- it is never proof of identity. Refused (403) before any policy
+    evaluation, audit record, challenge or token. Legacy shared key only:
+    the pre-F1b caller-asserted ``agent/<session_id>``."""
+    claimed = f"agent/{session_id}"
+    principal = tenant_ctx.get("principal")
+    if principal is None:
+        if IDENTITY_MODE == AGENT_IDENTITY_LEGACY:
+            return claimed
+        raise HTTPException(status_code=403, detail="AGENT_IDENTITY_REQUIRED; fail-closed")
+    if claimed != principal:
+        raise HTTPException(status_code=403, detail=(
+            "AGENT_PRINCIPAL_MISMATCH: session_id does not name the authenticated principal"))
+    return principal
 
 
 # ---------- OPA Adapter ----------
@@ -731,11 +786,16 @@ class MCC:
                 self._idem_cache.pop(next(iter(self._idem_cache)))
         self._idem_cache[key] = (time.time() + settings.token_ttl_seconds, result)
 
-    async def evaluate(self, tenant: str, req: EvaluateRequest) -> EvaluateResponse:
+    async def evaluate(self, tenant: str, req: EvaluateRequest,
+                       actor: Optional[str] = None) -> EvaluateResponse:
         trace_id = self._trace(req.session_id)
+        actor = actor or f"agent/{req.session_id}"
+        # F1b: the response cache is per (tenant, PRINCIPAL, key) -- a cached
+        # decision token is never served to another principal.
+        idem_cache_key = f"{tenant}:{actor}:{req.idempotency_key}"
 
         if req.idempotency_key:
-            cached = self._idem_get(f"{tenant}:{req.idempotency_key}")
+            cached = self._idem_get(idem_cache_key)
             if cached is not None:
                 return cached
 
@@ -796,7 +856,7 @@ class MCC:
                 # Any failure fails closed -> DENY (no verified decision, no
                 # execution).
                 ok, token, gov_reason, quorum_evidence = await self.governance.decide(
-                    actor=f"agent/{req.session_id}",
+                    actor=actor,
                     action=req.intent,
                     resource=req.resource,
                     args=req.args,
@@ -838,7 +898,7 @@ class MCC:
                         raise RuntimeError("decision engine unavailable")
                     decision_token = self.engine.issue_token(
                         verdict=policy_decision.decision.value,
-                        subject=f"agent/{req.session_id}",
+                        subject=actor,
                         action=req.intent,
                         payload=req.args,
                         constraints=policy_decision.constraints,
@@ -882,7 +942,7 @@ class MCC:
         )
 
         if req.idempotency_key:
-            self._idem_put(f"{tenant}:{req.idempotency_key}", result)
+            self._idem_put(idem_cache_key, result)
 
         DECISIONS.labels(decision=result.decision.value).inc()
 
@@ -897,14 +957,15 @@ class MCC:
 
         return result
 
-    async def issue_challenge(self, tenant: str, req: ChallengeRequest) -> ChallengeResponse:
+    async def issue_challenge(self, tenant: str, req: ChallengeRequest,
+                              actor: Optional[str] = None) -> ChallengeResponse:
         if self.governance is None:
             raise HTTPException(
                 status_code=409,
                 detail="governance layer not configured; challenge unavailable",
             )
         rec = await self.governance.issue_challenge(
-            actor=f"agent/{req.session_id}", action=req.intent,
+            actor=actor or f"agent/{req.session_id}", action=req.intent,
             resource=req.resource, args=req.args,
         )
         view = rec.public_view()
@@ -947,7 +1008,8 @@ async def evaluate_challenge(req: ChallengeRequest, tenant_ctx: Dict[str, str] =
     # Phase A — Propose / Challenge: the gateway issues the one-time, nonce-bound
     # challenge for this exact (actor, action, resource, payload, policy). The
     # client gathers evaluator votes bound to it, then calls POST /evaluate.
-    return await mcc.issue_challenge(tenant_ctx["tenant"], req)
+    actor = _actor_for(tenant_ctx, req.session_id)       # F1b: before any challenge
+    return await mcc.issue_challenge(tenant_ctx["tenant"], req, actor=actor)
 
 
 @app.post("/evaluate", response_model=EvaluateResponse)
@@ -956,8 +1018,9 @@ async def evaluate(req: EvaluateRequest, tenant_ctx: Dict[str, str] = Depends(ge
     # N-of-M quorum over cryptographically verified evaluator votes from distinct
     # trusted evaluator identities -> ExecutionGate -> nonce consume -> challenge
     # consume -> hash-chain audit. Fail-closed throughout.
+    actor = _actor_for(tenant_ctx, req.session_id)       # F1b: before policy/audit/token
     with LATENCY.time():
-        return await mcc.evaluate(tenant_ctx["tenant"], req)
+        return await mcc.evaluate(tenant_ctx["tenant"], req, actor=actor)
 
 
 @app.get("/health")

@@ -120,23 +120,74 @@ def get_tenant_dependency(tenants: Dict[str, str]):
     return get_tenant
 
 
+def get_principal_dependency(tenants: Optional[Dict[str, str]] = None, agent_credentials: Any = None,
+                             identity_mode: Optional[str] = None):
+    """F1b: authentication for the proposal + execution routes. Returns
+    ``(tenant_id, principal_id)`` resolved SERVER-SIDE from ``X-Api-Key``:
+
+    * a registered, active per-agent credential (``agent_credentials``,
+      the hash-only registry; multi-tenant -- the credential names its own
+      tenant) -> ``(its tenant, its principal)``;
+    * a revoked credential -> 403;
+    * a key that is only in the legacy ``tenants`` map (a shared tenant key)
+      -> 403 ``AGENT_IDENTITY_REQUIRED`` in strict mode (the default);
+      ``(tenant, None)`` only in explicit ``legacy-shared-key`` mode;
+    * anything else -> 401 (never 422; see ``get_tenant_dependency``).
+
+    Before F1b any key of a tenant could submit a proposal naming any
+    ``actor`` and execute/read ANY of the tenant's operations by id
+    (reproduced on 0315574: agent B executed agent A's operation)."""
+    from mcc_core.agent_identity import AGENT_IDENTITY_LEGACY, agent_identity_mode_from_env
+    mode = identity_mode or agent_identity_mode_from_env(os.environ)
+    tenants = dict(tenants or {})
+
+    def get_principal(x_api_key: Optional[str] = Header(default=None)):
+        if not x_api_key:
+            raise HTTPException(status_code=401, detail="INVALID_API_KEY")
+        if agent_credentials is not None:
+            res = agent_credentials.authenticate(x_api_key)
+            if res.agent is not None:
+                return res.agent.tenant_id, res.agent.principal_id
+            if res.error == "AGENT_CREDENTIAL_REVOKED":
+                raise HTTPException(status_code=403, detail=res.error)
+        tenant = tenants.get(x_api_key)
+        if tenant:
+            if mode == AGENT_IDENTITY_LEGACY:
+                return tenant, None
+            raise HTTPException(status_code=403, detail=(
+                "AGENT_IDENTITY_REQUIRED: a shared tenant key cannot act as an agent; use a "
+                "registered per-agent credential"))
+        raise HTTPException(status_code=401, detail="INVALID_API_KEY")
+
+    return get_principal
+
+
 def mount_proposal_routes(
-    app: FastAPI, service: MCCProposalService, *, tenants: Dict[str, str],
+    app: FastAPI, service: MCCProposalService, *, tenants: Optional[Dict[str, str]] = None,
+    agent_credentials: Any = None, identity_mode: Optional[str] = None,
 ) -> None:
     """Mount the two Phase-1 proposal endpoints onto an existing FastAPI app.
-    ``tenants`` maps an authenticated API key to the tenant/security-domain
-    identity that scopes every proposal — this identity is never taken from
-    the request body."""
 
-    get_tenant = get_tenant_dependency(tenants)
+    F1b: the tenant AND the submitting principal come from the credential
+    (``agent_credentials``, see :func:`get_principal_dependency`) -- never
+    from the request body. ``actor`` must equal the authenticated principal
+    (403 otherwise, before anything is recorded), the record is bound to
+    that principal, and only that principal can read its status. ``tenants``
+    (shared tenant keys) is honoured only in explicit legacy mode."""
+
+    get_principal = get_principal_dependency(tenants, agent_credentials, identity_mode)
 
     @app.post("/v1/proposals")
     async def submit_proposal(
         body: ProposalRequestBody,
         request: Request,
-        tenant: str = Depends(get_tenant),
+        ident=Depends(get_principal),
     ) -> Dict[str, Any]:
+        tenant, principal = ident
         await _check_body_size(request)
+        if principal is not None and body.actor != principal:
+            raise HTTPException(status_code=403, detail=(
+                "AGENT_PRINCIPAL_MISMATCH: actor is not the authenticated principal"))
         receipt = await service.submit_proposal(
             tenant_id=tenant,
             request={
@@ -146,20 +197,22 @@ def mount_proposal_routes(
                 "resource": body.resource,
                 "payload": body.payload,
             },
+            principal_id=principal,
         )
         return receipt.to_dict()
 
     @app.get("/v1/operations/{logical_operation_id}")
     async def get_operation_status(
-        logical_operation_id: str, tenant: str = Depends(get_tenant),
+        logical_operation_id: str, ident=Depends(get_principal),
     ) -> Dict[str, Any]:
+        tenant, principal = ident
         status = await service.get_operation_status(
-            tenant_id=tenant, logical_operation_id=logical_operation_id,
+            tenant_id=tenant, logical_operation_id=logical_operation_id, principal_id=principal,
         )
         return status.to_dict()
 
 
 __all__ = [
     "mount_proposal_routes", "tenants_from_env", "ProposalTenantConfigError",
-    "ProposalRequestBody", "get_tenant_dependency",
+    "ProposalRequestBody", "get_tenant_dependency", "get_principal_dependency",
 ]

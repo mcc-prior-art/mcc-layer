@@ -167,7 +167,7 @@ def test_liveness_distinct_from_readiness():
 
 def test_correlation_propagates_to_response_header_and_audit():
     hz = EgressHarness()
-    r = hz.client.post("/v1/http/execute", headers=hz.H, json={
+    r = hz.client.post("/v1/http/execute", headers={"x-api-key": hz.key_for("agent/egress")}, json={  # F1b: own key
         "method": "POST", "url": hz.url("/charge"), "body": {"amount": 1000},
         "actor": "agent/egress", "resource": "acct-1", "correlation_id": "req-trace-1"})
     # round 1 (consensus required) still carries the correlation id back.
@@ -177,7 +177,7 @@ def test_correlation_propagates_to_response_header_and_audit():
 
 def test_malformed_correlation_id_rejected_by_api():
     hz = EgressHarness()
-    r = hz.client.post("/v1/http/execute", headers=hz.H, json={
+    r = hz.client.post("/v1/http/execute", headers={"x-api-key": hz.key_for("agent/egress")}, json={  # F1b: own key
         "method": "POST", "url": hz.url("/charge"), "body": {"amount": 1},
         "actor": "agent/egress", "correlation_id": "bad id with spaces"})
     assert r.status_code == 400 and r.json()["error_code"] == "INVALID_CORRELATION_ID"

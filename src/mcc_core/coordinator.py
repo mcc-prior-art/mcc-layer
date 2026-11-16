@@ -361,6 +361,8 @@ class EnforcementCoordinator:
                 # V05: the signed, gate-verified tenant (validated non-empty
                 # above), so an approval is consumed only within its own tenant.
                 tenant_id=tenant_id,
+                # F1b: ... and only by the actor it was requested for.
+                actor_id=token.get("actor_id"),
             )
             if not consumed.ok:
                 reason = f"approval {approval_id} not consumable: {consumed.reason}"

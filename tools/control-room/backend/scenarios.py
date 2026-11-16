@@ -87,8 +87,9 @@ class ScenarioResult:
 def client_for(rt: DemoRuntime, actor: Optional[str] = None) -> MCCGatewayClient:
     # V05 part 2 + F1: an agent acting as ``actor`` presents its OWN
     # credential -- required on /approvals, /consensus/* and the execute
-    # routes, and for /evaluate as a registered agent. Only an identity that
-    # is not a registered agent is evaluated with the shared tenant key.
+    # routes, and for /evaluate. F1b: the shared tenant key obtains no
+    # /evaluate decision for ANY identity -- an unregistered identity falls
+    # back to it only to be refused (403) by the gateway, never authorized.
     key = rt.agent_keys.get(actor) if actor else None
     key = key or rt.api_key
     return MCCGatewayClient(rt.gateway_url, api_key=key, operator_key=rt.operator_key)

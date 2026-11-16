@@ -409,7 +409,9 @@ def test_13_observe_mode_creates_evidence_no_side_effect(asut):
 def test_14_legacy_evaluate_only_pilot_remains_compatible(asut):
     from mcc_sdk import EvaluateRequest, MCCClient
 
-    with MCCClient(base_url=asut.gateway_url, api_key=asut.api_key) as client:
+    # F1b: the evaluating identity presents its OWN registered credential
+    # (a strict Gateway refuses the shared tenant key on /evaluate).
+    with MCCClient(base_url=asut.gateway_url, api_key=asut.sut.agent_key("agent/payments-bot")) as client:
         resp = client.evaluate(EvaluateRequest(
             # The identity/action/context combination already proven to
             # produce ALLOW under the Gateway's default pilot policy (see

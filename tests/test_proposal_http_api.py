@@ -47,7 +47,10 @@ def test_tenants_from_env_non_string_values_rejected():
 def _build_app(tenants):
     app = FastAPI()
     service = MCCProposalService(proposals=InMemoryProposalRegistry())
-    mount_proposal_routes(app, service, tenants=tenants)
+    # F1b: each key is ONE registered principal's own credential ("a", the
+    # actor these tests submit as), never a shared tenant key.
+    from tests._agent_credentials import tenant_key_registry
+    mount_proposal_routes(app, service, agent_credentials=tenant_key_registry(tenants, "a"))
     return app, service
 
 
@@ -147,13 +150,33 @@ def real_gateway_app(monkeypatch):
         "MCC_GATEWAY_AUDIT_LOG_PATH",
         os.path.join(tempfile.mkdtemp(prefix="mcc-proposal-http-test-"), "audit.jsonl"),
     )
-    monkeypatch.setenv("MCC_PROPOSAL_TENANTS", json.dumps({"tenant-a-key": "tenant-a", "tenant-b-key": "tenant-b"}))
+    # F1b: per-principal credentials (agent/notify-bot in tenant-a and in
+    # tenant-b) via the gateway's hash-only registry, not MCC_PROPOSAL_TENANTS.
+    reg_path = os.path.join(tempfile.mkdtemp(prefix="mcc-proposal-http-agents-"), "agents.json")
+    from mcc_core.agent_identity import hash_agent_key
+    with open(reg_path, "w", encoding="utf-8") as f:
+        json.dump({"agents": [
+            {"credential_id": "c-a", "tenant_id": "tenant-a", "principal_id": "agent/notify-bot",
+             "key_sha256": hash_agent_key("tenant-a-key"), "status": "active"},
+            {"credential_id": "c-b", "tenant_id": "tenant-b", "principal_id": "agent/notify-bot",
+             "key_sha256": hash_agent_key("tenant-b-key"), "status": "active"}]}, f)
+    monkeypatch.setenv("MCC_AGENT_CREDENTIALS_CONFIG", reg_path)
     import importlib
     import sys
 
-    sys.modules.pop("gateway.app", None)
+    import gateway as _gateway_pkg
+    original = sys.modules.pop("gateway.app", None)
     module = importlib.import_module("gateway.app")
-    return module
+    try:
+        yield module
+    finally:
+        # F1b: never leave the re-imported app (with this test's registry)
+        # behind for later tests that use the module-level gateway.app.
+        if original is not None:
+            sys.modules["gateway.app"] = original
+            _gateway_pkg.app = original
+        else:
+            sys.modules.pop("gateway.app", None)
 
 
 def test_real_gateway_app_proposal_endpoints_end_to_end(real_gateway_app):

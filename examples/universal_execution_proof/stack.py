@@ -22,7 +22,7 @@ non-GitHub actuator-neutrality proof.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import FastAPI
 
@@ -53,6 +53,8 @@ def build_universal_proof_stack(
     action: str,
     audit_log_path: str,
     without_mandate: Verdict = Verdict.DENY,
+    agent_credentials: Any = None,
+    identity_mode: Optional[str] = None,
 ) -> UniversalProofStack:
     """One shared set of durable registries feeds BOTH the Phase 1
     proposal/status service and the Phase 2 execution bridge -- there is
@@ -67,8 +69,12 @@ def build_universal_proof_stack(
     proposal_service = MCCProposalService(proposals=proposals, durable_execution_state=idempotency)
 
     app = FastAPI(title="MCC Universal Execution Authority Proof")
-    mount_proposal_routes(app, proposal_service, tenants=tenants_credentials)
-    mount_proposal_execution_routes(app, exec_stack.service, tenants=tenants_credentials)
+    # F1b: per-principal credentials (hash-only registry); shared tenant keys
+    # (tenants_credentials) only in explicit legacy-shared-key mode.
+    mount_proposal_routes(app, proposal_service, tenants=tenants_credentials,
+                          agent_credentials=agent_credentials, identity_mode=identity_mode)
+    mount_proposal_execution_routes(app, exec_stack.service, tenants=tenants_credentials,
+                                    agent_credentials=agent_credentials, identity_mode=identity_mode)
 
     @app.get("/health")
     async def health() -> Dict[str, str]:

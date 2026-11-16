@@ -56,6 +56,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--gateway-url", default=None, help="MCC Gateway base URL")
     parser.add_argument("--api-key", default=None, help="Gateway X-API-Key, if required")
+    parser.add_argument("--agent-keys-file", default=None,
+                        help="JSON {identity: key}: each identity's OWN registered credential "
+                             "(required by a strict Gateway; the shared key obtains no decision)")
     parser.add_argument("--timeout-seconds", type=float, default=None)
     parser.add_argument("--mode", choices=["observe", "enforced"], default=None)
     parser.add_argument("--pilot-id", default=None)
@@ -80,6 +83,9 @@ def _build_config(args: argparse.Namespace) -> PilotConfig:
         overrides["gateway_url"] = args.gateway_url
     if args.api_key is not None:
         overrides["api_key"] = args.api_key
+    if args.agent_keys_file is not None:
+        from .config import load_agent_keys
+        overrides["agent_keys"] = load_agent_keys(args.agent_keys_file)
     if args.timeout_seconds is not None:
         overrides["timeout_seconds"] = args.timeout_seconds
     if args.mode is not None:

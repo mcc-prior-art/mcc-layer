@@ -128,7 +128,7 @@ def test_h2_generative_differential_agreement_with_the_real_actuator(sut, method
 
     tx = str(uuid.uuid4())
     r = httpx.post(
-        f"{sut.actuator_url}/v1/http/execute", headers={"x-api-key": sut.actuator_api_key},
+        f"{sut.actuator_url}/v1/http/execute", headers={"x-api-key": sut.actuator_key()},
         json={"method": method, "url": url, "headers": headers, "body": body,
               "actor": "agent/egress", "resource": "notify", "transaction_id": tx, "idempotency_key": tx},
         timeout=10.0,

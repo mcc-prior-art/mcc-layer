@@ -54,3 +54,24 @@ def write_registry_file(path, tenant_id: str, agents: dict) -> str:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(registry_config(tenant_id, agents), f)
     return str(path)
+
+
+def module_key(principal_id: str) -> str:
+    """F1b: the credential of ``principal_id`` in the test process's module
+    registry (tests/conftest.py) used by the module-level ``gateway.app`` and
+    ``main.py`` apps (their shared key is "demo-key", never registered)."""
+    return derived_agent_key("demo-key", principal_id)
+
+
+def module_headers(principal_id: str) -> dict:
+    return {"x-api-key": module_key(principal_id)}
+
+
+def tenant_key_registry(credential_tenants: dict, principal: str):
+    """F1b migration helper for tests written against the pre-F1b
+    ``{api_key: tenant}`` map: each key becomes ONE registered principal's
+    own credential (``principal`` -- the actor that test submits as) in that
+    tenant. Hash-only, same fail-closed validation as a file registry."""
+    from mcc_core.agent_identity import AgentCredentialRegistry
+    return AgentCredentialRegistry.from_key_map(
+        {k: (t, principal) for k, t in credential_tenants.items()})

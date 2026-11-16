@@ -41,6 +41,7 @@ from typing import Any, Dict, Mapping, Optional
 from fastapi import FastAPI
 
 from mcc_core import InMemoryIdempotencyRegistry, InMemoryNonceRegistry
+from mcc_core.agent_identity import AgentCredentialRegistry
 from mcc_proposal import InMemoryProposalRegistry, MCCProposalService
 
 from gateway.proposal_api import mount_proposal_routes, tenants_from_env
@@ -51,6 +52,8 @@ from gateway.proposal_execution_stack import build_proposal_execution_stack
 from examples.external_pilot.actuator.demo_actuator import build_demo_actuator
 
 ACTION = "external_pilot_demo_action"
+# F1b: the principal the demo / scenario client acts as (its proposals' actor).
+DEMO_PRINCIPAL = "external-agent-example/v1"
 
 
 def authority_from_env(env: Optional[Mapping[str, str]] = None) -> Dict[str, Dict[str, Any]]:
@@ -99,8 +102,17 @@ def build_external_pilot_app(
     upstream: Optional[ResourceBoundUpstream],
     audit_log_path: str,
     action: str = ACTION,
+    agent_credentials: Any = None,
+    identity_mode: Optional[str] = None,
 ) -> FastAPI:
-    """The DEPLOYABLE composition. ``tenants_credentials``,
+    """The DEPLOYABLE composition.
+
+    F1b: ``agent_credentials`` (a hash-only ``AgentCredentialRegistry``) is
+    what authenticates clients: each credential names ONE (tenant,
+    principal); a proposal's ``actor`` must be that principal and only it can
+    execute/read the operation. ``tenants_credentials`` (shared tenant keys)
+    is honoured only in explicit ``legacy-shared-key`` mode; in strict mode
+    (the default) a missing registry means zero authenticated clients. ``tenants_credentials``,
     ``tenants_authority``, and ``upstream`` are all REQUIRED: ``None`` ->
     ``ExternalPilotConfigError`` (fail closed); an explicit ``{}`` is
     accepted and used EXACTLY as given (zero clients / zero authority
@@ -136,8 +148,10 @@ def build_external_pilot_app(
     proposal_service = MCCProposalService(proposals=proposals, durable_execution_state=idempotency)
 
     app = FastAPI(title="MCC External Pilot Integration Pack")
-    mount_proposal_routes(app, proposal_service, tenants=tenants_credentials)
-    mount_proposal_execution_routes(app, stack.service, tenants=tenants_credentials)
+    mount_proposal_routes(app, proposal_service, tenants=tenants_credentials,
+                          agent_credentials=agent_credentials, identity_mode=identity_mode)
+    mount_proposal_execution_routes(app, stack.service, tenants=tenants_credentials,
+                                    agent_credentials=agent_credentials, identity_mode=identity_mode)
 
     @app.get("/health")
     async def health() -> Dict[str, str]:
@@ -159,11 +173,14 @@ def build_demo_app(*, action: str = ACTION) -> FastAPI:
         proposals=InMemoryProposalRegistry(),
         idempotency=InMemoryIdempotencyRegistry(),
         nonces=InMemoryNonceRegistry(),
-        tenants_credentials={"demo-key": "demo-tenant"},
+        tenants_credentials={},
         tenants_authority={"demo-tenant": {}},
         upstream=upstream,
         audit_log_path=audit_log_path,
         action=action,
+        # F1b: the demo credential is ONE registered principal's own key.
+        agent_credentials=AgentCredentialRegistry.from_key_map(
+            {"demo-key": ("demo-tenant", DEMO_PRINCIPAL)}),
     )
 
 
@@ -189,6 +206,11 @@ def build_app_from_env(*, upstream: Optional[ResourceBoundUpstream], action: str
     """
     env = os.environ if env is None else env
     tenants_credentials = tenants_from_env(env)
+    # F1b: per-principal credentials (MCC_AGENT_CREDENTIALS_CONFIG, hashes
+    # only); MCC_PROPOSAL_TENANTS shared keys only in explicit legacy mode.
+    from mcc_core.agent_identity import agent_identity_mode_from_env, agent_registry_from_env
+    agent_credentials = agent_registry_from_env(env)
+    identity_mode = agent_identity_mode_from_env(env)
     tenants_authority = authority_from_env(env)
     backend = (env.get("MCC_EXTERNAL_PILOT_BACKEND") or "memory").strip().lower()
 
@@ -221,6 +243,7 @@ def build_app_from_env(*, upstream: Optional[ResourceBoundUpstream], action: str
         proposals=proposals, idempotency=idempotency, nonces=nonces,
         tenants_credentials=tenants_credentials, tenants_authority=tenants_authority,
         upstream=upstream, audit_log_path=audit_log_path, action=action,
+        agent_credentials=agent_credentials, identity_mode=identity_mode,
     )
 
 
@@ -228,6 +251,6 @@ app = build_demo_app()
 
 
 __all__ = [
-    "ACTION", "ExternalPilotConfigError", "authority_from_env",
+    "ACTION", "DEMO_PRINCIPAL", "ExternalPilotConfigError", "authority_from_env",
     "build_external_pilot_app", "build_demo_app", "build_app_from_env", "app",
 ]

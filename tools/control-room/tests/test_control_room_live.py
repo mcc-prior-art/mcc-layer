@@ -182,13 +182,21 @@ def test_gateway_operates_via_plain_http_without_any_control_room_code(runtime):
     call path at all -- no MCCGatewayClient, no server.py, no scenarios.py,
     just a bare HTTP POST. Proves the runtime this fixture started needs
     nothing from this package to serve a real request end to end."""
+    # F1b: the caller authenticates as the identity it evaluates (its own
+    # registered key); the shared tenant key obtains no decision.
     resp = httpx.post(
         f"{runtime.gateway_url}/evaluate",
-        headers={"x-api-key": runtime.api_key},
+        headers={"x-api-key": runtime.agent_keys["agent/ops-bot"]},
         json={"identity": "agent/ops-bot", "action": "read_infra", "context": {}},
     )
     assert resp.status_code == 200
     assert resp.json()["decision"] in ("ALLOW", "DENY", "ESCALATE", "CONSTRAIN")
+    shared = httpx.post(
+        f"{runtime.gateway_url}/evaluate",
+        headers={"x-api-key": runtime.api_key},
+        json={"identity": "agent/ops-bot", "action": "read_infra", "context": {}},
+    )
+    assert shared.status_code == 403
 
 
 # 10. Control Room failure has no effect on MCC-Core operation.

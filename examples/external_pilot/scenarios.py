@@ -56,6 +56,13 @@ TENANTS_CREDENTIALS = {TENANT_A_KEY: "tenant-a", TENANT_B_KEY: "tenant-b", DENIE
 # DENY by default (the SAME fail-closed default every other governed HTTP
 # surface in this repository uses).
 TENANTS_AUTHORITY = {"tenant-a": {}, "tenant-b": {}}
+# F1b: the same keys as per-principal credentials (hash-only registry).
+from mcc_core.agent_identity import AgentCredentialRegistry  # noqa: E402
+
+from examples.external_pilot.server import DEMO_PRINCIPAL  # noqa: E402
+
+SCENARIO_AGENT_CREDENTIALS = AgentCredentialRegistry.from_key_map(
+    {k: (t, DEMO_PRINCIPAL) for k, t in TENANTS_CREDENTIALS.items()})
 
 
 @dataclass(frozen=True)
@@ -96,8 +103,10 @@ def build_scenario_stack() -> ScenarioStack:
     )
     proposal_service = MCCProposalService(proposals=proposals, durable_execution_state=idempotency)
     app = FastAPI(title="MCC External Pilot Integration Pack (scenarios)")
-    mount_proposal_routes(app, proposal_service, tenants=TENANTS_CREDENTIALS)
-    mount_proposal_execution_routes(app, exec_stack.service, tenants=TENANTS_CREDENTIALS)
+    # F1b: each scenario credential is ONE registered principal's own key
+    # (the example client's actor) -- never a shared tenant key.
+    mount_proposal_routes(app, proposal_service, agent_credentials=SCENARIO_AGENT_CREDENTIALS)
+    mount_proposal_execution_routes(app, exec_stack.service, agent_credentials=SCENARIO_AGENT_CREDENTIALS)
 
     return ScenarioStack(
         app=app, ledger=ledger, resource=upstream.resource, proposals=proposals,

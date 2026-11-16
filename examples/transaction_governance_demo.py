@@ -32,6 +32,21 @@ os.environ["MCC_GATEWAY_AUDIT_LOG_PATH"] = os.path.join(
     tempfile.mkdtemp(prefix="mcc-gov-gw-"), "audit.jsonl"
 )
 
+# F1b: payments-bot presents its OWN credential (X-MCC-Agent-Key); the gateway
+# and the interceptor share one hash-only registry.
+import json as _json  # noqa: E402
+import secrets as _secrets  # noqa: E402
+
+from mcc_core.agent_identity import AgentCredentialRegistry, hash_agent_key  # noqa: E402
+
+PAYMENTS_BOT_KEY = _secrets.token_urlsafe(24)
+_REGISTRY = os.path.join(tempfile.mkdtemp(prefix="mcc-gov-agents-"), "agents.json")
+with open(_REGISTRY, "w", encoding="utf-8") as _f:
+    _json.dump({"agents": [{"credential_id": "demo-payments-bot", "tenant_id": "pilot",
+                            "principal_id": "agent/payments-bot",
+                            "key_sha256": hash_agent_key(PAYMENTS_BOT_KEY), "status": "active"}]}, _f)
+os.environ["MCC_AGENT_CREDENTIALS_CONFIG"] = _REGISTRY
+
 import gateway.app as gw  # noqa: E402
 from gateway.pilot_policy import PILOT_VELOCITY  # noqa: E402
 from interceptors.egress_proxy import (  # noqa: E402
@@ -90,6 +105,7 @@ def _run(servers: DemoServers) -> int:
         mapper=ActionMapper([Route(action="send_payment", method="POST", host="*", path="*charge*")]),
         decide=build_decide_via_http(gateway_url, "demo-key"),
         gate=gate,
+        agent_credentials=AgentCredentialRegistry.from_file(_REGISTRY), tenant_id="pilot",
     )
     proxy = build_proxy_app(
         governor, upstream_base=f"http://127.0.0.1:{UPSTREAM_PORT}", coordinator=coordinator
@@ -103,7 +119,7 @@ def _run(servers: DemoServers) -> int:
             base + "/charge",
             json={"source": "acct-1", "beneficiary_id": beneficiary,
                   "amount": amount, "currency": "USD"},
-            headers={"X-MCC-Identity": "agent/payments-bot",
+            headers={"X-MCC-Agent-Key": PAYMENTS_BOT_KEY, "X-MCC-Identity": "agent/payments-bot",
                      "X-MCC-Idempotency-Key": idem,
                      "X-MCC-Transaction-Id": f"txn-{idem}"},
             timeout=5.0,

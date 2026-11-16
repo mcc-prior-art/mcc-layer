@@ -37,6 +37,14 @@ import sys
 import pytest
 from fastapi.testclient import TestClient
 
+# F1b: main.py and gateway.app are authority-issuing; each request presents
+# its OWN registered key (tests/conftest.py module registry). main.py's
+# session_id must name that principal (agent/<session_id>).
+from tests._agent_credentials import module_headers  # noqa: E402
+
+MAIN_SESSION = "test"
+MAIN_H = module_headers("agent/" + MAIN_SESSION)
+
 from mcc_core.authority import (
     ActionPolicy,
     AuthorityModel,
@@ -359,7 +367,7 @@ def test_gateway_evaluate_oversized_value_issues_no_token(gateway_app, amount):
     for identity, action, context in ((ACTOR, "send_payment", {"amount": amount}),
                                       ("agent/axflow-clinic", "discount_offer",
                                        {"requested_discount_percent": amount})):
-        r = _post(_raw(client), "/evaluate", {"x-api-key": gwapp.settings.api_key},
+        r = _post(_raw(client), "/evaluate", module_headers(identity),
                   {"identity": identity, "action": action, "context": context})
         assert r.status_code == 200, (action, r.status_code, r.text)
         assert r.json()["decision"] not in ("ALLOW", "CONSTRAIN") and r.json()["decision_token"] is None
@@ -368,8 +376,8 @@ def test_gateway_evaluate_oversized_value_issues_no_token(gateway_app, amount):
 @pytest.mark.parametrize("amount", SIGNED, ids=SIGNED_IDS)
 def test_main_fallback_oversized_amount_denied(main_app, amount):
     main, client = main_app
-    r = _post(_raw(client), "/evaluate", {"x-api-key": main.settings.api_key},
-              {"session_id": "s-big", "intent": "send_payment", "args": {"amount": amount}})
+    r = _post(_raw(client), "/evaluate", MAIN_H,
+              {"session_id": MAIN_SESSION, "intent": "send_payment", "args": {"amount": amount}})
     assert r.status_code == 200, r.text
     assert r.json()["decision"] == "DENY" and r.json().get("decision_token") is None
     assert "supported numeric range" in r.json()["reason"]
@@ -378,8 +386,8 @@ def test_main_fallback_oversized_amount_denied(main_app, amount):
 @pytest.mark.parametrize("amount", SIGNED, ids=SIGNED_IDS)
 def test_main_opa_path_oversized_amount_never_reaches_opa(opa_main, amount):
     main, client, seen = opa_main
-    r = _post(client, "/evaluate", {"x-api-key": main.settings.api_key},
-              {"session_id": "o-big", "intent": "send_payment", "args": {"amount": amount}})
+    r = _post(client, "/evaluate", MAIN_H,
+              {"session_id": MAIN_SESSION, "intent": "send_payment", "args": {"amount": amount}})
     assert r.status_code == 200, r.text
     assert r.json()["decision"] == "DENY" and r.json().get("decision_token") is None
     assert seen == []

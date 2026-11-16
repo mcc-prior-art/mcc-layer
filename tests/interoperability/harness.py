@@ -50,6 +50,9 @@ AGENT_PRINCIPALS = (
     "agent/an-impostor", "agent/attestation-assurance-bot", "agent/checkpoint-bot",
     "agent/negative-control-bot", "agent/ops-bot", "agent/interop-wrong",
     "agent/pr6-pilot-test-partner",
+    # F1b: evaluate-only callers authenticate as themselves (the shared key
+    # obtains no /evaluate decision in strict mode).
+    "agent/payments-bot",
 )
 
 CONTRACT_VERSION = "1.0"

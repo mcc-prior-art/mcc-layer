@@ -536,7 +536,12 @@ proposal_service = MCCProposalService(
     profiles=gateway.profiles,
     durable_execution_state=governance.coordinator.idempotency,
 )
-mount_proposal_routes(app, proposal_service, tenants=tenants_from_env())
+# F1b: proposals are bound to the individually authenticated principal (the
+# SAME hash-only registry as the governance routes); MCC_PROPOSAL_TENANTS
+# shared tenant keys are honoured only in explicit legacy-shared-key mode.
+mount_proposal_routes(app, proposal_service, tenants=tenants_from_env(),
+                      agent_credentials=governance.agent_credentials,
+                      identity_mode=governance.agent_identity_mode)
 
 
 # ---------- Readiness ----------

@@ -21,6 +21,9 @@ class EgressSettings(BaseSettings):
     mcc_env: str = "dev"                      # "pilot" tightens fail-closed startup
     api_key: str = "egress-demo-key"          # caller X-API-Key
     operator_api_key: str = ""                # X-Operator-Key; empty disables approvals
+    # F1b: the tenant this runtime serves; X-API-Key must be a registered
+    # per-agent credential of THIS tenant (MCC_AGENT_CREDENTIALS_CONFIG).
+    tenant_id: str = "governed-agent-demo"
 
     # Egress authority (the MCC policy the embedded runtime evaluates).
     egress_actor_mandate: str = "agent/egress"   # who holds the http.egress mandate

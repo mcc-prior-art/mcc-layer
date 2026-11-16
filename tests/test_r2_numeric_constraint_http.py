@@ -33,6 +33,14 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+# F1b: main.py and gateway.app are authority-issuing; each request presents
+# its OWN registered key (tests/conftest.py module registry). main.py's
+# session_id must name that principal (agent/<session_id>).
+from tests._agent_credentials import module_headers  # noqa: E402
+
+MAIN_SESSION = "test"
+MAIN_H = module_headers("agent/" + MAIN_SESSION)
+
 from mcc_core import (
     ApprovalService,
     AuditLog,
@@ -349,7 +357,9 @@ def _audit_kinds(path):
 
 
 def _egress_post(hz, **fields):
-    return post_json(hz.client, "/v1/http/execute", hz.H, {"resource": "acct-1", **fields})
+    # F1b: the request's actor presents its OWN egress credential.
+    return post_json(hz.client, "/v1/http/execute", {"x-api-key": hz.key_for(fields["actor"])},
+                     {"resource": "acct-1", **fields})
 
 
 def _egress_run(hz, amount, idem):
@@ -420,7 +430,7 @@ def gateway_app(monkeypatch, tmp_path):
 
 def _gw_evaluate(gateway_app, action, context, identity=ACTOR):
     gwapp, client = gateway_app
-    r = post_json(client, "/evaluate", {"x-api-key": gwapp.settings.api_key},
+    r = post_json(client, "/evaluate", module_headers(identity),
                   {"identity": identity, "action": action, "context": context})
     assert r.status_code == 200, r.text
     return r.json()
@@ -469,8 +479,8 @@ def main_app(monkeypatch, tmp_path):
 
 def _main_evaluate(main_app, amount, sid):
     main, client = main_app
-    r = post_json(client, "/evaluate", {"x-api-key": main.settings.api_key}, {
-        "session_id": sid, "intent": "send_payment", "args": {"amount": amount}})
+    r = post_json(client, "/evaluate", MAIN_H, {
+        "session_id": MAIN_SESSION, "intent": "send_payment", "args": {"amount": amount}})
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -683,16 +693,16 @@ def test_gateway_evaluate_issues_no_token_for_bool_amount(gateway_app, value):
                          ids=[i for i, _ in BOOLS + UNPARSEABLE])
 def test_main_evaluate_fallback_rejects_bool_and_unparseable_cleanly(main_app, value):
     main, client = main_app
-    r = post_json(_raw_ok(client), "/evaluate", {"x-api-key": main.settings.api_key}, {
-        "session_id": f"u-{value!r}", "intent": "send_payment", "args": {"amount": value}})
+    r = post_json(_raw_ok(client), "/evaluate", MAIN_H, {
+        "session_id": MAIN_SESSION, "intent": "send_payment", "args": {"amount": value}})
     assert r.status_code == 200, r.text
     assert r.json()["decision"] == "DENY" and r.json().get("decision_token") is None
 
 
 def test_main_evaluate_fallback_rejects_missing_amount(main_app):
     main, client = main_app
-    r = post_json(client, "/evaluate", {"x-api-key": main.settings.api_key}, {
-        "session_id": "missing", "intent": "send_payment", "args": {}})
+    r = post_json(client, "/evaluate", MAIN_H, {
+        "session_id": MAIN_SESSION, "intent": "send_payment", "args": {}})
     assert r.json()["decision"] == "DENY" and r.json().get("decision_token") is None
 
 
@@ -750,8 +760,8 @@ def opa_main(monkeypatch, tmp_path):
 @pytest.mark.parametrize("amount", ALL_INVALID, ids=ALL_INVALID_IDS)
 def test_main_opa_path_invalid_amount_never_reaches_opa_and_gets_no_token(opa_main, amount):
     main, client, seen = opa_main
-    r = post_json(client, "/evaluate", {"x-api-key": main.settings.api_key}, {
-        "session_id": f"o-{amount!r}", "intent": "send_payment", "args": {"amount": amount}})
+    r = post_json(client, "/evaluate", MAIN_H, {
+        "session_id": MAIN_SESSION, "intent": "send_payment", "args": {"amount": amount}})
     assert r.status_code == 200, r.text
     assert r.json()["decision"] == "DENY" and r.json().get("decision_token") is None, r.json()
     assert seen == []        # rejected before the policy engine was consulted
@@ -759,8 +769,8 @@ def test_main_opa_path_invalid_amount_never_reaches_opa_and_gets_no_token(opa_ma
 
 def test_main_opa_path_missing_amount_never_reaches_opa(opa_main):
     main, client, seen = opa_main
-    r = post_json(client, "/evaluate", {"x-api-key": main.settings.api_key}, {
-        "session_id": "o-missing", "intent": "send_payment", "args": {}})
+    r = post_json(client, "/evaluate", MAIN_H, {
+        "session_id": MAIN_SESSION, "intent": "send_payment", "args": {}})
     assert r.json()["decision"] == "DENY" and r.json().get("decision_token") is None
     assert seen == []
 
@@ -768,8 +778,8 @@ def test_main_opa_path_missing_amount_never_reaches_opa(opa_main):
 @pytest.mark.parametrize("amount", [0, 100, 5000], ids=["zero", "typical", "exact-ceiling"])
 def test_main_opa_path_valid_amount_reaches_opa_exactly_once(opa_main, amount):
     main, client, seen = opa_main
-    r = post_json(client, "/evaluate", {"x-api-key": main.settings.api_key}, {
-        "session_id": f"ok-{amount}", "intent": "send_payment", "args": {"amount": amount}})
+    r = post_json(client, "/evaluate", MAIN_H, {
+        "session_id": MAIN_SESSION, "intent": "send_payment", "args": {"amount": amount}})
     assert r.json()["decision"] == "ALLOW" and r.json().get("decision_token") is not None
     assert [i["args"]["amount"] for i in seen] == [amount]
 
@@ -779,8 +789,8 @@ def test_main_opa_adapter_unserializable_input_is_a_denial_not_a_500(opa_main):
     payment validation) is not JSON-serializable for OPA. It used to escape
     the adapter as an unhandled ValueError (HTTP 500); it is now a DENY."""
     main, client, seen = opa_main
-    r = post_json(client, "/evaluate", {"x-api-key": main.settings.api_key}, {
-        "session_id": "o-unser", "intent": "delete_user", "args": {"user_id": "u1", "score": NAN}})
+    r = post_json(client, "/evaluate", MAIN_H, {
+        "session_id": MAIN_SESSION, "intent": "delete_user", "args": {"user_id": "u1", "score": NAN}})
     assert r.status_code == 200, r.text
     assert r.json()["decision"] == "DENY" and r.json().get("decision_token") is None
     assert seen == []
@@ -836,16 +846,16 @@ def gov_main(monkeypatch, tmp_path):
 
 def _gov_decide(gov_main, amount, sid):
     main, client, evals, _ = gov_main
-    H = {"x-api-key": main.settings.api_key}
+    H = MAIN_H
     args = {"amount": amount}
-    ch = post_json(client, "/evaluate/challenge", H, {"session_id": sid, "intent": "send_payment",
+    ch = post_json(client, "/evaluate/challenge", H, {"session_id": MAIN_SESSION, "intent": "send_payment",
                                                       "args": args, "resource": "res-1"})
     assert ch.status_code == 200, ch.text
     ch = ch.json()
     votes = [issue_vote(e, evaluator_id=e.kid, verdict="ALLOW", action=ch["action"], payload=args,
                         actor=ch["actor"], resource=ch["resource"], policy_hash=ch["policy_hash"],
                         nonce=ch["nonce"], not_before=0, not_after=FUTURE) for e in evals]
-    r = post_json(client, "/evaluate", H, {"session_id": sid, "intent": "send_payment", "args": args,
+    r = post_json(client, "/evaluate", H, {"session_id": MAIN_SESSION, "intent": "send_payment", "args": args,
                                            "resource": "res-1", "challenge_id": ch["challenge_id"],
                                            "votes": votes, "idempotency_key": f"idem-{sid}"})
     assert r.status_code == 200, r.text

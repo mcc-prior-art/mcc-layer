@@ -42,7 +42,7 @@ import secrets as _secrets  # noqa: E402
 sys.path.insert(0, str(ROOT))
 from gateway.agent_identity import hash_agent_key  # noqa: E402
 
-AGENT_KEYS = {p: _secrets.token_urlsafe(24) for p in ("agent/payments-bot", "agent/nobody")}
+AGENT_KEYS = {p: _secrets.token_urlsafe(24) for p in ("agent/payments-bot", "agent/nobody", "agent/ops-bot")}
 _registry = os.path.join(_audit, "agent_credentials.json")
 with open(_registry, "w", encoding="utf-8") as _f:
     _json.dump({"agents": [
