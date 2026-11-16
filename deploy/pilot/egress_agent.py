@@ -16,7 +16,10 @@ the full consensus + re-consensus path is covered by
 
 Env:
     MCC_EGRESS_PROXY_URL   e.g. http://mcc-egress-proxy:8090
-    MCC_EGRESS_API_KEY     agent X-API-Key
+    MCC_AGENT_CREDENTIAL_FILE  F1b: this agent's OWN credential ({"api_key", "principal_id", ...});
+                           the proxy resolves the principal from it and refuses an ``actor``
+                           naming anyone else. (MCC_EGRESS_API_KEY + MCC_EGRESS_ACTOR remain
+                           only for an explicitly legacy-shared-key proxy.)
     MCC_UPSTREAM_DIRECT    e.g. http://upstream-echo:9100/charge (must be unreachable)
     MCC_UPSTREAM_VIA_PROXY e.g. http://upstream-echo:9100/charge (reached via proxy)
 """
@@ -35,9 +38,27 @@ def _post(proxy: str, key: str, **fields):
                       json=fields, timeout=10.0).json()
 
 
+def _credential():
+    """F1b: (key, actor) from this agent's own credential file; the actor
+    is the provisioned principal, never chosen freely."""
+    path = os.environ.get("MCC_AGENT_CREDENTIAL_FILE", "").strip()
+    if path:
+        import json
+        with open(path, encoding="utf-8") as f:
+            cred = json.load(f)
+        key, principal = cred.get("api_key"), cred.get("principal_id")
+        if not (isinstance(key, str) and key and isinstance(principal, str) and principal):
+            sys.exit("MCC_AGENT_CREDENTIAL_FILE is malformed; fail-closed")
+        return key, principal
+    key = os.environ.get("MCC_EGRESS_API_KEY", "")
+    if not key:
+        sys.exit("set MCC_AGENT_CREDENTIAL_FILE (this agent's own credential); fail-closed")
+    return key, os.environ.get("MCC_EGRESS_ACTOR", "agent/egress")
+
+
 def main() -> int:
     proxy = os.environ.get("MCC_EGRESS_PROXY_URL", "http://mcc-egress-proxy:8090")
-    key = os.environ.get("MCC_EGRESS_API_KEY", "egress-demo-key")
+    key, actor = _credential()
     direct = os.environ.get("MCC_UPSTREAM_DIRECT", "http://upstream-echo:9100/charge")
     via = os.environ.get("MCC_UPSTREAM_VIA_PROXY", "http://upstream-echo:9100/charge")
 
@@ -61,25 +82,34 @@ def main() -> int:
         print(f"[DIRECT]   blocked: {type(exc).__name__} (no route to upstream)")
 
     # 2. ALLOW via the proxy.
-    a = _post(proxy, key, method="POST", url=via, body={"amount": 1000}, actor="agent/egress",
+    a = _post(proxy, key, method="POST", url=via, body={"amount": 1000}, actor=actor,
               transaction_id="c-allow", idempotency_key="c-allow")
     print(f"[ALLOW]    {a['outcome']} executed={a.get('executed')} upstream={a.get('upstream_status')}")
     if not (a["outcome"] == "ALLOW" and a.get("executed")):
         failures.append("ALLOW via proxy did not execute")
 
     # 3. CONSTRAIN (over cap) -> clamped.
-    c = _post(proxy, key, method="POST", url=via, body={"amount": 999999}, actor="agent/egress",
+    c = _post(proxy, key, method="POST", url=via, body={"amount": 999999}, actor=actor,
               transaction_id="c-con", idempotency_key="c-con")
     print(f"[CONSTRAIN] {c['outcome']} executed={c.get('executed')}")
     if c["outcome"] != "CONSTRAIN":
         failures.append("over-cap request was not constrained")
 
     # 4. DENY (disallowed method).
-    d = _post(proxy, key, method="DELETE", url=via, body={}, actor="agent/egress",
+    d = _post(proxy, key, method="DELETE", url=via, body={}, actor=actor,
               transaction_id="c-deny", idempotency_key="c-deny")
     print(f"[DENY]     {d['outcome']} executed={d.get('executed')}")
     if d.get("executed"):
         failures.append("DENY executed")
+
+    # 5. F1b: this agent's own credential cannot act as another principal.
+    r = httpx.post(f"{proxy}/v1/http/execute", headers={"x-api-key": key}, timeout=10.0,
+                   json={"method": "POST", "url": via, "body": {"amount": 10},
+                         "actor": "agent/someone-else", "transaction_id": "c-imp",
+                         "idempotency_key": "c-imp"})
+    print(f"[IMPERSONATE] HTTP {r.status_code}")
+    if r.status_code != 403:
+        failures.append("a request naming another actor was not refused (403)")
 
     if failures:
         print("\nFAILED:")

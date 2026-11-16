@@ -6,8 +6,10 @@ gateway's governed HTTPS executor performs the real request to the separate
 ``pilot-api`` service. The agent container has **no** route to ``pilot-api`` —
 only the gateway does — so a direct call is impossible (the bypass check).
 
-Authority principal separation: this process holds ONLY
-``MCC_EGRESS_API_KEY``. It never holds, reads, or derives an operator key --
+Authority principal separation: this process holds ONLY its own per-agent
+credential (F1b; ``MCC_AGENT_CREDENTIAL_FILE``). One container per principal:
+``mcc-agent`` is agent/crm (ALLOW/DENY/CONSTRAIN), ``mcc-agent-escalate`` is
+agent/intern (ESCALATE -> approval -> its own execution). It never holds, reads, or derives an operator key --
 the ``mcc-operator`` service (``governed_agent_pilot_operator.py``) is a
 separate process, running in a separate container, that holds
 ``MCC_EGRESS_OPERATOR_API_KEY``. For ESCALATE, this agent only writes a
@@ -42,13 +44,34 @@ from mcc_agent import DeterministicPlanner  # noqa: E402
 
 GATEWAY = os.environ.get("MCC_GATEWAY_URL", "http://mcc-gateway:8090")
 PILOT_API = os.environ.get("PILOT_API_BASE", "http://pilot-api:9100")
-API_KEY = os.environ.get("MCC_EGRESS_API_KEY", "agent-key")
 TRUSTED = os.environ.get("MCC_EGRESS_EGRESS_ACTOR_MANDATE", "agent/crm")
 RESTRICTED = "agent/intern"
 STATE_DIR = Path(os.environ.get("MCC_PILOT_STATE_DIR", "/pilot-state"))
 APPROVAL_WAIT_TIMEOUT_S = float(os.environ.get("MCC_APPROVAL_WAIT_TIMEOUT_S", "60.0"))
 APPROVAL_POLL_INTERVAL_S = float(os.environ.get("MCC_APPROVAL_POLL_INTERVAL_S", "1.0"))
 
+
+
+def _credential():
+    """F1b: this container IS one principal. Its OWN provisioned credential
+    (``MCC_AGENT_CREDENTIAL_FILE``) is the only key it holds; the gateway
+    resolves the principal from it and refuses an ``actor`` naming anyone
+    else. (``MCC_EGRESS_API_KEY`` + ``MCC_PILOT_PRINCIPAL`` remain only for
+    an explicitly legacy-shared-key gateway.)"""
+    path = os.environ.get("MCC_AGENT_CREDENTIAL_FILE", "").strip()
+    if path:
+        cred = json.loads(Path(path).read_text(encoding="utf-8"))
+        key, principal = cred.get("api_key"), cred.get("principal_id")
+        if not (isinstance(key, str) and key and isinstance(principal, str) and principal):
+            sys.exit("MCC_AGENT_CREDENTIAL_FILE is malformed; fail-closed")
+        return key, principal
+    key = os.environ.get("MCC_EGRESS_API_KEY", "")
+    if not key:
+        sys.exit("set MCC_AGENT_CREDENTIAL_FILE (this agent's own credential); fail-closed")
+    return key, os.environ.get("MCC_PILOT_PRINCIPAL", TRUSTED)
+
+
+API_KEY, PRINCIPAL = _credential()
 H = {"x-api-key": API_KEY}
 
 
@@ -81,8 +104,34 @@ def main() -> int:
         # a route to) pilot-api — only the gateway reaches it.
         _wait(client, f"{GATEWAY}/ready")
 
-        print("\n=== Governed agent pilot over the network boundary ===\n")
+        print(f"\n=== Governed agent pilot over the network boundary ({PRINCIPAL}) ===\n")
 
+        # F1b: this agent's own key cannot act as another principal.
+        other = RESTRICTED if PRINCIPAL == TRUSTED else TRUSTED
+        r = client.post(f"{GATEWAY}/v1/http/execute", headers=H, timeout=15.0, json={
+            "method": "POST", "url": f"{PILOT_API}/leads", "body": {"name": "x"},
+            "actor": other, "resource": "crm:lead", "transaction_id": f"txn-imp-{PRINCIPAL}",
+            "idempotency_key": f"imp-{PRINCIPAL}"})
+        print(f"[IMPERSONATE] as {other}: HTTP {r.status_code}")
+        failures += [] if r.status_code == 403 else [f"impersonating {other} was not refused"]
+
+    if PRINCIPAL == TRUSTED:
+        failures += _trusted_phases(planner)
+    elif PRINCIPAL == RESTRICTED:
+        failures += _restricted_phases(planner)
+    else:
+        failures.append(f"unexpected principal {PRINCIPAL!r}")
+
+    if failures:
+        print("\nPILOT FAILED:", "; ".join(failures))
+        return 1
+    print(f"\nPILOT PASSED ({PRINCIPAL}): governed over the network.")
+    return 0
+
+
+def _trusted_phases(planner) -> list:
+    failures = []
+    with httpx.Client() as client:
         # ALLOW — trusted agent creates a CRM lead.
         p = planner.plan("Create a CRM lead for Alice with a campaign budget of 500 EUR")
         out = _execute(client, method="POST", url=p.url, body=p.body, actor=TRUSTED,
@@ -103,7 +152,13 @@ def main() -> int:
         sent = (out.get("upstream_body") or {}).get("budget", {}).get("amount")
         print(f"[CONSTRAIN] outcome={out['outcome']} executed={out.get('executed')} sent_amount={sent}")
         failures += [] if (out.get("executed") and sent == 5000) else ["CONSTRAIN not clamped"]
+        failures += _bypass_checks(client)
+    return failures
 
+
+def _restricted_phases(planner) -> list:
+    failures = []
+    with httpx.Client() as client:
         # ESCALATE — restricted identity holds no mandate -> approval required.
         # This agent does not hold the operator key and cannot self-approve.
         # It records the (non-secret) request_id for the separate mcc-operator
@@ -136,7 +191,13 @@ def main() -> int:
             failures += [] if (out2 and out2.get("executed")) else ["ESCALATE did not execute after approval"]
         else:
             failures.append("ESCALATE produced no approval request")
+        failures += _bypass_checks(client)
+    return failures
 
+
+def _bypass_checks(client) -> list:
+    failures = []
+    if True:
         # BYPASS — the agent has no network route to pilot-api directly.
         bypassed = False
         try:
@@ -155,12 +216,7 @@ def main() -> int:
             print(f"\npilot-api operations (unexpectedly reachable): {ops.json().get('count')}")
         except Exception:
             print("\npilot-api not reachable from the agent (network isolation) ✓")
-
-    if failures:
-        print("\nPILOT FAILED:", "; ".join(failures))
-        return 1
-    print("\nPILOT PASSED: ALLOW / DENY / ESCALATE / CONSTRAIN governed over the network.")
-    return 0
+    return failures
 
 
 if __name__ == "__main__":

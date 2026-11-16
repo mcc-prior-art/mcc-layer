@@ -176,6 +176,15 @@ DNS-rebinding window):
 
 ## Header & credential model
 
+- **caller identity (F1b):** `X-API-Key` must be a registered per-agent
+  credential of the proxy's tenant (`MCC_AGENT_CREDENTIALS_CONFIG`, hashes
+  only; `MCC_EGRESS_TENANT_ID`). The request's `actor` must equal that
+  principal (403 `AGENT_PRINCIPAL_MISMATCH`); the service key
+  (`MCC_EGRESS_API_KEY`) asserts no actor in strict mode (403
+  `AGENT_IDENTITY_REQUIRED`); an approval is executable only by the actor it
+  was requested for. Refused before any proposal, approval use, reservation,
+  audit record or outbound call. See `docs/AGENT_IDENTITY.md`, F1b;
+
 - hop-by-hop headers (`connection`, `keep-alive`, `te`, `trailer`,
   `transfer-encoding`, `upgrade`) and `host`/`content-length` are stripped;
   proxy-auth headers from the caller are dropped; `Host` is set from the

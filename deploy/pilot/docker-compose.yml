@@ -152,6 +152,11 @@ services:
       MCC_EGRESS_ALLOW_HTTP: "true"
       MCC_EGRESS_REQUIRE_CONSENSUS: "false"
       MCC_EGRESS_AUDIT_LOG_PATH: "/data/egress-audit.jsonl"
+      # F1b: per-principal identity (SHA-256 hashes only). The egress service
+      # key (MCC_EGRESS_API_KEY) asserts no actor in strict mode; each agent
+      # presents its OWN credential and ``actor`` must equal its principal.
+      MCC_AGENT_CREDENTIALS_CONFIG: "/secrets/egress_agent_credentials.json"
+      MCC_EGRESS_TENANT_ID: "governed-agent-demo"
       MCC_REDIS_URL: "redis://redis:6379/0"
       MCC_NONCE_BACKEND: "redis"
       MCC_IDEMPOTENCY_BACKEND: "redis"
@@ -160,6 +165,7 @@ services:
       MCC_CHALLENGE_BACKEND: "redis"
     networks: [app_frontend, egress_external, mcc_internal]
     volumes:
+      - ./secrets/egress_agent_credentials.json:/secrets/egress_agent_credentials.json:ro
       - mcc-egress-audit:/data
     ports:
       # Env-overridable host port (see the gateway note above); container port unchanged.
@@ -181,13 +187,15 @@ services:
   #
   # Credential separation: this service intentionally does NOT use `env_file`.
   # `egress_agent.py` (its entire implementation) reads only MCC_EGRESS_PROXY_URL,
-  # MCC_EGRESS_API_KEY, MCC_UPSTREAM_DIRECT, MCC_UPSTREAM_VIA_PROXY -- it has no
+  # MCC_AGENT_CREDENTIAL_FILE (F1b; formerly MCC_EGRESS_API_KEY),
+  # MCC_UPSTREAM_DIRECT, MCC_UPSTREAM_VIA_PROXY -- it has no
   # code path that reads or uses an operator key, a signing key, or any upstream
   # credential. A blanket `env_file: [.env]` previously handed this container
   # every variable in .env, including MCC_EGRESS_OPERATOR_API_KEY and
   # MCC_GATEWAY_OPERATOR_API_KEY -- credentials this agent never needs and must
-  # never hold. Pulling only MCC_EGRESS_API_KEY by name keeps the effective
-  # environment to exactly what the agent's own code requires.
+  # never hold. Since F1b it holds no shared egress key at all -- only its own
+  # per-agent credential file -- so the effective environment is exactly what
+  # the agent's own code requires.
   reference-egress-agent:
     build:
       context: ../..
@@ -195,10 +203,15 @@ services:
     command: ["python", "/app/egress_agent.py"]
     environment:
       MCC_EGRESS_PROXY_URL: "http://mcc-egress-proxy:8090"
-      MCC_EGRESS_API_KEY: "${MCC_EGRESS_API_KEY:?MCC_EGRESS_API_KEY must be set in deploy/pilot/.env}"
+      # F1b: the agent's OWN credential (provisioned by generate_pilot_config.py
+      # into agent-credentials/egress/), mounted read-only into THIS container
+      # only. It holds no egress service key, operator key or other agent's key.
+      MCC_AGENT_CREDENTIAL_FILE: "/run/mcc-agent/credential.json"
       MCC_UPSTREAM_DIRECT: "http://upstream-echo:9100/charge"
       MCC_UPSTREAM_VIA_PROXY: "http://upstream-echo:9100/charge"
     networks: [app_frontend]
+    volumes:
+      - ./agent-credentials/egress:/run/mcc-agent:ro
     depends_on:
       mcc-egress-proxy:
         condition: service_healthy

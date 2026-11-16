@@ -37,10 +37,15 @@ This writes, into `deploy/pilot/secrets/` (git-ignored, mode-0600 keys):
 | `trust.pilot.json` | mandate trust set — **public** keys only |
 | `consensus_trust.json` | consensus evaluator trust set — **public** keys only |
 | `agent_credentials.json` | per-agent identity registry — SHA-256 **hashes** only |
+| `egress_agent_credentials.json` | the egress proxy's per-agent registry (F1b) — SHA-256 **hashes** only |
 
-and the pilot agent's own raw credential into
-`deploy/pilot/agent-credentials/payments-bot/credential.json` (mode 0400,
-git-ignored, never mounted into the gateway). Re-running reuses it.
+and each agent's own raw credential into
+`deploy/pilot/agent-credentials/<name>/credential.json` (mode 0400,
+git-ignored, never mounted into the gateway): `payments-bot`, `nobody` and
+`ops-bot` (the identities the runbook evaluates as — F1b: the shared key
+obtains no `/evaluate` decision), plus `egress` (the reference egress agent,
+mounted read-only into its own container only; the egress service key asserts
+no actor). Re-running reuses them.
 
 Nothing here is committed (`deploy/pilot/.gitignore`). Rotate by re-running with
 `--force` (and rolling the trust configs).
@@ -113,16 +118,18 @@ Set shell vars for brevity:
 ```bash
 export KEY=$(grep MCC_GATEWAY_API_KEY deploy/pilot/.env | cut -d= -f2)
 export OP=$(grep MCC_GATEWAY_OPERATOR_API_KEY deploy/pilot/.env | cut -d= -f2)
-# The pilot agent's OWN credential (agent/payments-bot), provisioned in step 1.
-export AGENT_KEY=$(python -c 'import json;print(json.load(open("deploy/pilot/agent-credentials/payments-bot/credential.json"))["api_key"])')
+# Each evaluated identity's OWN credential, provisioned in step 1 (F1b).
+cred() { python -c 'import json,sys;print(json.load(open(sys.argv[1]))["api_key"])' "deploy/pilot/agent-credentials/$1/credential.json"; }
+export AGENT_KEY=$(cred payments-bot) NOBODY_KEY=$(cred nobody) OPS_KEY=$(cred ops-bot)
 ```
 
 `KEY` is the tenant's shared (service) key. Per-agent identity (V05/F1): the
 identity routes (`/mandates/execute`, `/approvals`, `/approvals/{id}/execute`,
 `/consensus/*`) require a registered per-agent credential whose principal is
-the request's `actor`, and `/evaluate` refuses the shared key for a
-*registered* agent identity — that agent's own key must be used. See
-`docs/AGENT_IDENTITY.md`.
+the request's `actor`, and — since F1b — `/evaluate` refuses the shared key
+for **every** identity, registered or not: each identity is evaluated with its
+own key (a credential may evaluate only as its own principal). `KEY` remains
+valid only for the read-only `/verify`. See `docs/AGENT_IDENTITY.md`.
 
 ### 5a. The four verdicts — authority (`POST /evaluate`)
 
@@ -135,12 +142,12 @@ curl -s localhost:8001/evaluate -H "x-api-key: $AGENT_KEY" \
 curl -s localhost:8001/evaluate -H "x-api-key: $AGENT_KEY" \
   -d '{"identity":"agent/payments-bot","action":"send_payment","context":{"amount":99000}}' | python -m json.tool
 
-# ESCALATE — no standing mandate
-curl -s localhost:8001/evaluate -H "x-api-key: $KEY" \
+# ESCALATE — no standing mandate (agent/nobody's own key)
+curl -s localhost:8001/evaluate -H "x-api-key: $NOBODY_KEY" \
   -d '{"identity":"agent/nobody","action":"send_payment","context":{"amount":10}}' | python -m json.tool
 
-# DENY — irreversible action no mandate can authorize
-curl -s localhost:8001/evaluate -H "x-api-key: $KEY" \
+# DENY — irreversible action no mandate can authorize (agent/ops-bot's own key)
+curl -s localhost:8001/evaluate -H "x-api-key: $OPS_KEY" \
   -d '{"identity":"agent/ops-bot","action":"delete_database","context":{}}' | python -m json.tool
 ```
 
