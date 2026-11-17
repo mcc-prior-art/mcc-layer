@@ -44,6 +44,7 @@ from mcc_client import (  # noqa: E402
 from mcc_client.transport import CORRELATION_HEADER  # noqa: E402
 
 from examples._demo_server import DemoServer  # noqa: E402
+from tests._agent_credentials import module_key  # noqa: E402
 
 
 # --------------------------------------------------------------------------
@@ -101,8 +102,10 @@ def gateway_url():
     ("agent/ops-bot", "delete_database", {}, Verdict.DENY),
 ])
 def test_integration_four_verdicts(gateway_url, identity, action, payload, expected):
-    url, api_key = gateway_url
-    with MCCClient(url, api_key=api_key) as client:
+    url, _shared_key = gateway_url
+    # F1b: the shared tenant key obtains no decision in strict mode; each
+    # identity evaluates with its own registered credential.
+    with MCCClient(url, api_key=module_key(identity)) as client:
         d = client.evaluate(actor_id=identity, action=action, payload=payload)
         assert d.verdict == expected
         assert d.audit_id  # a real audit id from the running gateway
@@ -112,8 +115,8 @@ def test_integration_four_verdicts(gateway_url, identity, action, payload, expec
 
 
 def test_integration_audit_chain_verifies(gateway_url):
-    url, api_key = gateway_url
-    with MCCClient(url, api_key=api_key) as client:
+    url, _shared_key = gateway_url
+    with MCCClient(url, api_key=module_key("agent/payments-bot")) as client:
         client.evaluate(actor_id="agent/payments-bot", action="send_payment", payload={"amount": 10})
         chain = client.verify_audit_chain()
         assert chain.get("valid") is True

@@ -30,6 +30,7 @@ from pilot.reference_python import (
     SimulatedActuator,
     validate_evidence,
 )
+from tests._agent_credentials import module_key
 
 # --------------------------------------------------------------------------
 # Real-gateway scenarios: exact identity/action/context combinations proven
@@ -44,10 +45,15 @@ CONSTRAIN_SCENARIO = {
 }
 
 
+# F1b: a strict Gateway refuses the shared key on /evaluate for every
+# identity; each scenario identity presents its OWN registered credential.
+AGENT_KEYS = {i: module_key(i) for i in ("agent/payments-bot", "agent/ops-bot", "agent/nobody")}
+
+
 def _config(gateway_url, tmp_path, *, mode, **overrides) -> PilotConfig:
     url, api_key = gateway_url
     kwargs = {
-        "gateway_url": url, "api_key": api_key, "mode": mode,
+        "gateway_url": url, "api_key": api_key, "agent_keys": AGENT_KEYS, "mode": mode,
         "evidence_dir": str(tmp_path), "pilot_id": "acceptance-test", "integration_id": "reference-python-v1",
     }
     kwargs.update(overrides)
@@ -186,8 +192,8 @@ def test_no_actuation_follows_any_failed_submit(tmp_path):
 
 
 def test_direct_actuator_invocation_rejected_for_deny_decision(gateway_url, tmp_path):
-    url, api_key = gateway_url
-    with MCCClient(base_url=url, api_key=api_key) as client:
+    url, _shared_key = gateway_url
+    with MCCClient(base_url=url, api_key=module_key("agent/ops-bot")) as client:
         decision = client.evaluate(EvaluateRequest(**DENY_SCENARIO, mode="inline"))
     actuator = SimulatedActuator()
     with pytest.raises(DirectActuationRejected):
@@ -242,18 +248,23 @@ def test_evidence_output_validates_against_schema(gateway_url, tmp_path):
 
 
 def test_no_secret_values_appear_in_exported_evidence(gateway_url, tmp_path):
-    url, api_key = gateway_url
+    url, _shared_key = gateway_url
     secret = "super-secret-pilot-api-key-do-not-leak"
+    agent_secret = "super-secret-pilot-agent-key-do-not-leak"
     cfg = PilotConfig(
-        gateway_url=url, api_key=secret, mode="observe", evidence_dir=str(tmp_path),
+        gateway_url=url, api_key=secret, agent_keys={"agent/payments-bot": agent_secret},
+        mode="observe", evidence_dir=str(tmp_path),
         pilot_id="acceptance-test", integration_id="reference-python-v1",
     )
-    with PilotIntegration(cfg, client=MCCClient(base_url=url, api_key=api_key)) as pilot:
+    with PilotIntegration(cfg, client=MCCClient(base_url=url,
+                                                api_key=module_key("agent/payments-bot"))) as pilot:
         pilot.submit(**ALLOW_SCENARIO)
     path = pilot.evidence.finalize_and_export()
     raw = path.read_text()
     assert secret not in raw
+    assert agent_secret not in raw
     assert "api_key" not in json.loads(raw)
+    assert "agent_keys" not in raw
 
 
 def test_repeated_runs_do_not_overwrite_evidence_silently(gateway_url, tmp_path):
@@ -274,3 +285,39 @@ def test_attempted_bypass_is_recorded_and_fails_the_run(gateway_url, tmp_path):
     assert evidence["attempted_bypass_count"] == 1
     assert evidence["status"] == "FAIL"
     validate_evidence(evidence)
+
+
+# --------------------------------------------------------------------------
+# F1b: per-identity credentials
+# --------------------------------------------------------------------------
+
+
+def test_f1b_shared_key_alone_obtains_no_decision(gateway_url, tmp_path):
+    """The pre-F1b configuration (one shared key for every identity) is
+    refused by a strict Gateway -- no decision, nothing actuated."""
+    from mcc_sdk import MCCAuthenticationError
+    cfg = _config(gateway_url, tmp_path, mode="enforced", agent_keys=None)
+    with PilotIntegration(cfg) as pilot:
+        with pytest.raises(MCCAuthenticationError):
+            pilot.submit(**ALLOW_SCENARIO)
+        assert pilot.actuator.log == []
+
+
+def test_f1b_identity_without_a_configured_key_fails_closed(gateway_url, tmp_path):
+    from mcc_sdk import MCCConfigurationError
+    cfg = _config(gateway_url, tmp_path, mode="enforced",
+                  agent_keys={"agent/ops-bot": module_key("agent/ops-bot")})
+    with PilotIntegration(cfg) as pilot:
+        with pytest.raises(MCCConfigurationError):
+            pilot.submit(**ALLOW_SCENARIO)   # agent/payments-bot has no key -> no shared fallback
+        assert pilot.actuator.log == []
+
+
+def test_f1b_another_identitys_key_cannot_evaluate_as_it(gateway_url, tmp_path):
+    from mcc_sdk import MCCAuthenticationError
+    cfg = _config(gateway_url, tmp_path, mode="enforced",
+                  agent_keys={"agent/payments-bot": module_key("agent/ops-bot")})
+    with PilotIntegration(cfg) as pilot:
+        with pytest.raises(MCCAuthenticationError):
+            pilot.submit(**ALLOW_SCENARIO)
+        assert pilot.actuator.log == []

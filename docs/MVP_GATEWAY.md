@@ -115,8 +115,16 @@ agent --HTTP--> [ MCC egress proxy ] --HTTP--> upstream
 ```
 
 Drop-in: point the agent's `HTTP_PROXY` / base URL at MCC. Client code is not
-touched; interception happens on the network. Identity arrives via
-`X-MCC-Identity` (in production: mTLS client cert / signed workload identity).
+touched; interception happens on the network. **F1b:** the caller presents
+its OWN registered credential in `X-MCC-Agent-Key`; the interceptor resolves
+the principal from it (hash-only registry, `MCC_AGENT_CREDENTIALS_CONFIG`,
+tenant `MCC_GATEWAY_TENANT_ID`), requires `X-MCC-Identity` (optional) to equal
+that principal, forwards the same credential to `/evaluate` and strips it
+before the upstream call. No registry → every caller is refused. The
+interceptor's own service key cannot obtain a decision for a caller-selected
+identity (the strict gateway refuses it). Production still wants mTLS /
+signed workload identity instead of a bearer key (see
+`docs/AGENT_IDENTITY.md`, F1b).
 The governing logic (`ActionMapper`, `EgressGovernor`) is socket-free and
 unit-tested; the forwarding layer is thin.
 

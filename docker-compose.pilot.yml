@@ -10,8 +10,12 @@
 #   mcc-gateway   — the MCC-Core governed gateway (the egress proxy): authority +
 #                   execution gate + governed HTTPS executor + audit. The ONLY
 #                   service that performs the outbound call to pilot-api.
-#   mcc-agent     — the governed agent runner: proposes + submits to mcc-gateway.
-#                   Holds ONLY the agent api key -- no operator key.
+#   agent-credentials-init — one-shot, network-less provisioning (F1b): one
+#                   credential per agent principal + the gateway's hash-only registry.
+#   mcc-agent     — the governed agent runner as agent/crm: proposes + submits
+#                   to mcc-gateway. Holds ONLY its own credential -- no operator key.
+#   mcc-agent-escalate — the same runner as agent/intern (ESCALATE path), in its
+#                   own container with its own credential.
 #   mcc-operator  — SEPARATE process/container/credential holder from
 #                   mcc-agent. Holds ONLY the operator key. Watches a shared,
 #                   non-secret state file (the pending approval's request_id)
@@ -40,6 +44,10 @@ networks:
 volumes:
   mcc-agent-audit:
   mcc-pilot-state:
+  # F1b: hash-only registry (gateway, ro) + one credential volume per agent.
+  agent-registry:
+  agent-cred-crm:
+  agent-cred-intern:
 
 services:
   redis:
@@ -64,6 +72,34 @@ services:
       timeout: 3s
       retries: 10
 
+  agent-credentials-init:
+    build:
+      context: .
+      dockerfile: deploy/pilot/Dockerfile.agent-pilot
+    # F1b -- TRUSTED PROVISIONING BOUNDARY (one-shot, no network). A fresh
+    # random credential per agent into THAT agent's own volume, and the
+    # gateway's registry (SHA-256 hashes only). No agent key is committed.
+    user: "0:0"
+    network_mode: none
+    command:
+      - "python"
+      - "-m"
+      - "gateway.agent_provisioning"
+      - "--registry"
+      - "/registry/agent_credentials.json"
+      - "--tenant-id"
+      - "governed-agent-demo"
+      - "--owner"
+      - "10003:10003"
+      - "--agent"
+      - "agent/crm=/creds/crm"
+      - "--agent"
+      - "agent/intern=/creds/intern"
+    volumes:
+      - agent-registry:/registry
+      - agent-cred-crm:/creds/crm
+      - agent-cred-intern:/creds/intern
+
   mcc-gateway:
     build:
       context: .
@@ -71,7 +107,12 @@ services:
     command: ["uvicorn", "egress_proxy.app:app", "--host", "0.0.0.0", "--port", "8090"]
     environment:
       # Governed gateway config (the verdict comes from MCC-Core authority).
+      # F1b: the service key asserts no actor (strict mode); each agent is
+      # resolved from its OWN credential via the hash-only registry and its
+      # ``actor`` must equal that principal.
       MCC_EGRESS_API_KEY: "agent-key"
+      MCC_AGENT_CREDENTIALS_CONFIG: "/registry/agent_credentials.json"
+      MCC_EGRESS_TENANT_ID: "governed-agent-demo"
       MCC_EGRESS_OPERATOR_API_KEY: "op-key"
       # Independent authority-side policy (PROPOSAL != PERMISSION): an
       # authenticated operator key alone no longer suffices to grant an
@@ -102,7 +143,10 @@ services:
     networks: [agent_edge, gov_internal]
     volumes:
       - mcc-agent-audit:/data
+      - agent-registry:/registry:ro
     depends_on:
+      agent-credentials-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       pilot-api:
@@ -125,11 +169,35 @@ services:
     environment:
       MCC_GATEWAY_URL: "http://mcc-gateway:8090"
       PILOT_API_BASE: "http://pilot-api:9100"
-      MCC_EGRESS_API_KEY: "agent-key"
+      # F1b: this container IS agent/crm. It holds ONLY its own credential
+      # (read-only volume) -- no service key, operator key or other agent key.
+      MCC_AGENT_CREDENTIAL_FILE: "/run/mcc-agent/credential.json"
       MCC_EGRESS_EGRESS_ACTOR_MANDATE: "agent/crm"
       MCC_PILOT_STATE_DIR: "/pilot-state"
     volumes:
       - mcc-pilot-state:/pilot-state
+      - agent-cred-crm:/run/mcc-agent:ro
+    networks: [agent_edge]
+    depends_on:
+      mcc-gateway:
+        condition: service_healthy
+
+  # F1b: agent/intern is a DIFFERENT principal (no mandate -> ESCALATE), so it
+  # runs in its OWN container with its OWN credential volume.
+  mcc-agent-escalate:
+    build:
+      context: .
+      dockerfile: deploy/pilot/Dockerfile.agent-pilot
+    command: ["python", "/app/governed_agent_compose_demo.py"]
+    environment:
+      MCC_GATEWAY_URL: "http://mcc-gateway:8090"
+      PILOT_API_BASE: "http://pilot-api:9100"
+      MCC_AGENT_CREDENTIAL_FILE: "/run/mcc-agent/credential.json"
+      MCC_EGRESS_EGRESS_ACTOR_MANDATE: "agent/crm"
+      MCC_PILOT_STATE_DIR: "/pilot-state"
+    volumes:
+      - mcc-pilot-state:/pilot-state
+      - agent-cred-intern:/run/mcc-agent:ro
     networks: [agent_edge]
     depends_on:
       mcc-gateway:

@@ -146,7 +146,7 @@ def test_a6_alternate_network_route_disallowed_host(sut):
 
     tx = str(uuid.uuid4())
     r = httpx.post(
-        f"{sut.actuator_url}/v1/http/execute", headers={"x-api-key": sut.actuator_api_key},
+        f"{sut.actuator_url}/v1/http/execute", headers={"x-api-key": sut.actuator_key()},
         json=_request(sut, transaction_id=tx, url="http://evil.example.com/send_notification"), timeout=10.0,
     )
     body = r.json()

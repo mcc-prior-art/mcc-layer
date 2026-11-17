@@ -23,6 +23,20 @@ class PilotConfigError(ValueError):
     """Invalid or missing pilot configuration."""
 
 
+def load_agent_keys(path: str) -> dict[str, str]:
+    """Load ``{identity: key}`` from a JSON file (fail-closed on any
+    malformation). The values are secrets: never logged or exported."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as exc:
+        raise PilotConfigError(f"cannot load agent keys file: {type(exc).__name__}") from None
+    if not isinstance(data, dict) or not data or not all(
+            isinstance(k, str) and k and isinstance(v, str) and v for k, v in data.items()):
+        raise PilotConfigError("agent keys file must be a non-empty JSON object identity -> key")
+    return dict(data)
+
+
 @dataclass(frozen=True)
 class PilotConfig:
     """Pilot runtime configuration. Immutable once constructed.
@@ -40,6 +54,12 @@ class PilotConfig:
     evidence_dir: str = "./artifacts/pilot-evidence"
     run_correlation_id: str = field(default_factory=lambda: f"pilot-run-{uuid.uuid4().hex[:12]}")
     api_key: str | None = None
+    # F1b: per-identity credentials ``{identity: key}``. A strict Gateway
+    # refuses the shared tenant key on /evaluate for EVERY identity, so each
+    # identity the pilot submits as must present its OWN registered key. When
+    # set, an identity without an entry fails closed (no fallback to
+    # ``api_key``). Secret: excluded from evidence and the fingerprint.
+    agent_keys: dict[str, str] | None = None
 
     def __post_init__(self) -> None:
         if not self.gateway_url or not (
@@ -56,6 +76,10 @@ class PilotConfig:
             raise PilotConfigError("integration_id is required")
         if not self.evidence_dir:
             raise PilotConfigError("evidence_dir is required")
+        if self.agent_keys is not None and (not isinstance(self.agent_keys, dict) or not all(
+                isinstance(k, str) and k and isinstance(v, str) and v
+                for k, v in self.agent_keys.items())):
+            raise PilotConfigError("agent_keys must map non-empty identity -> non-empty key")
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> PilotConfig:
@@ -81,14 +105,17 @@ class PilotConfig:
             kwargs["run_correlation_id"] = e["MCC_PILOT_RUN_CORRELATION_ID"]
         if "MCC_PILOT_API_KEY" in e:
             kwargs["api_key"] = e["MCC_PILOT_API_KEY"]
+        if e.get("MCC_PILOT_AGENT_KEYS_FILE"):
+            kwargs["agent_keys"] = load_agent_keys(e["MCC_PILOT_AGENT_KEYS_FILE"])
         return cls(**kwargs)  # type: ignore[arg-type]
 
     def to_evidence_dict(self) -> dict[str, object]:
         """The configuration as recorded in an evidence bundle -- ``api_key``
-        (and only ``api_key``; every other field is non-secret by design) is
-        always excluded."""
+        and ``agent_keys`` (the only secrets; every other field is non-secret
+        by design) are always excluded."""
         d = asdict(self)
         d.pop("api_key", None)
+        d.pop("agent_keys", None)
         return d
 
     def fingerprint(self) -> str:

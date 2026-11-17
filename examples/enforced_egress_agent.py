@@ -88,7 +88,18 @@ def _run(servers: DemoServers) -> int:
         require_consensus=True, consensus_threshold=3,
         consensus_trust_config=tf.name,
         audit_log_path=os.path.join(tempfile.mkdtemp(prefix="egress-demo-"), "audit.jsonl"))
-    proxy_app = build_app(settings)
+    # F1b: each agent presents its OWN credential; the egress service key
+    # ("agent-key") grants no identity. Hash-only registry for this demo.
+    import secrets as _secrets
+
+    from mcc_core.agent_identity import hash_agent_key
+    agent_keys = {p: _secrets.token_urlsafe(24) for p in ("agent/egress", "agent/intern")}
+    reg = os.path.join(tempfile.mkdtemp(prefix="egress-demo-agents-"), "agents.json")
+    with open(reg, "w", encoding="utf-8") as f:
+        json.dump({"agents": [{"credential_id": f"demo-{i}", "tenant_id": settings.tenant_id,
+                               "principal_id": p, "key_sha256": hash_agent_key(k), "status": "active"}
+                              for i, (p, k) in enumerate(sorted(agent_keys.items()))]}, f)
+    proxy_app = build_app(settings, env={**os.environ, "MCC_AGENT_CREDENTIALS_CONFIG": reg})
     policy_hash = _policy_hash(settings)
 
     # DemoServers.start() blocks until each server is ready (server.started).
@@ -112,7 +123,8 @@ def _run(servers: DemoServers) -> int:
 
     def post(**fields):
         body = {"resource": "acct-1"}; body.update(fields)
-        return httpx.post(f"{base}/v1/http/execute", headers=H, json=body, timeout=10.0).json()
+        headers = {"x-api-key": agent_keys[body["actor"]]} if body.get("actor") in agent_keys else H
+        return httpx.post(f"{base}/v1/http/execute", headers=headers, json=body, timeout=10.0).json()
 
     def check(cond, msg):
         if not cond:

@@ -19,6 +19,7 @@ from mcc_sdk import (
     MCCGatewayError,
     Verdict,
 )
+from tests._agent_credentials import module_key
 
 
 @pytest.mark.parametrize(
@@ -31,8 +32,10 @@ from mcc_sdk import (
     ],
 )
 def test_integration_every_verdict_round_trips(gateway_url, identity, action, context, expected):
-    url, api_key = gateway_url
-    with MCCClient(base_url=url, api_key=api_key, timeout=5.0) as client:
+    url, _shared_key = gateway_url
+    # F1b: each identity evaluates with its own registered credential (the
+    # shared tenant key obtains no decision in strict mode).
+    with MCCClient(base_url=url, api_key=module_key(identity), timeout=5.0) as client:
         result = client.evaluate(
             EvaluateRequest(identity=identity, action=action, context=context, mode="inline")
         )
@@ -46,8 +49,8 @@ def test_integration_every_verdict_round_trips(gateway_url, identity, action, co
 
 
 def test_integration_constrain_forward_context_differs_from_requested(gateway_url):
-    url, api_key = gateway_url
-    with MCCClient(base_url=url, api_key=api_key) as client:
+    url, _shared_key = gateway_url
+    with MCCClient(base_url=url, api_key=module_key("agent/payments-bot")) as client:
         result = client.evaluate(
             EvaluateRequest(
                 identity="agent/payments-bot", action="send_payment",
@@ -126,7 +129,7 @@ def test_integration_async_client_matches_sync_over_the_real_gateway(gateway_url
     url, api_key = gateway_url
 
     async def go():
-        async with AsyncMCCClient(base_url=url, api_key=api_key, timeout=5.0) as client:
+        async with AsyncMCCClient(base_url=url, api_key=module_key("agent/ops-bot"), timeout=5.0) as client:
             return await client.evaluate(
                 EvaluateRequest(identity="agent/ops-bot", action="delete_database", mode="inline")
             )
@@ -136,8 +139,8 @@ def test_integration_async_client_matches_sync_over_the_real_gateway(gateway_url
 
 
 def test_integration_audit_id_is_present_and_non_empty(gateway_url):
-    url, api_key = gateway_url
-    with MCCClient(base_url=url, api_key=api_key) as client:
+    url, _shared_key = gateway_url
+    with MCCClient(base_url=url, api_key=module_key("agent/payments-bot")) as client:
         result = client.evaluate(
             EvaluateRequest(identity="agent/payments-bot", action="send_payment", context={"amount": 10})
         )

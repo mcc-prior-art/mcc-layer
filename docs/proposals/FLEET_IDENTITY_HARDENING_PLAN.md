@@ -24,6 +24,18 @@
 > registry and remain **OPEN**, now tracked as **F1b**. F2–F7 are not
 > implemented. The fleet objective stays **OPEN**.
 
+> **Status update (F1b PR, branch `claude/f1b-runtime-identity-binding`,
+> stacked on the F1 branch):** F1b is implemented for the egress proxy, the
+> MVP interceptor, `main.py` `/evaluate` + `/evaluate/challenge` and the
+> Pilot Execution API, and the gateway `/evaluate` shared-key exception is
+> closed (AX decision: no decision for any identity with the shared key in
+> strict mode). Tenant and principal are resolved from the credential;
+> stored operations and approvals are bound to the principal. **Not done in
+> F1b:** the egress proxy's and `main.py`'s embedded coordinators are still
+> tenant-unscoped (they serve one tenant per deployment); the interceptor
+> forwards a bearer credential (no mTLS / workload attestation, F4).
+> F2–F7 are not implemented. The fleet objective stays **OPEN**.
+
 ## 1. Objective and threat model
 
 **Objective.** A fully compromised agent B must not acquire agent A's identity
@@ -276,8 +288,8 @@ production startup refuses.
 | F6 | **Delegation recipient binding and owner-scope aggregate budgets**; attenuation rules for any future chain | Delegation budget semantics | Collusion over several delegations cannot exceed the owner-scope limit |
 | F7 | **3,000-principal adversarial validation and performance harness** (section 5) | No | The acceptance criteria below |
 
-F1 (gateway scope) is implemented in the PR stacked on #135; F1b is the
-recommended next PR for the separately deployed runtimes. AX may require F1
+F1 (gateway scope) is implemented in the PR stacked on #135; F1b (the
+separately deployed runtimes) is implemented in the PR stacked on F1. AX may require F1
 to merge together with PR #135, because PR #135 alone leaves the verified
 same-tenant impersonation path through gateway consensus.
 

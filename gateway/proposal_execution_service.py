@@ -216,6 +216,7 @@ class ProposalExecutionService:
 
     async def authorize_and_execute(
         self, *, tenant_id: str, logical_operation_id: str,
+        principal_id: Optional[str] = None,
     ) -> ProposalExecOutcome:
         """Authorize and (if authority allows) execute exactly one
         tenant-owned proposal. Takes NO payload/action/resource parameter --
@@ -223,7 +224,18 @@ class ProposalExecutionService:
         execution body that could diverge from the proposal's own stored
         content (Section 2); the only inputs are the two identity
         components, exactly like ``MCCProposalService.get_operation_status``.
+
+        F1b: ``principal_id`` is the individually authenticated caller. When
+        given, only the principal the proposal is bound to may execute it --
+        another principal's (or a pre-F1b, unbound) proposal is NOT_FOUND,
+        before any authority decision, token, reservation, audit or actuator
+        call. The token's subject/actor is then that principal; the authority
+        policy is still evaluated for the tenant (unchanged semantics).
         """
+        if principal_id is not None and (not isinstance(principal_id, str) or not principal_id.strip()):
+            return ProposalExecOutcome(
+                ProposalExecStatus.REJECTED, "principal_id must be a non-empty authenticated identity",
+            )
         # ---- Section 1: tenant ownership first, before anything else ----
         if not isinstance(tenant_id, str) or not tenant_id.strip():
             return ProposalExecOutcome(
@@ -245,6 +257,11 @@ class ProposalExecutionService:
             # or was proposed by a DIFFERENT tenant, is indistinguishable
             # here -- exactly mirroring the read-only status boundary.
             return ProposalExecOutcome(ProposalExecStatus.NOT_FOUND, "no proposal for this tenant/identity")
+        if principal_id is not None and getattr(record, "principal_id", None) != principal_id:
+            # F1b: another principal's operation is indistinguishable from an
+            # absent one (no disclosure, nothing consumed or reserved).
+            return ProposalExecOutcome(ProposalExecStatus.NOT_FOUND, "no proposal for this tenant/identity")
+        actor = principal_id if principal_id is not None else tenant_id
 
         # ---- Section 2: the proposal record's OWN content is the ONLY
         # source of the governed operation. A record written before this
@@ -327,7 +344,7 @@ class ProposalExecutionService:
         auth_claims = dict(profile.auth_claims(forward_context))
         token = self._engine.issue_token(
             verdict=decision.verdict.value,
-            subject=tenant_id,
+            subject=actor,
             action=action,
             payload=forward_context,
             constraints=decision.constraints,
@@ -339,7 +356,7 @@ class ProposalExecutionService:
             # apply exactly as they would for any other governed caller.
             idempotency_key=logical_operation_id,
             tenant_id=tenant_id,
-            actor_id=tenant_id,
+            actor_id=actor,
             resource_id=resource,
             auth_claims=auth_claims,
         )
@@ -365,7 +382,7 @@ class ProposalExecutionService:
         result = await self._coordinator.enforce(
             token=token, action=action, payload=effective_payload, executor=executor,
             request_binding={
-                "actor_id": tenant_id, "resource_id": resource,
+                "actor_id": actor, "resource_id": resource,
                 "transaction_id": None, "tenant_id": tenant_id,
             },
         )

@@ -20,6 +20,8 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 import pytest
+
+from tests._agent_credentials import tenant_key_registry  # F1b
 from fastapi.testclient import TestClient
 
 from examples.pilot_execution_api.app import (
@@ -44,6 +46,8 @@ def test_example_app_shared_instance_wiring_end_to_end():
     app = build_app(
         tenants_credentials={"k": "demo-tenant"}, tenants_authority={"demo-tenant": {}},
         upstream=_upstream(),
+        # F1b: "k" is agent/demo's OWN registered credential.
+        agent_credentials=tenant_key_registry({"k": "demo-tenant"}, "agent/demo"),
     )
     client = TestClient(app)
 
@@ -86,6 +90,7 @@ def test_b_explicit_empty_authority_does_not_auto_grant():
     # empty -- must be denied, never auto-granted.
     app = build_app(
         tenants_credentials={"k": "tenant-x"}, tenants_authority={}, upstream=_upstream(),
+        agent_credentials=tenant_key_registry({"k": "tenant-x"}, "a"),   # F1b: a's own key
     )
     client = TestClient(app)
     r = client.post("/v1/proposals", headers={"x-api-key": "k"}, json={

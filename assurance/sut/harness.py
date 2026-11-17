@@ -30,6 +30,32 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+
+# F1b: the actuator (egress proxy) authenticates INDIVIDUAL principals. Each
+# actor the assurance workstreams submit as holds its own key, derived from
+# the actuator's service key; the service key itself is never registered and
+# grants no identity. The registry stores SHA-256 hashes only.
+ACTUATOR_PRINCIPALS = ("agent/egress", "agent/an-impostor", "agent/negative-control-bot",
+                       "agent/ops-bot", "attacker")
+ACTUATOR_TENANT = "governed-agent-demo"
+
+
+def actuator_agent_key(service_key: str, actor: Optional[str]) -> str:
+    """The credential ``actor`` presents to the actuator (the service key if
+    no actor is named -- which a strict actuator refuses)."""
+    return f"{service_key}::agent::{actor}" if actor else service_key
+
+
+def write_actuator_agent_registry(directory: str, service_key: str) -> str:
+    from mcc_core.agent_identity import hash_agent_key
+    path = os.path.join(directory, "actuator-agent-credentials.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"agents": [
+            {"credential_id": f"assurance-{i}", "tenant_id": ACTUATOR_TENANT, "principal_id": p,
+             "key_sha256": hash_agent_key(actuator_agent_key(service_key, p)), "status": "active"}
+            for i, p in enumerate(ACTUATOR_PRINCIPALS)]}, f)
+    return path
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FAR_FUTURE = 4_000_000_000
 # V05: the trusted, server-side tenant of the SUT gateway (set explicitly on
@@ -262,6 +288,12 @@ class SystemUnderTest:
                 self._procs[i] = self._notify_process
         _wait_ready(f"{self.notify_url}/health")
 
+    def actuator_key(self, actor: Optional[str] = "agent/egress") -> str:
+        """F1b: the per-principal credential ``actor`` presents to the
+        actuator's ``/v1/http/execute`` (the actuator resolves the principal
+        from it and refuses a body ``actor`` naming anyone else)."""
+        return actuator_agent_key(self.actuator_api_key, actor)
+
     def agent_key(self, principal_id: str) -> str:
         """V05 (part 2): the per-agent credential ``principal_id`` presents as
         ``X-API-Key`` on the Gateway's identity routes (``/mandates/execute``,
@@ -391,7 +423,7 @@ class SystemUnderTest:
                "actor": actor, "resource": resource, "transaction_id": transaction_id,
                "idempotency_key": idempotency_key}
         r = httpx.post(f"{self.actuator_url}/v1/http/execute",
-                        headers={"x-api-key": api_key or self.actuator_api_key}, json=req, timeout=10.0)
+                        headers={"x-api-key": api_key or actuator_agent_key(self.actuator_api_key, req.get("actor"))}, json=req, timeout=10.0)
         payload = r.json()
         payload["_request"] = req
         payload["_status_code"] = r.status_code
@@ -405,7 +437,7 @@ class SystemUnderTest:
         req["challenge_id"] = proposal["challenge_id"]
         req["votes"] = votes
         r = httpx.post(f"{self.actuator_url}/v1/http/execute",
-                        headers={"x-api-key": api_key or self.actuator_api_key}, json=req, timeout=10.0)
+                        headers={"x-api-key": api_key or actuator_agent_key(self.actuator_api_key, req.get("actor"))}, json=req, timeout=10.0)
         payload = r.json()
         payload["_request"] = req
         payload["_status_code"] = r.status_code
@@ -430,7 +462,7 @@ class SystemUnderTest:
         req["votes"] = votes
         req["constrained"] = True
         r = httpx.post(f"{self.actuator_url}/v1/http/execute",
-                        headers={"x-api-key": api_key or self.actuator_api_key}, json=req, timeout=10.0)
+                        headers={"x-api-key": api_key or actuator_agent_key(self.actuator_api_key, req.get("actor"))}, json=req, timeout=10.0)
         payload = r.json()
         payload["_request"] = req
         payload["_status_code"] = r.status_code
@@ -663,6 +695,8 @@ def build_system_under_test(*, n_evaluators: int = 3, threshold: int = 3,
     actuator_audit = os.path.join(tmpdir, "actuator-audit.jsonl")
     actuator_env = dict(env_base)
     actuator_env["MCC_ASSURANCE_ACTUATOR_API_KEY"] = "assurance-actuator-key"
+    actuator_env["MCC_ASSURANCE_AGENT_CREDENTIALS"] = write_actuator_agent_registry(
+        tmpdir, "assurance-actuator-key")
     actuator_env["MCC_ASSURANCE_OPERATOR_KEY"] = "assurance-operator-key"
     actuator_env["MCC_ASSURANCE_THRESHOLD"] = str(threshold)
     actuator_cmd = [sys.executable, "-m", "assurance.sut.actuator_process", "--port", str(actuator_port),

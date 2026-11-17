@@ -61,7 +61,10 @@ CONSENSUS_THRESHOLD = 3
 TOKEN_TTL_SECONDS = "60"
 # Demo agents that act on identity routes (V05 part 2) -- incl. consensus
 # execution and /evaluate as themselves (F1): each gets its OWN credential.
-DEMO_AGENT_PRINCIPALS = ("agent/nobody", "agent/payments-bot", "agent/control-room-demo")
+# F1b: a strict gateway refuses the shared key on /evaluate for EVERY
+# identity, so every identity a scenario evaluates as is registered here.
+DEMO_AGENT_PRINCIPALS = ("agent/nobody", "agent/payments-bot", "agent/control-room-demo",
+                         "agent/ops-bot")
 
 
 def _build_upstream_app(seen: List[Dict[str, Any]]) -> FastAPI:

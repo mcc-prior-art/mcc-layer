@@ -36,6 +36,23 @@ os.environ["MCC_GATEWAY_AUDIT_LOG_PATH"] = os.path.join(
     tempfile.mkdtemp(prefix="mcc-demo-"), "audit.jsonl"
 )
 
+# F1b: every agent presents its OWN credential (X-MCC-Agent-Key); the gateway
+# and the interceptor share one hash-only registry. The interceptor's own
+# service key ("demo-key") never authorizes a caller-selected identity.
+import json as _json  # noqa: E402
+import secrets as _secrets  # noqa: E402
+
+from mcc_core.agent_identity import AgentCredentialRegistry, hash_agent_key  # noqa: E402
+
+AGENT_KEYS = {p: _secrets.token_urlsafe(24)
+              for p in ("agent/payments-bot", "agent/ops-bot", "agent/unknown")}
+_REGISTRY = os.path.join(tempfile.mkdtemp(prefix="mcc-demo-agents-"), "agents.json")
+with open(_REGISTRY, "w", encoding="utf-8") as _f:
+    _json.dump({"agents": [{"credential_id": f"demo-{i}", "tenant_id": "pilot", "principal_id": p,
+                            "key_sha256": hash_agent_key(k), "status": "active"}
+                           for i, (p, k) in enumerate(sorted(AGENT_KEYS.items()))]}, _f)
+os.environ["MCC_AGENT_CREDENTIALS_CONFIG"] = _REGISTRY
+
 import gateway.app as gw  # noqa: E402
 from interceptors.egress_proxy import (  # noqa: E402
     ActionMapper,
@@ -98,6 +115,7 @@ def _run(servers: DemoServers) -> int:
         ),
         decide=build_decide_via_http(gateway_url, "demo-key"),
         gate=build_gate_from_health(gateway_url),  # verifies signature + nonce
+        agent_credentials=AgentCredentialRegistry.from_file(_REGISTRY), tenant_id="pilot",
     )
     proxy = build_proxy_app(governor, upstream_base=f"http://127.0.0.1:{UPSTREAM_PORT}")
     servers.start(proxy, PROXY_PORT)
@@ -112,14 +130,18 @@ def _run(servers: DemoServers) -> int:
          "DELETE", "/db/users", {}, "agent/ops-bot", "DENY"),
         ("unknown-bot, payment (no mandate)",
          "POST", "/charge", {"amount": 1}, "agent/unknown", "ESCALATE"),
+        # F1b: unknown-bot's OWN key, claiming payments-bot's identity.
+        ("unknown-bot claiming to be payments-bot (own key)",
+         "POST", "/charge", {"amount": 100}, ("agent/unknown", "agent/payments-bot"), "DENY"),
     ]
 
     print("\n=== Driving traffic through the MCC egress proxy (inline) ===\n")
     failures = []
     for label, method, path, body, identity, expected in cases:
+        key_of, claimed = identity if isinstance(identity, tuple) else (identity, identity)
         r = httpx.request(
             method, base + path, json=body,
-            headers={"X-MCC-Identity": identity}, timeout=5.0,
+            headers={"X-MCC-Agent-Key": AGENT_KEYS[key_of], "X-MCC-Identity": claimed}, timeout=5.0,
         )
         decision = r.headers.get("X-MCC-Decision", "?")
         reached = r.status_code == 200 and r.json().get("upstream_reached")
@@ -152,7 +174,7 @@ def _run(servers: DemoServers) -> int:
         f"{gateway_url}/evaluate",
         json={"identity": "agent/payments-bot", "action": "send_payment",
               "context": {"amount": 42}, "mode": "inline"},
-        headers={"x-api-key": "demo-key"}, timeout=5.0,
+        headers={"x-api-key": AGENT_KEYS["agent/payments-bot"]}, timeout=5.0,
     ).json()
     token, fctx = ev["decision_token"], ev["forward_context"]
     first = asyncio.run(governor.gate.verify(token, action="send_payment", payload=fctx))

@@ -32,6 +32,13 @@ SECRETS = HERE / "secrets"
 # Agent-side credential directories (raw keys; never mounted into the gateway).
 AGENT_CREDENTIALS = HERE / "agent-credentials"
 PILOT_AGENT = "agent/payments-bot"
+# F1b: a strict gateway refuses the shared tenant key on /evaluate for EVERY
+# identity, so each identity the runbook driver evaluates as gets its OWN
+# credential (directory name = the principal's last path segment).
+PILOT_AGENTS = (PILOT_AGENT, "agent/nobody", "agent/ops-bot")
+# F1b: the reference egress agent's own identity at the egress proxy.
+EGRESS_AGENT = "agent/egress"
+EGRESS_TENANT = "governed-agent-demo"
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
@@ -105,15 +112,22 @@ def main() -> int:
     # gateway).
     from gateway.agent_provisioning import provision
     provision(registry_path=str(SECRETS / "agent_credentials.json"), tenant_id="pilot",
-              agents=[(PILOT_AGENT, str(AGENT_CREDENTIALS / "payments-bot"))])
+              agents=[(p, str(AGENT_CREDENTIALS / p.split("/")[-1])) for p in PILOT_AGENTS])
+    # F1b: the egress proxy authenticates the reference egress agent as
+    # ITSELF (agent/egress); its shared service key asserts no actor. A
+    # separate hash-only registry for the proxy's tenant.
+    provision(registry_path=str(SECRETS / "egress_agent_credentials.json"),
+              tenant_id=EGRESS_TENANT, agents=[(EGRESS_AGENT, str(AGENT_CREDENTIALS / "egress"))])
 
     print(f"wrote pilot secrets to {SECRETS} (mode 0600 keys; trust configs hold PUBLIC keys only)")
     print(f"  gateway signing kid:  {gateway.kid}")
     print(f"  approver kid:         {approver.kid}")
     print(f"  mandate issuer kid:   {mandate_issuer.kid}")
     print(f"  evaluator kids:       {[e.kid for e in evaluators]}")
-    print(f"  pilot agent:          {PILOT_AGENT} (credential in "
-          f"{AGENT_CREDENTIALS / 'payments-bot'}; registry holds its SHA-256 only)")
+    print(f"  pilot agents:         {list(PILOT_AGENTS)} (credentials in "
+          f"{AGENT_CREDENTIALS}/<name>/; registry holds SHA-256 hashes only)")
+    print(f"  egress agent:         {EGRESS_AGENT} (credential in {AGENT_CREDENTIALS / 'egress'}; "
+          f"egress registry holds its SHA-256 only)")
     print("\nNext: copy deploy/pilot/.env.example to deploy/pilot/.env, then "
           "`docker compose -f deploy/pilot/docker-compose.yml up --build`.")
     return 0

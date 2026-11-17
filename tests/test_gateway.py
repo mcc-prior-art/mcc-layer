@@ -125,7 +125,9 @@ def test_verify_chain_after_evaluations():
 # ---- HTTP surface ----
 
 client = TestClient(gw.app)
-HEADERS = {"x-api-key": gw.settings.api_key}
+HEADERS = {"x-api-key": gw.settings.api_key}   # shared key: read-only routes only
+# F1b: /evaluate is authority-issuing -- each identity presents its OWN key.
+from tests._agent_credentials import module_headers  # noqa: E402
 
 
 def test_http_evaluate_requires_api_key():
@@ -142,7 +144,7 @@ def test_http_evaluate_allow():
             "context": {"amount": 50},
             "mode": "inline",
         },
-        headers=HEADERS,
+        headers=module_headers("agent/payments-bot"),
     )
     assert r.status_code == 200
     body = r.json()
@@ -154,7 +156,7 @@ def test_http_export_returns_signed_log():
     client.post(
         "/evaluate",
         json={"identity": "agent/ops-bot", "action": "read_account"},
-        headers=HEADERS,
+        headers=module_headers("agent/ops-bot"),
     )
     r = client.get("/export?fmt=json", headers=HEADERS)
     assert r.status_code == 200
@@ -181,7 +183,7 @@ def test_http_evaluate_rejects_unknown_top_level_field():
             "context": {"amount": 50},
             "not_a_real_field": "should be rejected",
         },
-        headers=HEADERS,
+        headers=module_headers("agent/payments-bot"),
     )
     assert r.status_code == 422
     detail = r.json()["detail"]
@@ -195,7 +197,7 @@ def test_http_evaluate_still_rejects_missing_required_field():
     r = client.post(
         "/evaluate",
         json={"identity": "agent/x", "context": {}},
-        headers=HEADERS,
+        headers=module_headers("agent/x"),
     )
     assert r.status_code == 422
     detail = r.json()["detail"]
@@ -218,7 +220,7 @@ def test_http_evaluate_valid_request_with_every_known_field_still_works():
             "resource_id": "acct-ops-1",
             "mode": "inline",
         },
-        headers=HEADERS,
+        headers=module_headers("agent/payments-bot"),
     )
     assert r.status_code == 200
     assert r.json()["decision"] == "ALLOW"
@@ -235,7 +237,7 @@ def test_http_evaluate_canonical_verdicts_unchanged_for_valid_requests():
         ({"identity": "agent/payments-bot", "action": "send_payment", "context": {"amount": 99999}}, "CONSTRAIN"),
     ]
     for body, expected_decision in cases:
-        r = client.post("/evaluate", json=body, headers=HEADERS)
+        r = client.post("/evaluate", json=body, headers=module_headers(body["identity"]))
         assert r.status_code == 200
         assert r.json()["decision"] == expected_decision, body
 
@@ -251,6 +253,6 @@ def test_http_evaluate_nested_context_field_remains_flexible_by_design():
             "action": "send_payment",
             "context": {"amount": 50, "totally_unmodeled_nested_field": {"x": 1}},
         },
-        headers=HEADERS,
+        headers=module_headers("agent/payments-bot"),
     )
     assert r.status_code == 200

@@ -52,6 +52,12 @@ def build(*, notify_base: str, trust_config_path: str, audit_log_path: str,
     env = {} if redis_url is None else {
         "MCC_NONCE_BACKEND": "redis", "MCC_CHALLENGE_BACKEND": "redis", "MCC_REDIS_URL": redis_url,
     }
+    # F1b: the actuator authenticates individual principals (hash-only
+    # registry written by the harness); its shared service key grants no
+    # identity (strict). Without a registry every request fails closed.
+    creds = os.environ.get("MCC_ASSURANCE_AGENT_CREDENTIALS", "").strip()
+    if creds:
+        env["MCC_AGENT_CREDENTIALS_CONFIG"] = creds
     return build_app(settings, env=env)
 
 

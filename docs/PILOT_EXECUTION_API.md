@@ -77,6 +77,16 @@ deployment-specific equivalent passed directly to
   `X-Tenant-Id` header, a `tenant_id` body field) is silently ignored,
   because nothing in the handler even reads it.
 
+**F1b — per-principal identity (strict, the default).** The routes take
+`agent_credentials` (a hash-only `AgentCredentialRegistry`) and
+`identity_mode`. The presented key resolves server-side to (tenant,
+principal); a proposal's `actor` must equal the principal; the stored
+operation records its `principal_id`, and execute / status for another
+principal's operation return `NOT_FOUND` (nothing consumed or reserved).
+The `{api_key: tenant}` map above is accepted only in explicit
+`legacy-shared-key` mode (no within-tenant protection). See
+`docs/AGENT_IDENTITY.md`, F1b.
+
 ## 3. Trusted tenant resolution vs. authority
 
 Authentication (§2) answers *"who is this caller"*. It is a completely

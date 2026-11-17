@@ -23,6 +23,7 @@ from mcc_proposal.adapters import autogen, crewai, generic_http, langgraph
 
 CREDENTIAL = "shared-key"
 TENANT = "shared-tenant"
+PRINCIPAL = "a"
 
 run = asyncio.run
 
@@ -53,13 +54,16 @@ def build_shared_stack(*, durable_execution_state: Optional[Any] = None) -> Shar
     service = MCCProposalService(
         proposals=InMemoryProposalRegistry(), durable_execution_state=durable_execution_state,
     )
-    tenants = {CREDENTIAL: TENANT}
+    # F1b: CREDENTIAL is ONE registered principal's own key (PRINCIPAL, the
+    # actor every conformance request submits as) -- not a shared tenant key.
+    from tests._agent_credentials import tenant_key_registry
+    creds = tenant_key_registry({CREDENTIAL: TENANT}, PRINCIPAL)
 
     http_app = FastAPI()
-    mount_proposal_routes(http_app, service, tenants=tenants)
+    mount_proposal_routes(http_app, service, agent_credentials=creds)
     http_client = TestClient(http_app)
 
-    backend = InProcessProposalBackend(service=service, tenants=tenants)
+    backend = InProcessProposalBackend(service=service, agent_credentials=creds)
     mcp_app = build_mcp_http_app(backend)
     mcp_client = TestClient(mcp_app)
 

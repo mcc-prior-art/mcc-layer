@@ -63,6 +63,12 @@ class ProposalRecord:
     action: Optional[str] = None
     resource: Optional[str] = None
     payload: Optional[Dict[str, Any]] = None
+    # F1b: the individually authenticated principal that submitted this
+    # proposal (server-resolved from its credential, never the body's
+    # ``actor``). Only that principal may execute it or read its status.
+    # ``None`` for records written before F1b / by legacy shared-key
+    # callers -- a principal-bound executor treats those as not its own.
+    principal_id: Optional[str] = None
 
 
 class ProposalBackendUnavailable(Exception):
@@ -97,7 +103,7 @@ class InMemoryProposalRegistry:
     async def register(
         self, *, tenant_id: str, logical_operation_id: str, binding: str,
         action: Optional[str] = None, resource: Optional[str] = None,
-        payload: Optional[Dict[str, Any]] = None,
+        payload: Optional[Dict[str, Any]] = None, principal_id: Optional[str] = None,
     ) -> ProposalRegisterResult:
         key = _tenant_key(tenant_id, logical_operation_id)
         existing = self._store.get(key)
@@ -105,9 +111,17 @@ class InMemoryProposalRegistry:
             self._store[key] = ProposalRecord(
                 tenant_id=tenant_id, logical_operation_id=logical_operation_id,
                 binding=binding, created_at=time.time(),
-                action=action, resource=resource, payload=payload,
+                action=action, resource=resource, payload=payload, principal_id=principal_id,
             )
             return ProposalRegisterResult(ProposalRegisterStatus.REGISTERED, "registered", binding)
+        if existing.principal_id != principal_id:
+            # F1b: another principal (or a pre-F1b/legacy record) already owns
+            # this identity -- never an idempotent duplicate for this caller.
+            return ProposalRegisterResult(
+                ProposalRegisterStatus.BINDING_CONFLICT,
+                "logical_operation_id is already bound to a different principal",
+                existing.binding,
+            )
         if existing.binding == binding:
             return ProposalRegisterResult(
                 ProposalRegisterStatus.IDEMPOTENT_DUPLICATE, "identical proposal already registered", binding,
@@ -131,6 +145,11 @@ end
 local ok, decoded = pcall(cjson.decode, cur)
 if not ok or type(decoded) ~= 'table' or decoded.binding == nil then
     return {'ERROR', ''}
+end
+local owner = decoded.principal_id
+if owner == nil or owner == cjson.null then owner = '' end
+if owner ~= ARGV[3] then
+    return {'BINDING_CONFLICT', decoded.binding}
 end
 if decoded.binding == ARGV[2] then
     return {'IDEMPOTENT_DUPLICATE', decoded.binding}
@@ -188,13 +207,14 @@ class RedisProposalRegistry:
     async def register(
         self, *, tenant_id: str, logical_operation_id: str, binding: str,
         action: Optional[str] = None, resource: Optional[str] = None,
-        payload: Optional[Dict[str, Any]] = None,
+        payload: Optional[Dict[str, Any]] = None, principal_id: Optional[str] = None,
     ) -> ProposalRegisterResult:
         if not isinstance(binding, str) or not binding:
             return ProposalRegisterResult(ProposalRegisterStatus.ERROR, "invalid binding: must be a non-empty string")
         candidate = {
             "binding": binding, "created_at": time.time(),
             "action": action, "resource": resource, "payload": payload,
+            "principal_id": principal_id,
         }
         try:
             candidate_json = json.dumps(candidate, sort_keys=True)
@@ -205,7 +225,8 @@ class RedisProposalRegistry:
         key = self._key(tenant_id, logical_operation_id)
         try:
             res = await asyncio.wait_for(
-                self._redis.eval(_REGISTER_LUA, 1, key, candidate_json, binding), timeout=1.0,
+                self._redis.eval(_REGISTER_LUA, 1, key, candidate_json, binding, principal_id or ""),
+                timeout=1.0,
             )
         except Exception:
             return ProposalRegisterResult(ProposalRegisterStatus.ERROR, "proposal registry unavailable; fail-closed")
@@ -242,10 +263,13 @@ class RedisProposalRegistry:
             action = decoded.get("action")
             resource = decoded.get("resource")
             payload = decoded.get("payload")
+            principal_id = decoded.get("principal_id")
+            if principal_id is not None and not isinstance(principal_id, str):
+                raise ValueError("principal_id must be a string")
             return ProposalRecord(
                 tenant_id=tenant_id, logical_operation_id=logical_operation_id,
                 binding=binding, created_at=created_at,
-                action=action, resource=resource, payload=payload,
+                action=action, resource=resource, payload=payload, principal_id=principal_id,
             )
         except (ValueError, KeyError, TypeError, json.JSONDecodeError):
             pass

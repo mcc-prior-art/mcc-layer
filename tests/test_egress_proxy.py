@@ -60,7 +60,7 @@ def decide_signing(engine, *, verdict, action, forward_context, applied=None):
     """A decide() that signs a real token over the forwarded body, like the
     gateway does — so the gate's payload-hash check is meaningful."""
 
-    async def decide(_payload):
+    async def decide(_payload, **_kw):
         token = engine.issue_token(
             verdict=verdict,
             subject="agent/test",
@@ -81,11 +81,35 @@ def decide_signing(engine, *, verdict, action, forward_context, applied=None):
     return decide
 
 
+# ---- F1b: callers present their OWN agent credential ----
+# The governor resolves X-MCC-Agent-Key through a hash-only registry; the
+# X-MCC-Identity header, when sent, must equal that principal. These unit
+# tests act as honest agents; impersonation lives in
+# tests/test_f1b_runtime_identity_http.py.
+from mcc_core.agent_identity import AGENT_IDENTITY_STRICT, AgentCredentialRegistry  # noqa: E402
+
+_PRINCIPALS = ("agent/test", "agent/payments-bot", "agent/ops-bot")
+_KEYS = {p: f"egress-unit::{p}" for p in _PRINCIPALS}
+_REGISTRY = AgentCredentialRegistry.from_key_map({k: ("pilot", p) for p, k in _KEYS.items()})
+
+
+def _governor(**kw):
+    return EgressGovernor(agent_credentials=_REGISTRY, tenant_id="pilot",
+                          identity_mode=AGENT_IDENTITY_STRICT, **kw)
+
+
+def _request(*args, headers=None, **kw):
+    headers = dict(headers or {})
+    claimed = {k.lower(): v for k, v in headers.items()}.get("x-mcc-identity", "agent/test")
+    headers.setdefault("X-MCC-Agent-Key", _KEYS[claimed])
+    return OutboundRequest(*args, headers=headers, **kw)
+
+
 # ---- Action mapping ----
 
 def test_action_mapper_matches_route():
     action, ctx = mapper().map(
-        OutboundRequest(
+        _request(
             method="POST", url="http://payments.local/v1/charge", body={"amount": 100}
         )
     )
@@ -95,7 +119,7 @@ def test_action_mapper_matches_route():
 
 def test_action_mapper_unmapped_derives_deny_bound_action():
     action, _ = mapper().map(
-        OutboundRequest(method="POST", url="http://evil.local/exfiltrate")
+        _request(method="POST", url="http://evil.local/exfiltrate")
     )
     assert action == "post_evil.local"
 
@@ -104,7 +128,7 @@ def test_action_mapper_unmapped_derives_deny_bound_action():
 
 def test_allow_forwards_after_gate_verifies():
     engine, gate = make_engine_and_gate()
-    gov = EgressGovernor(
+    gov = _governor(
         mapper=mapper(),
         decide=decide_signing(
             engine, verdict="ALLOW", action="send_payment", forward_context={"amount": 10}
@@ -113,7 +137,7 @@ def test_allow_forwards_after_gate_verifies():
     )
     out = run(
         gov.govern(
-            OutboundRequest(
+            _request(
                 method="POST",
                 url="http://payments.local/charge",
                 headers={"X-MCC-Identity": "agent/payments-bot"},
@@ -128,7 +152,7 @@ def test_allow_forwards_after_gate_verifies():
 
 def test_constrain_forwards_rewritten_body():
     engine, gate = make_engine_and_gate()
-    gov = EgressGovernor(
+    gov = _governor(
         mapper=mapper(),
         decide=decide_signing(
             engine,
@@ -141,7 +165,7 @@ def test_constrain_forwards_rewritten_body():
     )
     out = run(
         gov.govern(
-            OutboundRequest(
+            _request(
                 method="POST",
                 url="http://payments.local/charge",
                 body={"amount": 99000},
@@ -161,14 +185,14 @@ def test_tampered_token_is_blocked():
         engine, verdict="ALLOW", action="send_payment", forward_context={"amount": 10}
     )
 
-    async def tampering_decide(payload):
+    async def tampering_decide(payload, **_kw):
         result = await decide(payload)
         result["decision_token"]["constraints"] = {"max_amount": 10 ** 12}  # break sig
         return result
 
-    gov = EgressGovernor(mapper=mapper(), decide=tampering_decide, gate=gate)
+    gov = _governor(mapper=mapper(), decide=tampering_decide, gate=gate)
     out = run(
-        gov.govern(OutboundRequest(method="POST", url="http://x.local/charge", body={"amount": 10}))
+        gov.govern(_request(method="POST", url="http://x.local/charge", body={"amount": 10}))
     )
     assert out.forward is False
     assert out.status_code == 403
@@ -182,7 +206,7 @@ def test_replayed_token_is_blocked_by_nonce():
         verdict="ALLOW", subject="s", action="send_payment", payload={"amount": 10}
     )
 
-    async def decide(_payload):
+    async def decide(_payload, **_kw):
         return {
             "decision": "ALLOW",
             "enforce": True,
@@ -190,8 +214,8 @@ def test_replayed_token_is_blocked_by_nonce():
             "forward_context": {"amount": 10},
         }
 
-    gov = EgressGovernor(mapper=mapper(), decide=decide, gate=gate)
-    req = OutboundRequest(method="POST", url="http://x.local/charge", body={"amount": 10})
+    gov = _governor(mapper=mapper(), decide=decide, gate=gate)
+    req = _request(method="POST", url="http://x.local/charge", body={"amount": 10})
     first = run(gov.govern(req))
     second = run(gov.govern(req))
     assert first.forward is True
@@ -203,7 +227,7 @@ def test_payload_mismatch_is_blocked():
     # Token authorizes amount=10, but the request body says amount=10000.
     engine, gate = make_engine_and_gate()
 
-    async def decide(_payload):
+    async def decide(_payload, **_kw):
         token = engine.issue_token(
             verdict="ALLOW", subject="s", action="send_payment", payload={"amount": 10}
         )
@@ -214,9 +238,9 @@ def test_payload_mismatch_is_blocked():
             "forward_context": {"amount": 10000},  # differs from signed payload
         }
 
-    gov = EgressGovernor(mapper=mapper(), decide=decide, gate=gate)
+    gov = _governor(mapper=mapper(), decide=decide, gate=gate)
     out = run(
-        gov.govern(OutboundRequest(method="POST", url="http://x.local/charge", body={"amount": 10000}))
+        gov.govern(_request(method="POST", url="http://x.local/charge", body={"amount": 10000}))
     )
     assert out.forward is False
     assert out.status_code == 403
@@ -224,14 +248,14 @@ def test_payload_mismatch_is_blocked():
 
 def test_no_gate_configured_fails_closed():
     engine, _ = make_engine_and_gate()
-    gov = EgressGovernor(
+    gov = _governor(
         mapper=mapper(),
         decide=decide_signing(
             engine, verdict="ALLOW", action="send_payment", forward_context={"amount": 1}
         ),
         gate=None,  # mandatory verification cannot happen
     )
-    out = run(gov.govern(OutboundRequest(method="POST", url="http://x.local/charge", body={"amount": 1})))
+    out = run(gov.govern(_request(method="POST", url="http://x.local/charge", body={"amount": 1})))
     assert out.forward is False
     assert "fail-closed" in out.reason
 
@@ -241,11 +265,11 @@ def test_no_gate_configured_fails_closed():
 def test_deny_blocks_with_403():
     _, gate = make_engine_and_gate()
 
-    async def decide(_p):
+    async def decide(_p, **_kw):
         return {"decision": "DENY", "enforce": True, "reason": "no"}
 
-    gov = EgressGovernor(mapper=mapper(), decide=decide, gate=gate)
-    out = run(gov.govern(OutboundRequest(method="DELETE", url="http://x.local/thing")))
+    gov = _governor(mapper=mapper(), decide=decide, gate=gate)
+    out = run(gov.govern(_request(method="DELETE", url="http://x.local/thing")))
     assert out.forward is False
     assert out.status_code == 403
     assert out.decision == "DENY"
@@ -254,11 +278,11 @@ def test_deny_blocks_with_403():
 def test_escalate_blocks_but_reports_real_verdict():
     _, gate = make_engine_and_gate()
 
-    async def decide(_p):
+    async def decide(_p, **_kw):
         return {"decision": "ESCALATE", "enforce": True}
 
-    gov = EgressGovernor(mapper=mapper(), decide=decide, gate=gate)
-    out = run(gov.govern(OutboundRequest(method="POST", url="http://x.local/charge")))
+    gov = _governor(mapper=mapper(), decide=decide, gate=gate)
+    out = run(gov.govern(_request(method="POST", url="http://x.local/charge")))
     assert out.forward is False
     assert out.decision == "ESCALATE"  # not flattened to DENY
 
@@ -266,11 +290,11 @@ def test_escalate_blocks_but_reports_real_verdict():
 def test_gateway_unreachable_fails_closed():
     _, gate = make_engine_and_gate()
 
-    async def boom(_p):
+    async def boom(_p, **_kw):
         raise ConnectionError("gateway down")
 
-    gov = EgressGovernor(mapper=mapper(), decide=boom, gate=gate)
-    out = run(gov.govern(OutboundRequest(method="POST", url="http://x.local/charge")))
+    gov = _governor(mapper=mapper(), decide=boom, gate=gate)
+    out = run(gov.govern(_request(method="POST", url="http://x.local/charge")))
     assert out.forward is False
     assert out.status_code == 502
     assert "fail-closed" in out.reason
@@ -281,14 +305,14 @@ def test_gateway_unreachable_fails_closed():
 def test_observe_mode_forwards_original_unchanged():
     _, gate = make_engine_and_gate()
 
-    async def decide(_p):
+    async def decide(_p, **_kw):
         # Even though the verdict is DENY, observe never blocks and never rewrites.
         return {"decision": "DENY", "enforce": False}
 
-    gov = EgressGovernor(mapper=mapper(), decide=decide, gate=gate)
+    gov = _governor(mapper=mapper(), decide=decide, gate=gate)
     out = run(
         gov.govern(
-            OutboundRequest(method="POST", url="http://x.local/charge", body={"amount": 99000})
+            _request(method="POST", url="http://x.local/charge", body={"amount": 99000})
         )
     )
     assert out.forward is True
@@ -300,14 +324,14 @@ def test_identity_extracted_from_header():
     captured = {}
     _, gate = make_engine_and_gate()
 
-    async def decide(payload):
+    async def decide(payload, **_kw):
         captured.update(payload)
         return {"decision": "ESCALATE", "enforce": True}
 
-    gov = EgressGovernor(mapper=mapper(), decide=decide, gate=gate)
+    gov = _governor(mapper=mapper(), decide=decide, gate=gate)
     run(
         gov.govern(
-            OutboundRequest(
+            _request(
                 method="GET",
                 url="http://acct.local/balance",
                 headers={"x-mcc-identity": "agent/ops-bot"},

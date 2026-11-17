@@ -26,6 +26,15 @@ services:
       MCC_OPA_TIMEOUT_SECONDS: "1.5"
       MCC_REDIS_URL: "redis://redis:6379"
       MCC_API_KEY: "demo-key"
+      # F1b: per-principal identity (SHA-256 hashes only). The shared
+      # MCC_API_KEY obtains NO decision in strict mode; each agent presents
+      # its own key and its session_id must name that principal
+      # (agent/<session_id>). Create the registry first, e.g.:
+      #   python scripts/generate_agent_credential.py --config secrets/main_agents.json \
+      #     --tenant-id tenant-a --principal-id agent/s1
+      MCC_AGENT_CREDENTIALS_CONFIG: "/secrets/main_agents.json"
+    volumes:
+      - ./secrets/main_agents.json:/secrets/main_agents.json:ro
     depends_on:
       - opa
       - redis

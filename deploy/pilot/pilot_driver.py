@@ -92,9 +92,11 @@ EVALUATE_CASES = [
 
 def run_evaluate_paths(client: MCCGatewayClient,
                        agent_clients: Optional[Dict[str, MCCGatewayClient]] = None) -> List[str]:
-    """F1: a registered agent's own verdicts are requested with THAT agent's
-    credential (``agent_clients``); the shared tenant key may not evaluate as
-    a registered agent. Other (unregistered) identities use ``client``."""
+    """F1/F1b: every verdict is requested with the evaluated identity's OWN
+    credential (``agent_clients``). A strict gateway refuses the shared
+    tenant key on /evaluate for every identity, so an identity without a
+    client is attempted with ``client`` only to be refused (counted as a
+    failure), never authorized."""
     failures: List[str] = []
     for expected, identity, action, context in EVALUATE_CASES:
         c = (agent_clients or {}).get(identity, client)
@@ -124,8 +126,18 @@ def main() -> int:
     print("== readiness ==")
     print(f"  ready={client.is_ready()}  health={client.health().get('status')}")
 
+    # F1b: the other evaluated identities' own credentials (provisioned
+    # alongside payments-bot by generate_pilot_config.py).
+    agent_clients = {cred.principal_id: agent}
+    cred_root = Path(os.environ.get("MCC_AGENT_CREDENTIALS_DIR", str(HERE / "agent-credentials")))
+    for principal in ("agent/nobody", "agent/ops-bot"):
+        path = cred_root / principal.split("/")[-1] / "credential.json"
+        if path.is_file():
+            other = load_agent_credential(str(path))
+            agent_clients[other.principal_id] = MCCGatewayClient(url, api_key=other.api_key)
+
     print("\n== authority verdicts (/evaluate) ==")
-    failures = run_evaluate_paths(client, {cred.principal_id: agent})
+    failures = run_evaluate_paths(client, agent_clients)
 
     print("\n== consensus → governed execution (/consensus) ==")
     policy_hash = client.health()["policy_hash"]

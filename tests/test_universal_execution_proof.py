@@ -77,6 +77,7 @@ def _github_stack(mock_github: str, *, repo: str = "sandbox-owner/sandbox-repo",
         proposals=proposals, idempotency=idem, nonces=nonces,
         tenants_credentials=CREDS, tenants_authority=tenants_authority,
         upstream=upstream, action=ACTION, audit_log_path=audit_path, without_mandate=without_mandate,
+        agent_credentials=_agent_registry(CREDS),
     )
     return SimpleNamespace(proof=proof, client=TestClient(proof.app), upstream=upstream, repo=repo)
 
@@ -92,8 +93,28 @@ def _ledger_stack(*, allowed=("tenant-a", "tenant-b"), resource="generic-resourc
         proposals=proposals, idempotency=idem, nonces=nonces,
         tenants_credentials=CREDS, tenants_authority=tenants_authority,
         upstream=upstream, action=ACTION, audit_log_path=audit_path,
+        agent_credentials=_agent_registry(CREDS),
     )
     return SimpleNamespace(proof=proof, client=TestClient(proof.app), upstream=upstream, resource=resource)
+
+
+PRODUCER_LABELS = ("openai-style-agent/v1", "anthropic-style-agent/v1",
+                   "meta-style-autonomous-agent/v1", "human-operated-client/v1",
+                   "enterprise-deterministic-app/v1")
+
+
+def _producer_key(label: str) -> str:
+    return f"key-a::producer::{label}"
+
+
+def _agent_registry(creds):
+    """F1b: every test key is ONE registered principal's own credential
+    ("test-actor", the default submitter), plus one tenant-a credential per
+    producer label -- never a shared tenant key."""
+    from mcc_core.agent_identity import AgentCredentialRegistry
+    keys = {k: (t, "test-actor") for k, t in creds.items()}
+    keys.update({_producer_key(label): ("tenant-a", label) for label in PRODUCER_LABELS})
+    return AgentCredentialRegistry.from_key_map(keys)
 
 
 def _submit(client: TestClient, *, key: str, op_id: str, resource: str, payload: Optional[Dict[str, Any]] = None,
@@ -173,6 +194,7 @@ def test_d_no_authority_denied_zero_actuation(mock_github):
         proposals=proposals, idempotency=idem, nonces=nonces,
         tenants_credentials=creds, tenants_authority={"tenant-a": {}, "tenant-b": {}},
         upstream=upstream, action=ACTION, audit_log_path=audit_path,
+        agent_credentials=_agent_registry(creds),
     )
     client = TestClient(proof.app)
     reset_issues()
@@ -322,8 +344,11 @@ def test_actuator_replaceability_resource_mismatch_holds_for_ledger_too():
 def test_upstream_replaceability_non_vacuity_identical_behavior(mock_github, producer_label):
     ctx = _github_stack(mock_github)
     op_id = f"op-producer-{uuid.uuid4().hex[:8]}"
-    _submit(ctx.client, key="key-a", op_id=op_id, resource=ctx.repo, actor=producer_label)
-    r = _execute(ctx.client, key="key-a", op_id=op_id)
+    # F1b: each producer authenticates as ITSELF (its own tenant-a
+    # credential); the identical generic path and Core behavior still apply.
+    key = _producer_key(producer_label)
+    _submit(ctx.client, key=key, op_id=op_id, resource=ctx.repo, actor=producer_label)
+    r = _execute(ctx.client, key=key, op_id=op_id)
     assert r.status_code == 200
     assert r.json()["status"] == "EXECUTED"
     assert r.json()["decision"] == "ALLOW"

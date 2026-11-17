@@ -144,8 +144,11 @@ DEFECTS: List[Defect] = [
         id="api-key-check-disabled",
         description="The actuator's client API key check accepts any key.",
         file_path="egress_proxy/app.py",
-        find='    def require_api_key(x_api_key: str = Header(...)) -> str:\n        if x_api_key != cfg.api_key:\n            raise HTTPException(status_code=401, detail="INVALID_API_KEY")',
-        replace='    def require_api_key(x_api_key: str = Header(...)) -> str:\n        if False:  # MUTATED: API key check disabled\n            raise HTTPException(status_code=401, detail="INVALID_API_KEY")',
+        # F1b: the actuator resolves a per-agent credential; the mutant
+        # accepts an UNKNOWN key as an authenticated agent (the check that
+        # would answer 401 is disabled).
+        find='                "use a registered per-agent credential"))\n        raise HTTPException(status_code=401, detail="INVALID_API_KEY")',
+        replace='                "use a registered per-agent credential"))\n        from mcc_core.agent_identity import AuthenticatedAgent  # MUTATED: any key accepted\n        return AuthenticatedAgent(tenant_id=egress_tenant, principal_id="agent/egress", credential_id="mutated")',
         detector_tests=("assurance/tests/test_exclusive_execution_path.py::test_a2_stolen_endpoint_wrong_client_credential",),
     ),
     Defect(

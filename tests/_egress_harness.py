@@ -43,6 +43,11 @@ def _free_port() -> int:
     return port
 
 
+# F1b: principals with a registered per-agent credential in the harness.
+EGRESS_TEST_PRINCIPALS = ("agent/egress", "agent/intern", "agent/x", "agent/notify-bot", "agent/someone-else",
+                          "agent/demo", "a")
+
+
 class EgressHarness:
     def __init__(self, *, max_amount: int = 5000, allowed_methods: str = "get,post",
                  threshold: int = 3, n_evaluators: int = 3, env: Optional[Dict[str, str]] = None,
@@ -66,10 +71,23 @@ class EgressHarness:
             require_consensus=require_consensus,
             consensus_threshold=threshold, consensus_trust_config=tf.name,
             audit_log_path=os.path.join(tempfile.mkdtemp(prefix="egress-test-"), "audit.jsonl"))
-        self.app = build_app(self.settings, env=env or {})
+        # F1b: each actor presents its OWN registered credential; the
+        # service key "agent-key" is never registered and grants no identity.
+        from tests._agent_credentials import derived_agent_key, write_registry_file
+        reg = os.path.join(tempfile.mkdtemp(prefix="egress-agents-"), "agents.json")
+        write_registry_file(reg, self.settings.tenant_id,
+                            {p: derived_agent_key("agent-key", p) for p in EGRESS_TEST_PRINCIPALS})
+        full_env = {"MCC_AGENT_CREDENTIALS_CONFIG": reg}
+        full_env.update(env or {})
+        self.app = build_app(self.settings, env=full_env)
         self.policy_hash = _policy_hash(self.settings)
         self.client = TestClient(self.app)
-        self.H = {"x-api-key": "agent-key"}
+        self.H = {"x-api-key": "agent-key"}      # the SERVICE key (refused in strict mode)
+
+    @staticmethod
+    def key_for(actor: str) -> str:
+        from tests._agent_credentials import derived_agent_key
+        return derived_agent_key("agent-key", actor)
 
     # -- upstream --
 
@@ -129,9 +147,11 @@ class EgressHarness:
                 for i in range(n)]
 
     def post(self, **fields) -> httpx.Response:
+        """As the request's ``actor`` -- with THAT actor's own credential."""
         base = {"resource": "acct-1"}
         base.update(fields)
-        return self.client.post("/v1/http/execute", headers=self.H, json=base)
+        headers = {"x-api-key": self.key_for(base["actor"])} if "actor" in base else self.H
+        return self.client.post("/v1/http/execute", headers=headers, json=base)
 
     def approve(self, request_id: str) -> httpx.Response:
         return self.client.post(f"/v1/approvals/{request_id}/approve",

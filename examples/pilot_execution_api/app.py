@@ -60,6 +60,8 @@ from gateway.proposal_execution_service import ResourceBoundUpstream
 from gateway.proposal_execution_stack import build_proposal_execution_stack
 
 ACTION = "send_notification"
+# F1b: the principal the demo client acts as (its proposals' actor).
+DEMO_PRINCIPAL = "agent/demo"
 
 
 class PilotExecutionAPIConfigError(Exception):
@@ -82,6 +84,8 @@ def build_app(
     tenants_authority: Optional[Dict[str, Dict[str, Any]]],
     upstream: Optional[ResourceBoundUpstream],
     action: str = ACTION,
+    agent_credentials: Any = None,
+    identity_mode: Optional[str] = None,
 ) -> FastAPI:
     """The DEPLOYABLE composition. All three of ``tenants_credentials``,
     ``tenants_authority``, and ``upstream`` are REQUIRED:
@@ -133,8 +137,12 @@ def build_app(
     proposal_service = MCCProposalService(proposals=proposals, durable_execution_state=idempotency)
 
     app = FastAPI(title="MCC Pilot Execution API")
-    mount_proposal_routes(app, proposal_service, tenants=tenants_credentials)
-    mount_proposal_execution_routes(app, stack.service, tenants=tenants_credentials)
+    # F1b: per-principal credentials (hash-only registry); shared tenant keys
+    # (tenants_credentials) only in explicit legacy-shared-key mode.
+    mount_proposal_routes(app, proposal_service, tenants=tenants_credentials,
+                          agent_credentials=agent_credentials, identity_mode=identity_mode)
+    mount_proposal_execution_routes(app, stack.service, tenants=tenants_credentials,
+                                    agent_credentials=agent_credentials, identity_mode=identity_mode)
 
     @app.get("/health")
     async def health() -> Dict[str, str]:
@@ -150,11 +158,15 @@ def build_demo_app(*, action: str = ACTION) -> FastAPI:
     combine a real actuator with these demo security defaults through
     this function. Safe to run with zero configuration and makes no real
     external I/O."""
+    # F1b: the demo credential is ONE registered principal's own key.
+    from mcc_core.agent_identity import AgentCredentialRegistry
     return build_app(
-        tenants_credentials={"demo-key": "demo-tenant"},
+        tenants_credentials={},
         tenants_authority={"demo-tenant": {}},
         upstream=ResourceBoundUpstream(resource=None, dispatch=echo_upstream),
         action=action,
+        agent_credentials=AgentCredentialRegistry.from_key_map(
+            {"demo-key": ("demo-tenant", DEMO_PRINCIPAL)}),
     )
 
 

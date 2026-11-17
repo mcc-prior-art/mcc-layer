@@ -14,7 +14,7 @@ import pytest
 from .harness import TENANT, build_all_adapters, build_shared_stack
 
 BASE_REQUEST = {
-    "actor": "agent/notify-bot",
+    "actor": "a",   # F1b: the credential's own principal (harness.PRINCIPAL)
     "action": "send_notification",
     "resource": "crm",
     "payload": {"recipient": "customer-123", "message": "your order shipped", "priority": 2},

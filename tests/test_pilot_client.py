@@ -40,6 +40,8 @@ from pilot.client import Decision, MCCGatewayClient
 FAR_FUTURE = 4_000_000_000
 
 
+from tests._agent_credentials import module_key  # noqa: E402
+
 def _sdk(app, *, api_key="demo-key", operator_key=None):
     return MCCGatewayClient("http://testserver", api_key=api_key,
                             operator_key=operator_key, client=TestClient(app))
@@ -48,13 +50,13 @@ def _sdk(app, *, api_key="demo-key", operator_key=None):
 # ---------------- propose: the four verdicts (real pilot policy) ----------------
 
 def test_propose_allow():
-    c = _sdk(gw.app)
+    c = _sdk(gw.app, api_key=module_key("agent/payments-bot"))
     r = c.propose(identity="agent/payments-bot", action="send_payment", context={"amount": 1000})
     assert r.decision == Decision.ALLOW and r.executable and r.decision_token is not None
 
 
 def test_propose_constrain_clamps_body():
-    c = _sdk(gw.app)
+    c = _sdk(gw.app, api_key=module_key("agent/payments-bot"))
     r = c.propose(identity="agent/payments-bot", action="send_payment", context={"amount": 99000})
     assert r.decision == Decision.CONSTRAIN
     assert r.forward_context.get("amount") == 5000        # clamped to the mandate cap
@@ -62,13 +64,13 @@ def test_propose_constrain_clamps_body():
 
 
 def test_propose_escalate():
-    c = _sdk(gw.app)
+    c = _sdk(gw.app, api_key=module_key("agent/nobody"))
     r = c.propose(identity="agent/nobody", action="send_payment", context={"amount": 10})
     assert r.decision == Decision.ESCALATE and r.needs_approval and r.decision_token is None
 
 
 def test_propose_deny():
-    c = _sdk(gw.app)
+    c = _sdk(gw.app, api_key=module_key("agent/ops-bot"))
     r = c.propose(identity="agent/ops-bot", action="delete_database", context={})
     assert r.decision == Decision.DENY and not r.executable and r.decision_token is None
 
@@ -93,7 +95,7 @@ def test_health_and_ready():
 
 
 def test_verify_chain():
-    c = _sdk(gw.app)
+    c = _sdk(gw.app, api_key=module_key("agent/payments-bot"))
     c.propose(identity="agent/payments-bot", action="send_payment", context={"amount": 1000})
     chain = c.verify_chain()
     assert chain["valid"] is True and chain["entries"] >= 1

@@ -35,6 +35,14 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+# F1b: main.py and gateway.app are authority-issuing; each request presents
+# its OWN registered key (tests/conftest.py module registry). main.py's
+# session_id must name that principal (agent/<session_id>).
+from tests._agent_credentials import module_headers  # noqa: E402
+
+MAIN_SESSION = "test"
+MAIN_H = module_headers("agent/" + MAIN_SESSION)
+
 from mcc_core import SigningKey, issue_delegation
 from mcc_core.authority import ActionPolicy, AuthorityModel, Mandate, MandateRegistry, Verdict
 
@@ -395,7 +403,7 @@ def gateway_app(monkeypatch, tmp_path):
 
 def _evaluate(gateway_app, context, identity=ACTOR, action="send_payment"):
     gwapp, client = gateway_app
-    r = post_json(client, "/evaluate", {"x-api-key": gwapp.settings.api_key},
+    r = post_json(client, "/evaluate", module_headers(identity),
                   {"identity": identity, "action": action, "context": context})
     assert r.status_code == 200, r.text
     return r.json()

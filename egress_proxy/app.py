@@ -359,10 +359,38 @@ def build_app(cfg: EgressSettings, *, env=None, resolver=None) -> FastAPI:
 
     application = FastAPI(title="MCC-Core Enforced Egress Proxy", version=RUNTIME_VERSION)
 
-    def require_api_key(x_api_key: str = Header(...)) -> str:
-        if x_api_key != cfg.api_key:
-            raise HTTPException(status_code=401, detail="INVALID_API_KEY")
-        return "agent"
+    # F1b: per-principal identity. The egress key used to be ONE service key
+    # and ``actor`` a body field, so any key holder chose whose http.egress
+    # mandate was evaluated (reproduced on 0315574: actor=agent/egress ->
+    # EXECUTED). Now X-API-Key must be a registered per-agent credential of
+    # this runtime's tenant (MCC_AGENT_CREDENTIALS_CONFIG, hashes only) and
+    # ``actor`` must equal that principal. The shared service key is refused
+    # in strict mode (the default); explicit legacy-shared-key restores the
+    # old, unprotected behaviour. A malformed registry refuses to start.
+    from mcc_core.agent_identity import (
+        AGENT_IDENTITY_LEGACY,
+        agent_identity_mode_from_env,
+        agent_registry_from_env,
+        principal_binding_error,
+    )
+    identity_mode = agent_identity_mode_from_env(env)
+    agent_credentials = agent_registry_from_env(env)
+    egress_tenant = cfg.tenant_id
+
+    def require_api_key(x_api_key: str = Header(...)):
+        if agent_credentials is not None:
+            res = agent_credentials.resolve(x_api_key, tenant_id=egress_tenant)
+            if res.agent is not None:
+                return res.agent
+            if res.error in ("AGENT_CREDENTIAL_REVOKED", "AGENT_CREDENTIAL_WRONG_TENANT"):
+                raise HTTPException(status_code=403, detail=res.error)
+        if x_api_key == cfg.api_key:
+            if identity_mode == AGENT_IDENTITY_LEGACY:
+                return None
+            raise HTTPException(status_code=403, detail=(
+                "AGENT_IDENTITY_REQUIRED: the egress service key cannot assert an actor; "
+                "use a registered per-agent credential"))
+        raise HTTPException(status_code=401, detail="INVALID_API_KEY")
 
     def require_operator(x_operator_key: Optional[str] = Header(default=None)) -> str:
         # No operator key configured, or a wrong one -> no operator actions (403).
@@ -373,7 +401,13 @@ def build_app(cfg: EgressSettings, *, env=None, resolver=None) -> FastAPI:
     @application.post("/v1/http/execute", response_model=HTTPExecuteResponse,
                       response_model_exclude_none=True)
     async def http_execute(req: HTTPExecuteRequest, response: Response,
-                           _=Depends(require_api_key)) -> HTTPExecuteResponse:
+                           agent=Depends(require_api_key)) -> HTTPExecuteResponse:
+        # F1b: the body's actor is never proof -- it must BE the authenticated
+        # principal. Refused before any proposal, approval/challenge use,
+        # reservation, audit record or outbound call.
+        identity_error = principal_binding_error(agent, claimed=req.actor, mode=identity_mode)
+        if identity_error is not None:
+            raise HTTPException(status_code=403, detail=identity_error)
         if service is None:
             metrics.failclosed_dependency.inc()
             response.status_code = 503

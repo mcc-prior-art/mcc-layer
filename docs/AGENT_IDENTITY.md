@@ -308,6 +308,8 @@ regression tests: `tests/test_f1_consensus_identity_http.py`.
   provisioned into agent containers (enforced by the PR #135 isolation
   test). `/evaluate` mints a signed token but no gateway execute route
   accepts one; its consumers are interceptors.
+  *Superseded by F1b (below): the shared key now obtains no `/evaluate`
+  decision for any identity in strict mode.*
 - **The evaluator quorum votes only for the agent that asked.** `/vote`
   requires a registered per-agent credential (its own shared key only in
   explicit `legacy-shared-key` mode); `actor` must be that principal; the
@@ -337,6 +339,114 @@ the shared key evaluate as any identity. It gives NO protection against
 within-tenant impersonation. Registered credentials stay bound in every mode,
 and the tenant binding of votes and challenges applies in every mode.
 
+## F1b: runtime identity binding beyond the gateway
+
+**Reproduced on PR #136 head `0315574`** (stacked on PR #135 head `2761f4f`;
+`main` at `1f0bd3a`), real HTTP (uvicorn on loopback, real upstream sinks):
+
+| # | Surface | Probe | Result before F1b |
+|---|---|---|---|
+| 1a | `gateway/app.py` `POST /evaluate` | shared tenant key, `identity = agent/payments-bot` (not a registered agent) | 200 ALLOW + token `sub = agent/payments-bot` |
+| 1b | same | shared key, `identity = svc/billing` | 200 (any caller-selected service identity) |
+| 2b | egress proxy `POST /v1/http/execute` | the one service key, body `actor = agent/egress` (the mandate holder) | 200 ALLOW, **EXECUTED, upstream +1** |
+| 2x | egress proxy, approvals | `agent/x` (no mandate) re-presents `agent/intern`'s approved `approval_id` | **EXECUTED, upstream +1**; intern's own execution then refused |
+| 3a | MVP interceptor | NO credential, `X-MCC-Identity: agent/payments-bot` | forwarded, **upstream +1** (interceptor evaluated with its own service key) |
+| 4a | `main.py` `POST /evaluate` | `session_id = alice` | token `sub = agent/alice` (caller-chosen) |
+| 4c | same | B reuses A's `idempotency_key` | B received **A's cached signed token** (same `jti`) |
+| 5a | Pilot Execution API `POST /v1/proposals` | B's key, `actor = agent/a` | 200 PROPOSED |
+| 5c | `POST /v1/operations/{id}/execute` | B executes A's stored operation by id | **EXECUTED, ledger 0 → 1** |
+| 5d | `GET /v1/operations/{id}` | B reads A's operation | 200 EXECUTED |
+
+After F1b every probe is refused before any side effect (403 / 401 / 404
+`NOT_FOUND`), upstream / ledger +0, and the legitimate principal's own
+operation then executes with the **same** idempotency key / operation id.
+Regression suite: `tests/test_f1b_runtime_identity_http.py`.
+
+**Decisions (AX).**
+
+1. In strict mode the shared tenant/service key obtains **no** decision on an
+   authority-issuing `/evaluate` route, for **any** identity — registered or
+   not. The F1 exception for unregistered identities is closed. Services
+   authenticate as individually registered principals; there is no
+   caller-selected service identity.
+2. A consensus vote's signed `actor` remains the canonical principal claim,
+   because `actor == authenticated principal_id` is enforced before any vote
+   is requested, counted or consumed, and every counted vote carries a signed
+   `tenant_id` (F1). Invariant: **vote.actor == the request's authenticated
+   principal ∧ vote.tenant_id == the server-resolved tenant**. Tested in
+   `tests/test_f1_consensus_identity_http.py` (B's own key as A on `/vote`,
+   `/consensus/*`; votes for another / no tenant not counted).
+3. F1b does **not** close the fleet-hardening roadmap
+   (`docs/proposals/FLEET_IDENTITY_HARDENING_PLAN.md`): request signatures /
+   proof of possession, bounded revocation propagation, atomic shared
+   enforcement state and the 3,000-principal validation remain open.
+
+**Contract** (strict, the default; `MCC_AGENT_IDENTITY_MODE`).
+
+- **Identity comes from the credential only.** Tenant and principal are
+  resolved server-side from the presented key via the hash-only registry
+  (`MCC_AGENT_CREDENTIALS_CONFIG`; `mcc_core.agent_identity`, re-exported by
+  `gateway.agent_identity`). `actor`, `identity`, `session_id`,
+  `X-MCC-Identity` and any other header or body field are claims that must
+  **equal** the principal; they are never proof. Identity body fields the
+  schemas do not define (`principal_id`, …) are rejected (422).
+- **Shared / service keys assert no actor** on any authority-issuing or
+  executing route: gateway `/evaluate`, `main.py` `/evaluate` and
+  `/evaluate/challenge`, egress `/v1/http/execute`, Pilot Execution API
+  `/v1/proposals`, `/v1/operations/{id}/execute` and `GET
+  /v1/operations/{id}`. Read-only audit verification (`/verify`) still accepts
+  the shared key.
+- **Unknown → 401; revoked / other-tenant → 403**; a registered credential
+  of another tenant never matches, even under the same principal name.
+- **Missing or unusable identity configuration fails closed.** A set but
+  malformed registry refuses to start (every runtime). The interceptor
+  without a registry refuses every caller (`AGENT_IDENTITY_UNAVAILABLE`).
+  `main.py` refuses to start if one principal is registered in two tenants
+  (its tenant is derived from the credential).
+- **Per runtime.**
+  - *Gateway `/evaluate`*: `evaluate_identity_error` — an agent key evaluates
+    only as itself (`identity` and `actor_id`), the shared key is refused.
+  - *MVP interceptor*: the caller presents **its own** key in
+    `X-MCC-Agent-Key`. The interceptor resolves it against the registry of
+    its tenant (`MCC_GATEWAY_TENANT_ID`), requires `X-MCC-Identity` (if sent)
+    to equal the principal, and forwards **that same credential** to the
+    gateway's `/evaluate`, so the gateway authenticates the caller's own
+    principal. The interceptor's service key no longer authorizes arbitrary
+    caller-selected actors (the strict gateway refuses it). The credential
+    header is stripped before the request is forwarded upstream.
+  - *Egress proxy*: `X-API-Key` must be a registered credential of the
+    proxy's tenant (`MCC_EGRESS_TENANT_ID`, default `governed-agent-demo`);
+    `actor` must equal the principal.
+  - *`main.py`*: tenant and principal from the credential;
+    `agent/<session_id>` must equal the principal (the token subject IS the
+    principal); the idempotency cache is keyed by tenant **and** actor, so a
+    key never returns another principal's token.
+  - *Pilot Execution API*: a proposal's `actor` must equal the principal; the
+    stored operation records its `principal_id`; registering an existing
+    operation id as another principal is `BINDING_CONFLICT` (in-memory and
+    Redis, atomically in the Lua script); execute and status for another
+    principal's operation are indistinguishable from an absent one
+    (`NOT_FOUND`): nothing is consumed, reserved or disclosed. The decision
+    token's subject and actor are the principal (authority policy is still
+    evaluated per tenant).
+- **Approvals are bound to the actor they were requested for.**
+  `ApprovalService.consume(actor_id=)` refuses another actor
+  (`ACTOR_MISMATCH`) without consuming the approval; the coordinator passes
+  the token's `actor_id`. Reproduced gap on `0315574`: an egress approval
+  granted for `agent/intern` was executed by `agent/x`.
+- **Order.** Every refusal happens before any decision token, approval or
+  challenge consumption, idempotency or velocity reservation, proposal
+  record, audit record or actuator call (tested: audit line counts, sink /
+  ledger / executor counts, a legitimate retry with the same key).
+- **Preserved.** Exact-operation binding, R1–R4, audit-before-actuation,
+  single-use approvals and challenges, nonce replay protection,
+  UNKNOWN/reconciliation semantics of the Pilot Execution API.
+
+**Legacy mode** (`legacy-shared-key`, explicit, server-side) restores the
+pre-F1b behaviour on these runtimes (shared key, caller-asserted actor /
+session / `X-MCC-Identity`). It gives NO within-tenant protection. Registered
+credentials stay bound to their own principal in every mode.
+
 ## Trust boundaries
 
 - **HTTP.** The only source of identity is the registry lookup of `X-API-Key`.
@@ -364,21 +474,22 @@ and the tenant binding of votes and challenges applies in every mode.
 | `POST /mandates/verify`, `GET /approvals/{id}` | no (read-only, no token) | no: shared or registered tenant key | informational |
 | `POST /consensus/challenge`, `/consensus/verify`, `/consensus/execute` | no: authority is the N-of-M evaluator quorum, signed over `actor` + `tenant_id` | **yes (F1)**: route + service; challenge bound to tenant + principal; votes bound to tenant | before F1: verified impersonation (B with its own key EXECUTED as A). Refused before token / challenge consumption / reservation / audit |
 | `GovernanceService.execute_with_delegation` (no HTTP route) | no: an owner-signed delegation | **no** (library only) | delegation subject compared with a caller-supplied actor; library trust boundary applies |
-| `gateway/app.py` `POST /evaluate` | no: unsigned config mandates (`AuthorityModel`); returns a signed decision token for `identity` | **yes for agent credentials (F1)**: an agent key evaluates only as itself; the shared key may not evaluate as a registered agent (strict) | the shared tenant (service) key still evaluates non-agent identities — a holder of that key can act as any *unregistered* identity; it is never provisioned to agents |
+| `gateway/app.py` `POST /evaluate` | no: unsigned config mandates (`AuthorityModel`); returns a signed decision token for `identity` | **yes (F1 + F1b)**: an agent key evaluates only as itself; the shared key obtains no decision for ANY identity (strict) | before F1b: the shared key evaluated any *unregistered* identity |
 | `gateway/app.py` `GET /verify` | no (read-only) | no: shared or registered tenant key | informational |
 | VoltAgent evaluator quorum `POST /vote` | no: signs votes over the gateway's authoritative payload | **yes (F1)**: registered credential, actor = principal, credential forwarded to `/evaluate`, votes carry the tenant | quorum shared key only in explicit legacy mode |
-| `main.py` `/evaluate`, `/evaluate/challenge` (separate runtime) | no | **no — OPEN** (no per-agent registry; one tenant key) | consensus via its own embedded coordinator, which is tenant-unscoped; `identity` is a body field. Follow-up F1b |
-| egress proxy `POST /v1/http/execute` (separate service) | no: config `AuthorityModel` + optional consensus | **no — OPEN** (one service key, `actor` is a body field) | its coordinator is tenant-unscoped (votes need no `tenant_id`; a gateway-issued tenant-scoped challenge is NOT consumable there). Follow-up F1b |
-| MVP interceptor (`interceptors/egress_proxy.py`) | no | **no — OPEN** | identity from `X-MCC-Identity`, evaluated with the shared service key; F1 now refuses that key for a *registered* agent identity, so it works only for unregistered identities. Production intent: mTLS/workload identity. Follow-up F1b |
-| Pilot Execution API `POST /v1/proposals` + `/v1/operations/{id}/execute` (mounted only in `examples/external_pilot`) | no: config `AuthorityModel` | **no — OPEN** | tenant-level `MCC_PROPOSAL_TENANTS` keys; the proposal's `actor` is caller-asserted. Follow-up F1b |
+| `main.py` `/evaluate`, `/evaluate/challenge` (separate runtime) | no | **yes (F1b)**: tenant + principal from the credential; `agent/<session_id>` must be the principal; idempotency cache keyed by actor | shared key refused (strict). Its embedded coordinator stays tenant-unscoped (single-tenant-per-credential deployment) |
+| egress proxy `POST /v1/http/execute` (separate service) | no: config `AuthorityModel` + optional consensus | **yes (F1b)**: per-agent credential of the proxy's tenant; `actor` must be the principal; approvals bound to their actor | service key refused (strict). Its coordinator stays tenant-unscoped (votes need no `tenant_id`) |
+| MVP interceptor (`interceptors/egress_proxy.py`) | no | **yes (F1b)**: caller's own key in `X-MCC-Agent-Key`, resolved by the interceptor and forwarded to `/evaluate`; `X-MCC-Identity` must be the principal | no registry → every caller refused; credential header stripped upstream. Not mTLS / workload attestation |
+| Pilot Execution API `POST /v1/proposals`, `/v1/operations/{id}/execute`, `GET /v1/operations/{id}` | no: config `AuthorityModel` | **yes (F1b)**: actor = principal; operation bound to its principal (others: `NOT_FOUND`) | tenant keys (`MCC_PROPOSAL_TENANTS`) only in explicit legacy mode. The MCP adapter forwards the caller's credential to these routes |
 
 **No alternate route consumes a signed mandate**, so none bypasses this
 contract for the V05 copied-mandate attack. **F1 closes the verified
 consensus-path impersonation on the gateway** (and binds `/evaluate` and the
-quorum). The rows marked **OPEN** are separately deployed runtimes or
-example-only surfaces that authenticate only a tenant/service key and take
-the actor from the caller. They are listed so they are not mistaken for
-covered; follow-up F1b in the fleet plan.
+quorum); **F1b binds the separately deployed runtimes** listed above.
+Remaining library-only surfaces (`execute_with_delegation`, direct
+`GovernanceService` callers) rely on the library trust boundary. Not
+covered by F1b: `server/app.py` (deprecated, issues no tokens) and the
+unexposed `reconcile_proposal_operation`.
 
 ## Test and demo migrations
 
@@ -479,3 +590,56 @@ No assertion was removed or weakened. Every consensus client now presents the
   also repairs §5b, which since V05 part 2 used the shared key on `POST
   /approvals` for another actor.
 
+
+### F1b migration record (runtimes, `/evaluate` shared key)
+
+No assertion of the original red-team corpus was changed. Existing
+assertions were kept; where AX's decision 1 deliberately reverses an F1
+behaviour, the test now asserts the new behaviour and says so in a comment.
+
+- **Reversed by decision 1 (shared key on `/evaluate`):**
+  `test_f1_consensus_identity_http.py` — `test_shared_key_evaluates_only_non_agent_identities`
+  (asserted 200 for `svc/billing`) is now
+  `test_shared_key_evaluates_no_identity_in_strict_mode` (403), and the unit
+  `test_evaluate_identity_error_is_total` expects a refusal for an
+  unregistered identity (and for a broken registry, which is no longer
+  consulted).
+- **Clients that evaluated several identities with one shared key** now use
+  each identity's own key: the module-level apps in tests get a hash-only
+  registry from `tests/conftest.py` (`demo-key::agent::<principal>`,
+  `module_key`), used by `test_gateway`, `test_mcc_client_sdk`,
+  `mcc_sdk/test_integration`, `test_pilot_client`, R2/R3 `main.py` and
+  `gateway.app` cases; `tests/pilot` (reference pilot) gained
+  `PilotConfig.agent_keys` (`{identity: key}`, `MCC_PILOT_AGENT_KEYS_FILE`,
+  `--agent-keys-file`; an identity without a key fails closed, never the
+  shared key; excluded from evidence and the fingerprint); the Control Room
+  registers `agent/ops-bot`; `deploy/pilot` provisions `agent/nobody` and
+  `agent/ops-bot` and the runbook / driver use their keys; the interop and
+  assurance harnesses register `agent/payments-bot`.
+- **Egress callers** present the actor's own key: `tests/_egress_harness.py`
+  (`key_for(actor)`, registry written for `EGRESS_TEST_PRINCIPALS`), the
+  assurance actuator (`actuator_agent_key`, `sut.actuator_key()`, registry
+  via `MCC_ASSURANCE_AGENT_CREDENTIALS`), the egress demos
+  (`egress_proxy_demo`, `transaction_governance_demo`,
+  `enforced_egress_agent`, `python_sdk_quickstart`), `deploy/pilot`'s
+  reference egress agent (own credential file; adds an impersonation check)
+  and `docker-compose.pilot.yml` (provisioning init container; one container
+  per principal: `mcc-agent` = agent/crm, `mcc-agent-escalate` =
+  agent/intern).
+- **Interceptor callers** send `X-MCC-Agent-Key` (`test_egress_proxy`,
+  `test_egress_observability`, the demos). Test `decide` stubs accept the
+  forwarded `credential=` keyword.
+- **`main.py` callers** use `session_id` = the principal's name
+  (`MAIN_SESSION`, `module_headers`); `test_mcc_core`'s cache-expiry test
+  reads the actor-keyed cache entry. The root `docker-compose.yml` and
+  `scripts/smoke_test.sh` take an agent registry / the agent's own key.
+- **Pilot Execution API / proposals**: fixtures register one principal per
+  former tenant key (`tenant_key_registry`); the conformance harness and
+  cross-adapter parity use the registered actor; the Redis registry fake
+  implements the owner comparison of the Lua script; the example apps
+  (`examples/external_pilot`, `examples/pilot_execution_api`,
+  `examples/universal_execution_proof`) accept `agent_credentials` /
+  `identity_mode`.
+- **Mutation catalogue** (`mutation/defects.py`): `api-key-check-disabled`
+  now targets the per-agent resolution (an unknown key is accepted as an
+  authenticated agent); detected by the same assurance test.

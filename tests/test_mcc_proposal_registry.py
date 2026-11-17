@@ -40,7 +40,7 @@ class FakeRedis:
     def __init__(self) -> None:
         self.store: dict[str, str] = {}
 
-    async def eval(self, script, numkeys, key, candidate_json, binding):
+    async def eval(self, script, numkeys, key, candidate_json, binding, principal=""):
         assert script == _REGISTER_LUA
         cur = self.store.get(key)
         if cur is None:
@@ -51,6 +51,9 @@ class FakeRedis:
             existing_binding = decoded["binding"]
         except (ValueError, KeyError, TypeError):
             return ["ERROR", ""]
+        # F1b: mirrors the Lua owner check (ARGV[3]; absent owner == "").
+        if (decoded.get("principal_id") or "") != principal:
+            return ["BINDING_CONFLICT", existing_binding]
         if existing_binding == binding:
             return ["IDEMPOTENT_DUPLICATE", existing_binding]
         return ["BINDING_CONFLICT", existing_binding]

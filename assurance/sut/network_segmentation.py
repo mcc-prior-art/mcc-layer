@@ -64,7 +64,13 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from assurance.sut.harness import FAR_FUTURE, REPO_ROOT, free_port
+from assurance.sut.harness import (
+    FAR_FUTURE,
+    REPO_ROOT,
+    actuator_agent_key,
+    free_port,
+    write_actuator_agent_registry,
+)
 
 HOST_ACTUATOR_SUBNET = "10.201.0.0/30"
 ACTUATOR_UPSTREAM_SUBNET = "10.201.1.0/30"
@@ -172,7 +178,7 @@ class SegmentedTopology:
         req = {"method": "POST", "url": f"{self.upstream_private_url}/send_notification", "headers": {},
                "body": body, "actor": "agent/egress", "resource": "notify", "transaction_id": tx,
                "idempotency_key": tx}
-        r = httpx.post(f"{self.actuator_url}/v1/http/execute", headers={"x-api-key": self.actuator_api_key},
+        r = httpx.post(f"{self.actuator_url}/v1/http/execute", headers={"x-api-key": actuator_agent_key(self.actuator_api_key, req.get("actor"))},
                         json=req, timeout=10.0)
         payload = r.json()
         payload["_request"] = req
@@ -183,7 +189,7 @@ class SegmentedTopology:
         req = dict(proposal["_request"])
         req["challenge_id"] = proposal["challenge_id"]
         req["votes"] = votes
-        r = httpx.post(f"{self.actuator_url}/v1/http/execute", headers={"x-api-key": self.actuator_api_key},
+        r = httpx.post(f"{self.actuator_url}/v1/http/execute", headers={"x-api-key": actuator_agent_key(self.actuator_api_key, req.get("actor"))},
                         json=req, timeout=10.0)
         payload = r.json()
         payload["_status_code"] = r.status_code
@@ -367,6 +373,8 @@ def build_segmented_topology(*, n_evaluators: int = 3, threshold: int = 3) -> Se
              "--allowed-hosts", UPSTREAM_IP, "--allow-private"],
             extra_env={
                 "MCC_ASSURANCE_ACTUATOR_API_KEY": "assurance-netseg-actuator-key",
+                "MCC_ASSURANCE_AGENT_CREDENTIALS": write_actuator_agent_registry(
+                    tmpdir, "assurance-netseg-actuator-key"),
                 "MCC_ASSURANCE_OPERATOR_KEY": "assurance-netseg-operator-key",
                 "MCC_ASSURANCE_THRESHOLD": str(threshold),
             },

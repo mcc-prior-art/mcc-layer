@@ -57,11 +57,11 @@ is completely unchanged and remains available for that future PR.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import Depends, FastAPI, HTTPException
 
-from gateway.proposal_api import get_tenant_dependency
+from gateway.proposal_api import get_principal_dependency
 from gateway.proposal_execution_service import (
     ProposalExecOutcome,
     ProposalExecStatus,
@@ -109,7 +109,9 @@ def mount_proposal_execution_routes(
     app: FastAPI,
     service: ProposalExecutionService,
     *,
-    tenants: Dict[str, str],
+    tenants: Optional[Dict[str, str]] = None,
+    agent_credentials: Any = None,
+    identity_mode: Optional[str] = None,
 ) -> None:
     """Mount the Pilot Execution API onto an existing FastAPI app.
 
@@ -123,20 +125,33 @@ def mount_proposal_execution_routes(
     Mounts exactly one route (``/execute``) — no reconciliation surface;
     see this module's docstring for why.
     """
-    get_tenant = get_tenant_dependency(tenants)
+    # F1b: (tenant, principal) from the credential; only the principal the
+    # proposal is bound to may execute it (another's is NOT_FOUND). Shared
+    # tenant keys only in explicit legacy mode. See get_principal_dependency.
+    get_principal = get_principal_dependency(tenants, agent_credentials, identity_mode)
 
     @app.post("/v1/operations/{logical_operation_id}/execute")
     async def execute_operation(
-        logical_operation_id: str, tenant: str = Depends(get_tenant),
+        logical_operation_id: str, ident=Depends(get_principal),
     ) -> Dict[str, Any]:
+        tenant, principal = ident
+        if principal is None and not _legacy(identity_mode):
+            raise HTTPException(status_code=403, detail="AGENT_IDENTITY_REQUIRED; fail-closed")
         outcome = await service.authorize_and_execute(
-            tenant_id=tenant, logical_operation_id=logical_operation_id,
+            tenant_id=tenant, logical_operation_id=logical_operation_id, principal_id=principal,
         )
         body = _exec_outcome_to_response(outcome)
         code = _EXEC_STATUS_HTTP_CODE.get(outcome.status, 500)
         if code >= 400:
             raise HTTPException(status_code=code, detail=body)
         return body
+
+
+def _legacy(identity_mode: Optional[str]) -> bool:
+    import os
+
+    from mcc_core.agent_identity import AGENT_IDENTITY_LEGACY, agent_identity_mode_from_env
+    return (identity_mode or agent_identity_mode_from_env(os.environ)) == AGENT_IDENTITY_LEGACY
 
 
 __all__ = ["mount_proposal_execution_routes"]

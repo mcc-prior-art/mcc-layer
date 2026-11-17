@@ -126,8 +126,22 @@ class EnforcementOutcome:
 
 
 # A decide callable performs the /evaluate round trip. Injected so the
-# governor can be unit-tested without a live gateway.
-DecideFn = Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]
+# governor can be unit-tested without a live gateway. F1b: in strict mode it
+# is called as ``decide(payload, credential=<the caller's own agent key>)``
+# so the GATEWAY authenticates the principal the decision is for.
+DecideFn = Callable[..., Awaitable[Dict[str, Any]]]
+
+# F1b: the header an agent presents its OWN registered credential in. It is
+# consumed here and never forwarded upstream.
+AGENT_CREDENTIAL_HEADER = "x-mcc-agent-key"
+
+
+@dataclass(frozen=True)
+class _CallerIdentity:
+    principal: Optional[str]           # None only in explicit legacy mode
+    credential: Optional[str]
+    error: Optional[str] = None
+    status: int = 403
 
 
 class EgressGovernor:
@@ -160,17 +174,66 @@ class EgressGovernor:
         decide: DecideFn,
         gate: Optional[ExecutionGate] = None,
         identity_header: str = "x-mcc-identity",
+        agent_credentials: Any = None,
+        identity_mode: Optional[str] = None,
+        tenant_id: str = "pilot",
     ) -> None:
         self.mapper = mapper
         self.decide = decide
         self.gate = gate
         self.identity_header = identity_header.lower()
+        # F1b: workload identity. Before F1b ``X-MCC-Identity`` was taken as
+        # the identity and evaluated with the interceptor's own SERVICE key,
+        # so any caller chose whose authority applied (reproduced on 0315574:
+        # an unauthenticated caller naming agent/payments-bot was forwarded).
+        # Now the caller must present its OWN registered credential
+        # (X-MCC-Agent-Key) of ``tenant_id``; the principal comes from the
+        # registry, X-MCC-Identity (if sent) must equal it, and the SAME
+        # credential is forwarded to the gateway. No registry -> every request
+        # fails closed (strict, the default). Explicit legacy-shared-key mode
+        # restores the old, unprotected header identity.
+        from mcc_core.agent_identity import agent_identity_mode_from_env
+        self.identity_mode = identity_mode or agent_identity_mode_from_env(os.environ)
+        self.agent_credentials = agent_credentials
+        self.tenant_id = tenant_id
+
+    def _caller(self, req: OutboundRequest) -> _CallerIdentity:
+        from mcc_core.agent_identity import AGENT_IDENTITY_LEGACY, AGENT_IDENTITY_MODES
+        if self.identity_mode not in AGENT_IDENTITY_MODES:
+            return _CallerIdentity(None, None, "AGENT_IDENTITY_MODE_INVALID; fail-closed")
+        lower = {k.lower(): v for k, v in req.headers.items()}
+        claimed = lower.get(self.identity_header)
+        if self.identity_mode == AGENT_IDENTITY_LEGACY:
+            return _CallerIdentity(claimed or "unknown", None)
+        key = lower.get(AGENT_CREDENTIAL_HEADER)
+        if not key:
+            return _CallerIdentity(None, None, "AGENT_IDENTITY_REQUIRED: present your own agent "
+                                               "credential in X-MCC-Agent-Key", 401)
+        if self.agent_credentials is None:
+            return _CallerIdentity(None, None, "AGENT_IDENTITY_UNAVAILABLE: no agent credential "
+                                               "registry configured; fail-closed", 403)
+        try:
+            res = self.agent_credentials.resolve(key, tenant_id=self.tenant_id)
+        except Exception:  # noqa: BLE001 - an unusable registry fails closed
+            return _CallerIdentity(None, None, "AGENT_IDENTITY_UNAVAILABLE; fail-closed")
+        if res.agent is None:
+            status = 401 if res.error in ("AGENT_CREDENTIAL_UNKNOWN", "AGENT_CREDENTIAL_MISSING") else 403
+            return _CallerIdentity(None, None, res.error or "AGENT_CREDENTIAL_INVALID", status)
+        if claimed is not None and claimed != res.agent.principal_id:
+            return _CallerIdentity(None, None, "AGENT_PRINCIPAL_MISMATCH: X-MCC-Identity is not the "
+                                               "authenticated principal")
+        return _CallerIdentity(res.agent.principal_id, key)
+
+    async def _decide(self, payload: Dict[str, Any], caller: _CallerIdentity) -> Dict[str, Any]:
+        if caller.credential is None:          # explicit legacy mode only
+            return await self.decide(payload)
+        return await self.decide(payload, credential=caller.credential)
 
     def _identity(self, req: OutboundRequest) -> str:
-        lower = {k.lower(): v for k, v in req.headers.items()}
-        return lower.get(self.identity_header, "unknown")
+        caller = self._caller(req)
+        return caller.principal or "unknown"
 
-    def _binding(self, req: OutboundRequest) -> Dict[str, Any]:
+    def _binding(self, req: OutboundRequest, principal: Optional[str] = None) -> Dict[str, Any]:
         """Extract the operation binding the executor will present to the gate.
 
         Actor is the identity; transaction/idempotency/resource come from
@@ -179,7 +242,8 @@ class EgressGovernor:
         """
         lower = {k.lower(): v for k, v in req.headers.items()}
         return {
-            "actor_id": lower.get(self.identity_header),
+            # F1b: the authenticated principal, never the raw header.
+            "actor_id": principal if principal is not None else lower.get(self.identity_header),
             "transaction_id": lower.get("x-mcc-transaction-id"),
             "idempotency_key": lower.get("x-mcc-idempotency-key"),
             "resource_id": lower.get("x-mcc-resource-id"),
@@ -198,18 +262,22 @@ class EgressGovernor:
         )
 
     async def govern(self, req: OutboundRequest) -> EnforcementOutcome:
-        identity = self._identity(req)
+        caller = self._caller(req)
+        if caller.error is not None:      # F1b: before any gateway call or forward
+            return self._block(caller.status, caller.error)
+        identity = caller.principal
         action, context = self.mapper.map(req)
-        binding = self._binding(req)
+        binding = self._binding(req, identity)
 
         try:
-            result = await self.decide(
+            result = await self._decide(
                 {
                     "identity": identity,
                     "action": action,
                     "context": context,
                     **{k: v for k, v in binding.items() if v is not None},
-                }
+                },
+                caller,
             )
         except Exception:
             # Gateway unreachable / timeout / error -> fail-closed.
@@ -279,17 +347,25 @@ class EgressGovernor:
         """Run only the decision round trip (no gate/nonce). Used by the
         coordinator path, where the EnforcementCoordinator owns the gate (a),
         the nonce (b), and steps c-h around the actual forward."""
-        identity = self._identity(req)
+        caller = self._caller(req)
         action, context = self.mapper.map(req)
-        binding = self._binding(req)
+        if caller.error is not None:      # F1b: before any gateway call or forward
+            return OperationDecision(
+                action=action, context=context, decision="DENY", enforce=True,
+                reason=caller.error, forward_context=context, token=None,
+                binding={}, reachable=True, status_code=caller.status,
+            )
+        identity = caller.principal
+        binding = self._binding(req, identity)
         try:
-            result = await self.decide(
+            result = await self._decide(
                 {
                     "identity": identity,
                     "action": action,
                     "context": context,
                     **{k: v for k, v in binding.items() if v is not None},
-                }
+                },
+                caller,
             )
         except Exception:
             return OperationDecision(
@@ -323,6 +399,7 @@ class OperationDecision:
     binding: Dict[str, Any]
     reachable: bool
     audit_id: str = ""
+    status_code: int = 403
 
     @property
     def executable(self) -> bool:
@@ -336,13 +413,18 @@ class OperationDecision:
 def build_decide_via_http(
     gateway_url: str, api_key: str, timeout: float = 2.0
 ) -> DecideFn:
-    """A ``decide`` that calls a real MCC gateway's POST /evaluate."""
+    """A ``decide`` that calls a real MCC gateway's POST /evaluate. F1b: the
+    caller's own agent credential (``credential``) is forwarded, so the
+    gateway authenticates the principal; ``api_key`` (the interceptor's own
+    service key) is used only in explicit legacy mode, and a strict gateway
+    refuses it for every identity."""
     base = gateway_url.rstrip("/")
 
-    async def decide(payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def decide(payload: Dict[str, Any], credential: Optional[str] = None) -> Dict[str, Any]:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
-                f"{base}/evaluate", json=payload, headers={"x-api-key": api_key}
+                f"{base}/evaluate", json=payload,
+                headers={"x-api-key": credential if credential is not None else api_key}
             )
             resp.raise_for_status()
             return resp.json()
@@ -359,7 +441,8 @@ async def _forward_upstream(outbound: "OutboundRequest", target: str, body: Opti
             headers={
                 k: v
                 for k, v in outbound.headers.items()
-                if k.lower() not in ("host", "content-length")
+                # F1b: the caller's agent credential never leaves the interceptor.
+                if k.lower() not in ("host", "content-length", AGENT_CREDENTIAL_HEADER)
             },
         )
 
@@ -440,7 +523,7 @@ def build_proxy_app(
                             headers={**headers, "Content-Type": upstream.headers.get("content-type", "application/json")})
 
         if not op.executable:
-            status = 502 if not op.reachable else 403
+            status = 502 if not op.reachable else op.status_code
             return JSONResponse(
                 {"error": "BLOCKED_BY_MCC", "decision": op.decision, "reason": op.reason},
                 status_code=status, headers=headers,
@@ -569,10 +652,15 @@ def _default_app():
         Route(action="delete_resource", method="DELETE", host="*", path="*"),
     ]
     gate = build_gate_from_health(gateway_url)
+    from mcc_core.agent_identity import agent_registry_from_env
     governor = EgressGovernor(
         mapper=ActionMapper(routes),
         decide=build_decide_via_http(gateway_url, api_key),
         gate=gate,
+        # F1b: the hash-only agent registry (same file as the gateway's) and
+        # the tenant it serves; strict by default (MCC_AGENT_IDENTITY_MODE).
+        agent_credentials=agent_registry_from_env(os.environ),
+        tenant_id=os.environ.get("MCC_GATEWAY_TENANT_ID", "").strip() or "pilot",
     )
     upstream = os.environ.get("MCC_PROXY_UPSTREAM")
     coordinator = None

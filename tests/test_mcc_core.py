@@ -529,7 +529,7 @@ def test_idempotency_cache_expires_with_token_ttl():
         idempotency_key="idem-ttl-2",
     )
     first = run(main.mcc.evaluate("tenant-test", req))
-    key = "tenant-test:idem-ttl-2"
+    key = "tenant-test:agent/idem:idem-ttl-2"  # F1b: cache is keyed by tenant:actor:key
     _, cached = main.mcc._idem_cache[key]
     main.mcc._idem_cache[key] = (0.0, cached)  # force expiry
     second = run(main.mcc.evaluate("tenant-test", req))
