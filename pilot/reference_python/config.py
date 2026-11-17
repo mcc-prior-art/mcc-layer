@@ -76,11 +76,10 @@ class PilotConfig:
             raise PilotConfigError("integration_id is required")
         if not self.evidence_dir:
             raise PilotConfigError("evidence_dir is required")
-        if self.agent_keys is not None:
-            if not isinstance(self.agent_keys, dict) or not all(
-                    isinstance(k, str) and k and isinstance(v, str) and v
-                    for k, v in self.agent_keys.items()):
-                raise PilotConfigError("agent_keys must map non-empty identity -> non-empty key")
+        if self.agent_keys is not None and (not isinstance(self.agent_keys, dict) or not all(
+                isinstance(k, str) and k and isinstance(v, str) and v
+                for k, v in self.agent_keys.items())):
+            raise PilotConfigError("agent_keys must map non-empty identity -> non-empty key")
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> PilotConfig:

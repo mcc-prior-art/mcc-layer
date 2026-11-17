@@ -23,7 +23,6 @@ import httpx
 import pytest
 from mcc_sdk import EvaluateRequest, MCCClient, MCCContractError, MCCTimeoutError, MCCTransportError
 
-from tests._agent_credentials import module_key
 from pilot.reference_python import (
     DirectActuationRejected,
     PilotConfig,
@@ -31,6 +30,7 @@ from pilot.reference_python import (
     SimulatedActuator,
     validate_evidence,
 )
+from tests._agent_credentials import module_key
 
 # --------------------------------------------------------------------------
 # Real-gateway scenarios: exact identity/action/context combinations proven
